@@ -12,11 +12,11 @@
 |---|---|---|---|---|
 | [@yuppiez99999](https://github.com/yuppiez99999) | 正式维护者 | 平台采集、城市数据与测试 | 2026-08-29 起 | 在任（Write） |
 | [@yukinoshi](https://github.com/yukinoshi) | 正式维护者 | AI、错误恢复与产品流程 | 2026-08-29 起 | 在任（Write） |
-| [@bianshilong0604](https://github.com/bianshilong0604) | 正式维护者 | Web、产品流程与隐私边界 | 2026-08-30 起 | 在任（Write） |
+| [@bianshilong0604](https://github.com/bianshilong0604) | 正式维护者 | Web、产品流程与隐私边界 | 2026-08-30 起 | 在任（Write；审核团队邀请待接受） |
 | [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 正式维护者 | 运行时、发送安全与监测链路 | 2026-08-30 起 | 在任（Write） |
 | [@powerycy](https://github.com/powerycy) 跑跑蹦蹦跳跳 | 项目负责人兼正式技术维护者 | 全仓技术审核、安全复核与合并；两类贡献文档与维护贡献评分 | 项目发起至今；2026-08-28 起正式建档；2026-09-06 起计入技术审核池 | 在任（Admin） |
 
-维护贡献分数、证据及历史基线试算统一记录于 [MAINTENANCE_CONTRIBUTIONS.md](MAINTENANCE_CONTRIBUTIONS.md)，由项目负责人单方面评分和定稿。本文件只管理维护者身份、职责及任期，不重复保存评分。
+维护贡献结果及证据统一记录于 [MAINTENANCE_CONTRIBUTIONS.md](MAINTENANCE_CONTRIBUTIONS.md)，由项目负责人单方面评分和定稿。本文件只管理维护者身份、职责及任期，不重复保存评分。
 
 ## 维护方式
 
@@ -33,7 +33,9 @@
 
 | GitHub | 擅长方向 | 观察期开始 | 推荐/带教人 | 状态 |
 |---|---|---|---|---|
-| — | — | — | — | 当前暂无观察期候选 |
+| [@shuaigechz-cloud](https://github.com/shuaigechz-cloud) | 会话与消息链路、招呼语约束、定制简历与人工确认 | 2026-09-07 | 待指定 | 观察中（Triage；已接受邀请） |
+
+邀请于 **2026-09-07 08:16（北京时间）**接受，仓库 Triage 权限已生效。证据：[GitHub 成员事件](https://api.github.com/repos/shengjidaguai-china/BossHunter/events)（事件 ID：14535877238）；[已采用的项目贡献](CONTRIBUTORS.md)。
 
 ## 现任维护者贡献详情
 
