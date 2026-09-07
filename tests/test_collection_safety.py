@@ -178,7 +178,7 @@ platforms:
             count = scrape_jobs(config, ["AI"])
 
         self.assertEqual(count, 0)
-        self.assertEqual(config["_workbench_collect_report"]["stop_reason"], "search_exhausted")
+        self.assertEqual(config["_workbench_collect_report"]["stop_reason"], "no_jobs_extracted")
         guard_cls.return_value.lock.assert_not_called()
 
     def test_consecutive_page_failures_end_collection_without_risk_lock(self):
