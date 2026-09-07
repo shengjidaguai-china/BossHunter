@@ -77,6 +77,39 @@ class _BlockedCollector:
 
 
 class CollectionOrchestratorTests(TestCase):
+    def test_boss_zero_new_reports_duplicate_and_filtered_counts(self):
+        candidates = [_candidate("boss", "duplicate"), _candidate("boss", "filtered", "外包岗位")]
+        registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], candidates)})
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "collection.db"
+            conn = get_db(db_path)
+            insert_job(conn, candidates[0].as_job_record())
+            conn.close()
+            result = CollectionOrchestrator(
+                {"profile": {"deal_breakers": ["外包"]}}, db_path=db_path, registry=registry,
+            ).run(_options())
+        state = result["platforms"]["boss"]
+        self.assertEqual(result["status"], "completed_with_shortage")
+        self.assertEqual(state["reason_code"], "no_new_jobs")
+        for text in ("新增 0 条", "读取 2 条", "重复 1 条", "过滤 1 条"):
+            self.assertIn(text, state["message"])
+        self.assertEqual(result["collected_job_ids"], [])
+
+    def test_boss_summary_preserves_empty_search_reason(self):
+        collector = _BlockedCollector("boss", [], "no_jobs_extracted")
+        collector.collect = lambda *_: PlatformCollectionResult(
+            "boss", "completed_with_shortage", "no_jobs_extracted", "BOSS 本轮未读取到岗位",
+        )
+        registry = CollectorRegistry({"boss": lambda: collector})
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CollectionOrchestrator(
+                {}, db_path=Path(tmp) / "collection.db", registry=registry,
+            ).run(_options())
+        state = result["platforms"]["boss"]
+        self.assertEqual(state["reason_code"], "no_jobs_extracted")
+        self.assertIn("本轮未读取到岗位", state["message"])
+        self.assertIn("新增 0 条", state["message"])
+
     def test_two_platforms_are_strictly_serial_and_save_only_new_rows(self):
         events = []
         boss_candidates = [
@@ -498,11 +531,12 @@ class OrchestrationFlowTests(TestCase):
         self.assertEqual(result["platforms"]["boss"]["status"], "failed")
         self.assertEqual(result["platforms"]["boss"]["reason_code"], "network_error")
 
-    def test_empty_result_completes_normally(self):
+    def test_empty_result_reports_shortage(self):
         registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], [])})
         with tempfile.TemporaryDirectory() as tmp:
             result = CollectionOrchestrator({}, db_path=Path(tmp) / "test.db", registry=registry).run(_options())
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "completed_with_shortage")
+        self.assertEqual(result["platforms"]["boss"]["reason_code"], "no_new_jobs")
         self.assertEqual(result["platforms"]["boss"]["new"], 0)
 
     def test_progress_callback_is_invoked(self):

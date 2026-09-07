@@ -1,10 +1,14 @@
 import json
-from urllib.parse import parse_qs
+import tempfile
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from bosshunter.collection.base import CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest
+from bosshunter.collection.orchestrator import CollectionOrchestrator
+from bosshunter.collection.registry import CollectorRegistry
 from bosshunter.collection.platforms.boss import (
     JS_DETECT_COLLECTION_RISK,
     JS_EXTRACT_DETAIL,
@@ -16,6 +20,7 @@ from bosshunter.collection.platforms.boss import (
     generate_boss_job_id,
     normalize_boss_search_filters,
 )
+from bosshunter.db import get_db, get_collected_combos, get_page_progress, mark_combo_collected, upsert_page_progress
 
 
 class BossCollectorUnitTests(TestCase):
@@ -173,7 +178,7 @@ class BossCollectorCollectionTests(TestCase):
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason_code, "rate_limit")
 
-    def test_empty_list_completes_gracefully(self):
+    def test_empty_list_reports_no_jobs_instead_of_success(self):
         browser = self._make_browser(list_jobs=[])
         hooks, _ = self._make_hooks()
         result = BossCollector(
@@ -183,8 +188,9 @@ class BossCollectorCollectionTests(TestCase):
             PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=1),
             hooks,
         )
-        self.assertEqual(result.status, "completed")
-        self.assertEqual(result.reason_code, "search_exhausted")
+        self.assertEqual(result.status, "completed_with_shortage")
+        self.assertEqual(result.reason_code, "no_jobs_extracted")
+        self.assertNotIn("已采集完毕", result.message)
 
     def test_collection_extracts_candidates(self):
         list_jobs = [
@@ -320,45 +326,92 @@ class BossCollectorCollectionTests(TestCase):
         self.assertEqual(merged.company, "示例科技")
 
 
-class BossResumeTtlTests(TestCase):
-    """_resume_ttl_hours 配置读取测试。"""
+class BossFreshSearchTests(TestCase):
+    """Each run refreshes search results, regardless of old checkpoints."""
 
-    def test_default_when_missing(self):
-        self.assertEqual(BossCollector()._resume_ttl_hours(), 24)
+    def test_repeated_runs_find_new_jobs_despite_old_word_and_page_checkpoints(self):
+        jobs = [self._job()]
+        browser = self._make_browser(list_jobs=jobs)
+        browser.new_tab = MagicMock(wraps=browser.new_tab)
+        browser.navigate = MagicMock(wraps=browser.navigate)
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.db"
+            conn = get_db(db_path)
+            self.addCleanup(conn.close)
+            # Both completed words and page checkpoints beyond max_pages used to skip searches.
+            mark_combo_collected(conn, "boss", "北京", "AI")
+            upsert_page_progress(conn, "boss", "北京", "AI", 5)
+            upsert_page_progress(conn, "boss", "北京", "产品", 5)
+            registry = CollectorRegistry({"boss": lambda: BossCollector(
+                browser=browser, safety_conn=conn, sleep=lambda _: None,
+                throttle_factory=lambda **_: self._make_throttle(),
+                config={"platforms": {"boss": {"search": {"resume_ttl_hours": 720}}}},
+            )})
+            options = {"platform_order": ["boss"], "auto_score": False, "platforms": {"boss": {
+                "keywords": ["AI", "产品"], "cities": ["北京"], "max_pages": 2, "sort": "default",
+            }}}
+            first = CollectionOrchestrator({}, db_path=db_path, registry=registry).run(options)
+            jobs.append({**self._job(), "url": "/job_detail/new002.html"})
+            second = CollectionOrchestrator({}, db_path=db_path, registry=registry).run(options)
+            self.assertEqual(first["collected_job_ids"], ["test001"])
+            self.assertEqual(second["collected_job_ids"], ["new002"])
+            self.assertEqual(second["platforms"]["boss"]["seen"], 8)
+            self.assertEqual(second["platforms"]["boss"]["duplicate"], 7)
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 2)
+            urls = [call.args[0] for call in browser.new_tab.call_args_list]
+            urls += [call.args[1] for call in browser.navigate.call_args_list if "/web/geek/job?" in call.args[1]]
+            searches = [parse_qs(urlparse(url).query) for url in urls]
+            for keyword in ("AI", "产品"):
+                for page in ("1", "2"):
+                    self.assertEqual(sum(
+                        query["query"] == [keyword] and query.get("page", ["1"]) == [page]
+                        for query in searches
+                    ), 2)
+            details = [call for call in browser.navigate.call_args_list if "/job_detail/" in call.args[1]]
+            self.assertEqual(len(details), 2)  # Known IDs never open a detail page again.
+            conn.close()
 
-    def test_reads_from_platforms_config(self):
-        collector = BossCollector(
-            config={"platforms": {"boss": {"search": {"resume_ttl_hours": 48}}}},
-        )
-        self.assertEqual(collector._resume_ttl_hours(), 48)
+    def test_empty_or_failed_search_is_not_checkpointed(self):
+        for raw in ("[]", None, "not-json", '[{"title": "missing URL"}]'):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:
+                conn = get_db(Path(tmp) / "jobs.db")
+                self.addCleanup(conn.close)
+                browser = self._make_browser()
+                original_evaluate = browser.evaluate
+                browser.evaluate = lambda target, script: (
+                    raw if script == JS_EXTRACT_LIST else original_evaluate(target, script)
+                )
+                hooks, collected = self._make_hooks()
+                result = BossCollector(
+                    browser=browser, safety_conn=conn, sleep=lambda _: None,
+                    throttle_factory=lambda **_: self._make_throttle(),
+                ).collect(
+                    PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=1), hooks,
+                )
+                self.assertEqual(result.status, "completed_with_shortage")
+                self.assertEqual(collected, [])
+                self.assertEqual(get_collected_combos(conn, "boss"), set())
+                self.assertEqual(get_page_progress(conn, "boss", "北京", "AI"), 0)
+                conn.close()
 
-    def test_reads_from_legacy_search_config(self):
-        collector = BossCollector(
-            config={"search": {"resume_ttl_hours": 12}},
-        )
-        self.assertEqual(collector._resume_ttl_hours(), 12)
-
-    def test_clamped_to_minimum_1(self):
-        collector = BossCollector(
-            config={"platforms": {"boss": {"search": {"resume_ttl_hours": -5}}}},
-        )
-        self.assertEqual(collector._resume_ttl_hours(), 1)
-
-    def test_clamped_to_maximum_720(self):
-        collector = BossCollector(
-            config={"platforms": {"boss": {"search": {"resume_ttl_hours": 9999}}}},
-        )
-        self.assertEqual(collector._resume_ttl_hours(), 720)
-
-    def test_invalid_falls_back_to_default(self):
-        collector = BossCollector(
-            config={"platforms": {"boss": {"search": {"resume_ttl_hours": "invalid"}}}},
-        )
-        self.assertEqual(collector._resume_ttl_hours(), 24)
-
-
-class BossResumeCheckpointTests(TestCase):
-    """断点续采集成测试（词级跳过 / 页级恢复 / checkpoint 记录）。"""
+    def test_later_success_does_not_checkpoint_over_failed_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = get_db(Path(tmp) / "jobs.db")
+            self.addCleanup(conn.close)
+            browser = self._make_browser(list_jobs=[self._job()])
+            browser.new_tab = MagicMock(side_effect=[None, "tab-1"])
+            hooks, collected = self._make_hooks()
+            result = BossCollector(
+                browser=browser, safety_conn=conn, sleep=lambda _: None,
+                throttle_factory=lambda **_: self._make_throttle(),
+            ).collect(
+                PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=2), hooks,
+            )
+            self.assertEqual(len(collected), 1)
+            self.assertEqual(result.reason_code, "incomplete_search")
+            self.assertEqual(get_collected_combos(conn, "boss"), set())
+            self.assertEqual(get_page_progress(conn, "boss", "北京", "AI"), 0)
+            conn.close()
 
     def _make_browser(self, list_jobs=None, detail=None, risk=None):
         if list_jobs is None:
@@ -410,154 +463,6 @@ class BossResumeCheckpointTests(TestCase):
             "url": "/job_detail/test001.html",
         }
 
-    def test_word_level_skip_for_collected_combo(self):
-        """词级断点：TTL 内已完成的 (city, keyword) 整词跳过。"""
-        browser = self._make_browser(list_jobs=[self._job()])
-        hooks, collected = self._make_hooks()
-        with (
-            patch("bosshunter.collection.platforms.boss.prune_collected_combos"),
-            patch("bosshunter.collection.platforms.boss.prune_page_progress"),
-            patch("bosshunter.collection.platforms.boss.get_collected_combos", return_value={("北京", "AI")}),
-            patch("bosshunter.collection.platforms.boss.get_page_progress", return_value=0),
-            patch("bosshunter.collection.platforms.boss.upsert_page_progress"),
-            patch("bosshunter.collection.platforms.boss.mark_combo_collected"),
-            patch("bosshunter.collection.platforms.boss.delete_page_progress"),
-        ):
-            result = BossCollector(
-                browser=browser,
-                throttle_factory=lambda **_kw: self._make_throttle(),
-                safety_conn=MagicMock(),
-            ).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=2),
-                hooks,
-            )
-        self.assertEqual(result.status, "completed")
-        self.assertEqual(len(collected), 0)
-
-    def test_page_level_resume_from_saved_page(self):
-        """页级断点：从 saved_page + 1 继续采。"""
-        browser = self._make_browser(list_jobs=[self._job()])
-        hooks, collected = self._make_hooks()
-        with (
-            patch("bosshunter.collection.platforms.boss.prune_collected_combos"),
-            patch("bosshunter.collection.platforms.boss.prune_page_progress"),
-            patch("bosshunter.collection.platforms.boss.get_collected_combos", return_value=set()),
-            patch("bosshunter.collection.platforms.boss.get_page_progress", return_value=2),
-            patch("bosshunter.collection.platforms.boss.upsert_page_progress") as upsert,
-            patch("bosshunter.collection.platforms.boss.mark_combo_collected") as mark,
-            patch("bosshunter.collection.platforms.boss.delete_page_progress") as delete,
-        ):
-            result = BossCollector(
-                browser=browser,
-                throttle_factory=lambda **_kw: self._make_throttle(),
-                safety_conn=MagicMock(),
-            ).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=4),
-                hooks,
-            )
-        self.assertEqual(result.status, "completed")
-        self.assertGreater(len(collected), 0)
-        upsert.assert_called()
-        mark.assert_called_once()
-        delete.assert_called_once()
-
-    def test_page_level_skip_when_exceeds_max_pages(self):
-        """页级断点：saved_page 已超 max_pages 时视为已采完，跳过。"""
-        browser = self._make_browser(list_jobs=[self._job()])
-        hooks, collected = self._make_hooks()
-        with (
-            patch("bosshunter.collection.platforms.boss.prune_collected_combos"),
-            patch("bosshunter.collection.platforms.boss.prune_page_progress"),
-            patch("bosshunter.collection.platforms.boss.get_collected_combos", return_value=set()),
-            patch("bosshunter.collection.platforms.boss.get_page_progress", return_value=5),
-            patch("bosshunter.collection.platforms.boss.upsert_page_progress"),
-            patch("bosshunter.collection.platforms.boss.mark_combo_collected") as mark,
-            patch("bosshunter.collection.platforms.boss.delete_page_progress") as delete,
-        ):
-            result = BossCollector(
-                browser=browser,
-                throttle_factory=lambda **_kw: self._make_throttle(),
-                safety_conn=MagicMock(),
-            ).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=3),
-                hooks,
-            )
-        self.assertEqual(result.status, "completed")
-        self.assertEqual(len(collected), 0)
-        mark.assert_called_once()
-        delete.assert_called_once()
-
-    def test_checkpoint_recorded_after_each_page(self):
-        """页级 checkpoint：每采完一页立即记录页码。"""
-        browser = self._make_browser(list_jobs=[self._job()])
-        hooks, _ = self._make_hooks()
-        with (
-            patch("bosshunter.collection.platforms.boss.prune_collected_combos"),
-            patch("bosshunter.collection.platforms.boss.prune_page_progress"),
-            patch("bosshunter.collection.platforms.boss.get_collected_combos", return_value=set()),
-            patch("bosshunter.collection.platforms.boss.get_page_progress", return_value=0),
-            patch("bosshunter.collection.platforms.boss.upsert_page_progress") as upsert,
-            patch("bosshunter.collection.platforms.boss.mark_combo_collected"),
-            patch("bosshunter.collection.platforms.boss.delete_page_progress"),
-        ):
-            BossCollector(
-                browser=browser,
-                throttle_factory=lambda **_kw: self._make_throttle(),
-                safety_conn=MagicMock(),
-            ).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=2),
-                hooks,
-            )
-        self.assertGreaterEqual(upsert.call_count, 2)
-
-    def test_word_completion_marked_after_all_pages(self):
-        """词结束标记：所有页采完后标记词级断点 + 清页级断点。"""
-        browser = self._make_browser(list_jobs=[])
-        hooks, _ = self._make_hooks()
-        with (
-            patch("bosshunter.collection.platforms.boss.prune_collected_combos"),
-            patch("bosshunter.collection.platforms.boss.prune_page_progress"),
-            patch("bosshunter.collection.platforms.boss.get_collected_combos", return_value=set()),
-            patch("bosshunter.collection.platforms.boss.get_page_progress", return_value=0),
-            patch("bosshunter.collection.platforms.boss.upsert_page_progress"),
-            patch("bosshunter.collection.platforms.boss.mark_combo_collected") as mark,
-            patch("bosshunter.collection.platforms.boss.delete_page_progress") as delete,
-        ):
-            BossCollector(
-                browser=browser,
-                throttle_factory=lambda **_kw: self._make_throttle(),
-                safety_conn=MagicMock(),
-            ).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=3),
-                hooks,
-            )
-        mark.assert_called_once()
-        delete.assert_called_once()
-
-    def test_no_safety_conn_skips_resume_logic(self):
-        """无 safety_conn 时断点续采函数不被调用。"""
-        browser = self._make_browser(list_jobs=[self._job()])
-        hooks, _ = self._make_hooks()
-        with (
-            patch("bosshunter.collection.platforms.boss.prune_collected_combos") as prune_combos,
-            patch("bosshunter.collection.platforms.boss.get_collected_combos") as get_combos,
-            patch("bosshunter.collection.platforms.boss.get_page_progress") as get_progress,
-            patch("bosshunter.collection.platforms.boss.upsert_page_progress") as upsert,
-            patch("bosshunter.collection.platforms.boss.mark_combo_collected") as mark,
-        ):
-            BossCollector(
-                browser=browser,
-                throttle_factory=lambda **_kw: self._make_throttle(),
-                safety_conn=None,
-            ).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=2),
-                hooks,
-            )
-        prune_combos.assert_not_called()
-        get_combos.assert_not_called()
-        get_progress.assert_not_called()
-        upsert.assert_not_called()
-        mark.assert_not_called()
 
 
 class BossEdgeCaseTests(TestCase):

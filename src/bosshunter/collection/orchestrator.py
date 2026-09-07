@@ -372,6 +372,15 @@ class CollectionOrchestrator:
                     result = PlatformCollectionResult(platform, "failed", "network_error", f"{platform} 采集失败", error=str(exc)[:500])
                 result.new_job_ids = list(processor.new_job_ids)
                 result.counts = self._counts(processor.progress)
+                if platform == "boss" and result.status in {"completed", "completed_with_shortage"}:
+                    if result.status == "completed" and not result.new_job_ids:
+                        result.status = "completed_with_shortage"
+                        result.reason_code = "no_new_jobs"
+                    result.message += (
+                        f"；本轮新增 {len(result.new_job_ids)} 条，读取 {processor.progress.seen} 条，"
+                        f"重复 {processor.progress.duplicate} 条，过滤 {processor.progress.filtered} 条，"
+                        f"解析失败 {processor.progress.parse_failed} 条，保存失败 {processor.progress.save_failed} 条"
+                    )
                 platform_results.append(result)
                 states[platform].update({
                     "status": result.status,
