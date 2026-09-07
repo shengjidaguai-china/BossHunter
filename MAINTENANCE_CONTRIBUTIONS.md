@@ -10,17 +10,39 @@
 
 ## 现任维护者贡献详情
 
-以下沿用 2026-09-03 的历史基线试算，数值和证据原样迁入，尚未由项目负责人定稿；迁移不代表本次重新评分或批准已有分数。
-
-以下为截至 **2026-09-03** 已核实的维护活动摘要，仅记录对他人 PR 的 Review、Issue 治理、安全复核和交付协作，不计入本人提交的功能、修复、测试或文档。
+本次核对截至 **2026-09-07 14:00（Asia/Shanghai）**。以下为项目负责人本次发布的任期基线试算，替代 9 月 3 日展示值；四位参评维护者任职均未满 30 天，仍不属于正式任期核算，不用于授予或撤销权限。项目负责人 @powerycy 不参评。
 
 | 维护者 | 贡献占比 | 维护贡献摘要 | 代表证据 |
 |---|---:|---|---|
-| [@yuppiez99999](https://github.com/yuppiez99999) | **33.9%（试算）** | 对 51job API 采集完成只读边界、失败关闭、速率控制、断点续采和真实环境验证检查；持续梳理积压 PR 的风险、冲突与合并阻塞项，并主动让原贡献者方案承接合并。 | [#142 安全复核](https://github.com/shengjidaguai-china/BossHunter/pull/142#pullrequestreview-5074202801) · [#139 Review](https://github.com/shengjidaguai-china/BossHunter/pull/139#pullrequestreview-5084448426) · [#89 协作复核](https://github.com/shengjidaguai-china/BossHunter/pull/89#pullrequestreview-5056851017) |
-| [@yukinoshi](https://github.com/yukinoshi) | **28.8%（试算）** | 对简历失败恢复 PR 完成全量测试、前端类型检查和安全红线验证并批准；为评分解释和招呼语队列改动处理冲突、补充合并方案与完整验证。 | [#92 Review](https://github.com/shengjidaguai-china/BossHunter/pull/92#pullrequestreview-5089153466) · [#77 合并分析](https://github.com/shengjidaguai-china/BossHunter/pull/77#issuecomment-5466530159) · [#86 合并验证](https://github.com/shengjidaguai-china/BossHunter/pull/86#issuecomment-5466756964) |
-| [@bianshilong0604](https://github.com/bianshilong0604) | **26.3%（试算）** | 在招呼语网址防护中识别简历隐私、可信网址来源和重复发送边界问题，并在修改后完成复核；同时审查招呼语生成流程的岗位状态与任务并发风险。 | [#88 首轮 Review](https://github.com/shengjidaguai-china/BossHunter/pull/88#issuecomment-5463732307) · [#88 复核](https://github.com/shengjidaguai-china/BossHunter/pull/88#issuecomment-5466342761) · [#90 Review](https://github.com/shengjidaguai-china/BossHunter/pull/90#issuecomment-5463882496) |
-| [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | **11.0%（试算）** | 对安全锁是否应随账号切换重置完成风险边界研判，并对一键投递失效问题提出分层排查与复现信息要求；相关 Issue 尚未闭环。 | [#78 风险研判](https://github.com/shengjidaguai-china/BossHunter/issues/78#issuecomment-5452233325) · [#93 问题排查](https://github.com/shengjidaguai-china/BossHunter/issues/93#issuecomment-5452071152) |
+| [@yukinoshi](https://github.com/yukinoshi) | **27.8%（试算）** | 城市快照审核发现四项陈旧测试夹具，作者修复后合入；核实 AI 运行环境异常的敏感信息边界；完成定制简历人工确认、母版与路径边界检查。 | [#156 Review](https://github.com/shengjidaguai-china/BossHunter/pull/156#pullrequestreview-5124257029) · [#179 Review](https://github.com/shengjidaguai-china/BossHunter/pull/179#pullrequestreview-5122026768) · [#143 Review](https://github.com/shengjidaguai-china/BossHunter/pull/143#pullrequestreview-5124301792) |
+| [@yuppiez99999](https://github.com/yuppiez99999) | **27.8%（试算）** | 保留 51job API 安全复核与历史协作成果；补充评分解释持久化/白名单审核和账号风险咨询分类闭环。本人采集、城市数据与构建 PR 均只计项目贡献。 | [#142 安全复核](https://github.com/shengjidaguai-china/BossHunter/pull/142#pullrequestreview-5074202801) · [#77 Review](https://github.com/shengjidaguai-china/BossHunter/pull/77#pullrequestreview-5124525090) · [#168 咨询闭环](https://github.com/shengjidaguai-china/BossHunter/issues/168#issuecomment-5551623715) |
+| [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | **22.9%（试算）** | 验证前端构建与 wheel 交付，并明确 sdist 等未解决限制；独立复测编排测试并纠正覆盖率基线；真实布局复现监测风险漏检，阻止有缺口的方案直接合入。 | [#147 Review](https://github.com/shengjidaguai-china/BossHunter/pull/147#pullrequestreview-5124304248) · [#151 Review](https://github.com/shengjidaguai-china/BossHunter/pull/151#pullrequestreview-5124304668) · [#73 Review](https://github.com/shengjidaguai-china/BossHunter/pull/73#pullrequestreview-5124305409) |
+| [@bianshilong0604](https://github.com/bianshilong0604) | **21.5%（试算）** | 保留招呼语网址、简历隐私、重复发送和任务并发的历史审核成果；本次未核实新增独立维护成果，不因最近几天无新增记录扣除累计成果。 | [#88 首轮](https://github.com/shengjidaguai-china/BossHunter/pull/88#issuecomment-5463732307) · [#88 复核](https://github.com/shengjidaguai-china/BossHunter/pull/88#issuecomment-5466342761) · [#90 Review](https://github.com/shengjidaguai-china/BossHunter/pull/90#issuecomment-5463882496) |
 
+### 本次任期评分明细
+
+等级按下文既有 0–5 级标准判断，不按评论或批准次数累加；对未完成的 PR 只记录已经完成的检查，不宣称交付闭环。四个等级依次为维护闭环与影响、Review 与安全质量、响应与推进成果、协作与交接。同分按 GitHub ID 排序，百分比用最大余数法保留一位小数并补齐至 100.0%。
+
+| 维护者 | 四维等级 | 四维加权得分 | 任期综合分 | 贡献占比 |
+|---|---|---|---:|---:|
+| [@yukinoshi](https://github.com/yukinoshi) | 4 / 4 / 4 / 4 | 32 / 24 / 16 / 8 | 80 | 27.8%（试算） |
+| [@yuppiez99999](https://github.com/yuppiez99999) | 4 / 4 / 4 / 4 | 32 / 24 / 16 / 8 | 80 | 27.8%（试算） |
+| [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 3 / 4 / 3 / 3 | 24 / 24 / 12 / 6 | 66 | 22.9%（试算） |
+| [@bianshilong0604](https://github.com/bianshilong0604) | 3 / 4 / 2 / 3 | 24 / 24 / 8 / 6 | 62 | 21.5%（试算） |
+
+总分 **288**。每个维度使用上表同一组最多三项代表证据，不将其拆成多条累加。等级判断依据：
+
+- @yuppiez99999：历史安全复核、跨改动兼容检查和咨询闭环形成持续协作结果，四维均为 4；新一轮分流和催办本身不追加分数。
+- @yukinoshi：城市数据回归定位后由作者修复，运行环境问题从诊断建议到独立复核闭环，简历安全检查覆盖具体边界，四维均为 4。#143 的旧批准已被新提交撤销，仅保留其检查内容作为历史工作证据，不视为当前有效批准。
+- @fengziliang43-cmyk：真实浏览器、覆盖率复测和打包验证能发现测试未覆盖的问题，审核质量为 4；已完成的审核交付、推进及交接为 3。#147 的 sdist/安装限制仍未解决，#73 关闭也不等于其问题已经修复，不按完整修复成果计分。
+- @bianshilong0604：#88 的复核闭环和隐私边界识别支持 3 / 4；#90 尚未合入，推进只计 2，协作计 3。综合分是本次按历史证据重新列明的 62 分，不从旧百分比反推。
+
+### 去重与状态核对
+
+- @yuppiez99999 对 #142 的 Review 仅计本页；其本人 #147、#151、#153、#155–#159、#162、#170 的实现、测试及相应 Issue 关闭不重复计维护分。
+- @yukinoshi 在 #77 的代码补丁及其问题发现/修复闭环归项目贡献；@fengziliang43-cmyk 在 #158 的共同实现及其发现/修复闭环也归项目贡献，本次维护评分排除这两组成果。#145 的补丁仍未合入，暂不新增项目分，其同一问题闭环也不进入本次维护评分。
+- 空白批准、已撤销批准的权限效力、参与修改后的自审、机器人输出和纯合并次数均不计分；评价有正文证据的具体检查或已验证的协作结果。
+- 维护者身份沿用 [MAINTAINERS.md](MAINTAINERS.md)。[#186](https://github.com/shengjidaguai-china/BossHunter/issues/186) 仍待申请人补齐资料与边界确认，尚未进入候选观察期。
 
 ## 维护贡献评估
 
@@ -66,3 +88,28 @@
 - 对评分有异议时，提交具体证据和更正请求，由项目负责人决定；旧记录保留，修订说明记录日期和原因。
 - README 的维护贡献摘要由维护者依据本文件同一数据快照同步，不重新评分，也不因同步展示要求项目负责人审核整个 README。
 - 若 PR 同时包含技术改动、维护者任免、权限或技术审核规则，应拆为技术或治理 PR，按对应规则独立审核。
+
+## 历史基线
+
+### 2026-09-03（原始试算，未定稿）
+
+以下保留原始记录；当时的 Issue/PR 状态只表示历史核对结果，不代表本次状态。
+
+<details>
+<summary>展开 2026-09-03 原始试算</summary>
+
+
+以下沿用 2026-09-03 的历史基线试算，数值和证据原样迁入，尚未由项目负责人定稿；迁移不代表本次重新评分或批准已有分数。
+
+以下为截至 **2026-09-03** 已核实的维护活动摘要，仅记录对他人 PR 的 Review、Issue 治理、安全复核和交付协作，不计入本人提交的功能、修复、测试或文档。
+
+| 维护者 | 贡献占比 | 维护贡献摘要 | 代表证据 |
+|---|---:|---|---|
+| [@yuppiez99999](https://github.com/yuppiez99999) | **33.9%（试算）** | 对 51job API 采集完成只读边界、失败关闭、速率控制、断点续采和真实环境验证检查；持续梳理积压 PR 的风险、冲突与合并阻塞项，并主动让原贡献者方案承接合并。 | [#142 安全复核](https://github.com/shengjidaguai-china/BossHunter/pull/142#pullrequestreview-5074202801) · [#139 Review](https://github.com/shengjidaguai-china/BossHunter/pull/139#pullrequestreview-5084448426) · [#89 协作复核](https://github.com/shengjidaguai-china/BossHunter/pull/89#pullrequestreview-5056851017) |
+| [@yukinoshi](https://github.com/yukinoshi) | **28.8%（试算）** | 对简历失败恢复 PR 完成全量测试、前端类型检查和安全红线验证并批准；为评分解释和招呼语队列改动处理冲突、补充合并方案与完整验证。 | [#92 Review](https://github.com/shengjidaguai-china/BossHunter/pull/92#pullrequestreview-5089153466) · [#77 合并分析](https://github.com/shengjidaguai-china/BossHunter/pull/77#issuecomment-5466530159) · [#86 合并验证](https://github.com/shengjidaguai-china/BossHunter/pull/86#issuecomment-5466756964) |
+| [@bianshilong0604](https://github.com/bianshilong0604) | **26.3%（试算）** | 在招呼语网址防护中识别简历隐私、可信网址来源和重复发送边界问题，并在修改后完成复核；同时审查招呼语生成流程的岗位状态与任务并发风险。 | [#88 首轮 Review](https://github.com/shengjidaguai-china/BossHunter/pull/88#issuecomment-5463732307) · [#88 复核](https://github.com/shengjidaguai-china/BossHunter/pull/88#issuecomment-5466342761) · [#90 Review](https://github.com/shengjidaguai-china/BossHunter/pull/90#issuecomment-5463882496) |
+| [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | **11.0%（试算）** | 对安全锁是否应随账号切换重置完成风险边界研判，并对一键投递失效问题提出分层排查与复现信息要求；相关 Issue 尚未闭环。 | [#78 风险研判](https://github.com/shengjidaguai-china/BossHunter/issues/78#issuecomment-5452233325) · [#93 问题排查](https://github.com/shengjidaguai-china/BossHunter/issues/93#issuecomment-5452071152) |
+
+
+
+</details>
