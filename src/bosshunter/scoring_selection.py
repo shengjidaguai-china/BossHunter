@@ -38,8 +38,6 @@ def validate_options(
 		job_id = str(value or "").strip()
 		if job_id and job_id not in ids:
 			ids.append(job_id)
-	if len(ids) > 1000:
-		raise ValueError("一次最多选择 1000 个岗位")
 	if scope == "selected" and not ids:
 		raise ValueError("岗位池已选评分必须提供岗位 ID")
 	if scope == "all_scored" and not force_rescore:

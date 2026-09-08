@@ -1300,12 +1300,16 @@ def _scoring_options_from_body(body: dict) -> dict:
 	raw_options = body.get("options", body)
 	if not isinstance(raw_options, dict):
 		raise ValueError("评分参数必须是对象")
-	return validate_options(
+	options = validate_options(
 		raw_options.get("scope", "pending"),
 		raw_options.get("limit"),
 		raw_options.get("job_ids", []),
 		raw_options.get("force_rescore", False),
 	)
+	# This cap applies to IDs supplied by the page, not internally selected jobs.
+	if len(options["job_ids"]) > 1000:
+		raise ValueError("一次最多选择 1000 个岗位")
+	return options
 
 
 @app.route("/api/scoring/preview", method="POST")
@@ -1522,6 +1526,7 @@ def api_workbench_task_start():
 		if messages:
 			return _json_response({"error": "请先处理启动前检查", "messages": messages}, 400)
 		extra = {"_collection_options": collection_options} if collection_options is not None else {}
+		before_start = None
 		if collection_options is not None and not collection_options.get("resume_run_id"):
 			# Persist only non-secret collection preferences so the next dialog can
 			# restore each platform's independent fields and queue order.
@@ -1542,9 +1547,9 @@ def api_workbench_task_start():
 				if platform not in selected_platforms and isinstance(platform_configs.get(platform), dict):
 					platform_configs[platform]["enabled"] = False
 			base_config["platforms"] = platform_configs
-			_write_config(base_config)
+			before_start = lambda: _write_config(base_config)
 		with job_mutation_lock:
-			task = task_runner.start(mode, _task_config(extra))
+			task = task_runner.start(mode, {**base_config, **extra}, before_start=before_start)
 		return _json_response(task)
 	except TaskAlreadyRunningError as e:
 		return _json_response({"error": str(e)}, 409)

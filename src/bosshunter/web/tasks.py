@@ -95,7 +95,13 @@ class WorkbenchTaskRunner:
         self._deadline_timers: dict[str, Timer] = {}
         self._lock = Lock()
 
-    def start(self, mode: str, config: dict) -> dict:
+    def start(
+        self,
+        mode: str,
+        config: dict,
+        *,
+        before_start: Callable[[], None] | None = None,
+    ) -> dict:
         if mode not in MODE_LABELS:
             raise ValueError(f"Unsupported workbench mode: {mode}")
 
@@ -110,16 +116,20 @@ class WorkbenchTaskRunner:
             deadline = _deadline_from_config(mode, config)
             if deadline:
                 task.deadline_at = deadline.isoformat(timespec="seconds")
-            self._tasks[task.id] = task
-
             if deadline and deadline <= datetime.now():
                 task.stop_requested.set()
                 task.status = "stopped"
                 task.stop_reason = "今日发送时间窗口已截止，后台未启动"
                 task.logs.append(task.stop_reason)
                 task.updated_at = datetime.now().isoformat(timespec="seconds")
+                self._tasks[task.id] = task
                 return task.snapshot()
 
+            # Persist start settings under the same lock as admission. A failed
+            # callback must leave no registered task or worker behind.
+            if before_start is not None:
+                before_start()
+            self._tasks[task.id] = task
             thread = Thread(target=self._run, args=(task, config), daemon=True)
             self._threads[task.id] = thread
             if deadline:
