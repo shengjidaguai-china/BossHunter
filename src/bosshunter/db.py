@@ -770,6 +770,9 @@ def _init_collection_runs(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_collection_runs_status ON collection_runs(status);
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(collection_runs)")}
+    if "boss_checkpoint_json" not in columns:
+        conn.execute("ALTER TABLE collection_runs ADD COLUMN boss_checkpoint_json TEXT NOT NULL DEFAULT '{}'")
     conn.commit()
 
 

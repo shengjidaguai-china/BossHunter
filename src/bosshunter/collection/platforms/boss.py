@@ -52,6 +52,26 @@ BOSS_FILTER_PARAMS = {
 }
 _FILTER_SEPARATOR = re.compile(r"[,，、;；]")
 
+# BOSS's kanzhun-mix font displays U+E031..U+E03A as 0..9.
+# textContent retains these glyph codes even though Chrome shows normal digits.
+_BOSS_DIGITS = str.maketrans({chr(0xE031 + n): str(n) for n in range(10)})
+_PRIVATE_GLYPH = re.compile(r"[\ue000-\uf8ff]")
+
+
+def decode_boss_text(value: Any) -> str:
+    return str(value or "").translate(_BOSS_DIGITS).strip()
+
+
+def _decode_fields(raw: dict) -> dict:
+    return {key: decode_boss_text(value) if isinstance(value, str) else value
+            for key, value in raw.items()}
+
+
+JS_IS_SCROLL_LIST = "Boolean(document.querySelector('.page-jobs .job-list-container .rec-job-list'))"
+# Chrome can defer native scroll events in a hidden tab. The site's public
+# scroll handler must run after moving the viewport to request the next batch.
+JS_DISPATCH_LIST_SCROLL = "window.dispatchEvent(new Event('scroll'))"
+
 
 def _filter_values(value: Any) -> list[str]:
     values = value if isinstance(value, list) else _FILTER_SEPARATOR.split(value) if isinstance(value, str) else []
@@ -273,6 +293,7 @@ class BossCollector:
             _positive_int(collection_cfg.get("risk_pause_max_minutes", 10), 10),
         )
         worker_target: str | None = None
+        detail_worker: str | None = None
         page_failures = 0
         seen_jobs = 0
         incomplete_combos = 0
@@ -346,6 +367,52 @@ class BossCollector:
                 "BOSS 连续页面失败，本轮采集已结束；其他平台可继续",
             )
 
+        class ListStopped(Exception):
+            def __init__(self, result: PlatformCollectionResult):
+                self.result = result
+
+        def read_list() -> list | None:
+            raw = self.browser.evaluate(worker_target, JS_EXTRACT_LIST)
+            try:
+                jobs = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                return None
+            return jobs if isinstance(jobs, list) else None
+
+        def list_ids(jobs: list) -> set[str]:
+            return {generate_boss_job_id(job["url"]) for job in jobs
+                    if isinstance(job, dict) and job.get("url")}
+
+        def advance_list(loaded_ids: set[str]) -> list:
+            # The current /web/geek/jobs page ignores URL page=N. Keep its
+            # list alive and let the site's own scroll handler load one batch.
+            if guard is not None:
+                guard.reserve("search_page", daily_limit=search_limit)
+            self.browser.scroll(worker_target, direction="top")
+            self.browser.scroll(worker_target, direction="bottom")
+            self.browser.evaluate(worker_target, JS_DISPATCH_LIST_SCROLL)
+            for _ in range(10):
+                if _wait_or_stop(hooks.stop_event, 0.5 * delay_multiplier, self.sleep):
+                    raise ListStopped(PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止"))
+                signal = inspect_risk(worker_target)
+                if signal:
+                    signal = confirm_risk(worker_target)
+                    if signal:
+                        if signal["kind"] == "user_stopped":
+                            raise ListStopped(PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止"))
+                        raise ListStopped(risk(signal["kind"], signal["evidence"]))
+                jobs = read_list()
+                if jobs is not None and list_ids(jobs) - loaded_ids:
+                    new_jobs = [job for job in jobs if not isinstance(job, dict) or not job.get("url")
+                                or generate_boss_job_id(job["url"]) not in loaded_ids]
+                    loaded_ids.update(list_ids(jobs))
+                    return new_jobs
+            hooks.on_parse_failed("BOSS 滚动后未出现新岗位，无法确认已加载下一批")
+            raise ListStopped(PlatformCollectionResult(
+                self.platform, "completed_with_shortage", "search_page_not_advanced",
+                "BOSS 滚动后未出现新岗位，已停止；未将重复列表计入扫描，可稍后继续采集",
+            ))
+
         combos: list[tuple[str, str, str]] = []
         for city in request.cities:
             city_code = self.resolve_city_code(city, request)
@@ -369,10 +436,19 @@ class BossCollector:
             for city, city_code, keyword in combos:
                 if hooks.stop_event is not None and hooks.stop_event.is_set():
                     return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                # Search results change between runs. Always refresh from page 1;
-                # the shared processor deduplicates individual jobs by identity.
+                # Only the explicitly resumed run supplies completed pages.
+                # New runs always start at page 1, regardless of older tasks.
+                start_page = hooks.completed_page(city, keyword) + 1
+                if start_page > request.max_pages:
+                    hooks.on_event(phase="resuming", keyword=keyword, city=city,
+                                   message="继续原任务：该搜索组合已完成")
+                    continue
                 combo_complete = True
-                for page in range(1, request.max_pages + 1):
+                scroll_list = False
+                loaded_page = 0
+                loaded_ids: set[str] = set()
+                page_fingerprints: set[frozenset[str]] = set()
+                for page in range(start_page, request.max_pages + 1):
                     if hooks.stop_event is not None and hooks.stop_event.is_set():
                         return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                     hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
@@ -382,34 +458,46 @@ class BossCollector:
                     if request.sort == "newest": search_url += "&sortType=2"
                     if page > 1: search_url += f"&page={page}"
                     try:
-                        if guard is not None: guard.reserve("search_page", daily_limit=search_limit)
+                        if scroll_list:
+                            jobs = advance_list(loaded_ids)
+                            loaded_page += 1
+                        else:
+                            if guard is not None: guard.reserve("search_page", daily_limit=search_limit)
+                            opened = self.browser.new_tab(search_url, background=True) if worker_target is None else self.browser.navigate(worker_target, search_url)
+                            if worker_target is None and opened:
+                                worker_target = str(opened)
+                            if not opened or worker_target is None:
+                                combo_complete = False
+                                page_failures += 1
+                                hooks.on_parse_failed("无法打开 BOSS 搜索页")
+                                if page_failures >= failure_limit: return page_failure_stop()
+                                continue
+                            if _wait_or_stop(hooks.stop_event, 3 * delay_multiplier, self.sleep):
+                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
+                            if not self.browser.wait_for_load(worker_target, timeout=10):
+                                combo_complete = False
+                                page_failures += 1
+                                hooks.on_parse_failed("BOSS 搜索页加载超时")
+                                if page_failures >= failure_limit: return page_failure_stop()
+                                continue
+                            signal = confirm_risk(worker_target)
+                            if signal and signal["kind"] == "user_stopped":
+                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
+                            if signal: return risk(signal["kind"], signal["evidence"])
+                            scroll_list = self.browser.evaluate(worker_target, JS_IS_SCROLL_LIST) is True
+                            jobs = read_list()
+                            if scroll_list and jobs:
+                                loaded_page = 1
+                                loaded_ids = list_ids(jobs)
+                                # A resumed scroll list must be reconstructed from
+                                # its first batch; completed batches aren't processed again.
+                                while loaded_page < page:
+                                    jobs = advance_list(loaded_ids)
+                                    loaded_page += 1
                     except PlatformSafetyStop as exc:
                         return limited(exc.reason)
-                    opened = self.browser.new_tab(search_url, background=True) if worker_target is None else self.browser.navigate(worker_target, search_url)
-                    if worker_target is None and opened:
-                        worker_target = str(opened)
-                    if not opened or worker_target is None:
-                        combo_complete = False
-                        page_failures += 1
-                        hooks.on_parse_failed("无法打开 BOSS 搜索页")
-                        if page_failures >= failure_limit: return page_failure_stop()
-                        continue
-                    if _wait_or_stop(hooks.stop_event, 3 * delay_multiplier, self.sleep):
-                        return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                    self.browser.wait_for_load(worker_target, timeout=10)
-                    signal = confirm_risk(worker_target)
-                    if signal and signal["kind"] == "user_stopped":
-                        return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                    if signal: return risk(signal["kind"], signal["evidence"])
-                    self.browser.scroll(worker_target, y=2000)
-                    if _wait_or_stop(hooks.stop_event, 1.5 * delay_multiplier, self.sleep):
-                        return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                    self.browser.scroll(worker_target, y=4000)
-                    result = self.browser.evaluate(worker_target, JS_EXTRACT_LIST)
-                    try:
-                        jobs = json.loads(result) if isinstance(result, str) else result
-                    except (json.JSONDecodeError, TypeError):
-                        jobs = None
+                    except ListStopped as exc:
+                        return exc.result
                     if not isinstance(jobs, list):
                         combo_complete = False
                         page_failures += 1
@@ -422,18 +510,35 @@ class BossCollector:
                         combo_complete = False
                         hooks.on_event(message="BOSS 搜索页未读取到岗位")
                         break
+                    fingerprint = frozenset(list_ids(jobs))
+                    if fingerprint and fingerprint in page_fingerprints:
+                        hooks.on_parse_failed("BOSS 翻页未生效：岗位 ID 与之前页面完全相同")
+                        return PlatformCollectionResult(
+                            self.platform, "completed_with_shortage", "repeated_search_page",
+                            f"BOSS {city} · {keyword} 第 {page} 页与之前页面重复，已停止；未将重复页面计入扫描",
+                        )
+                    if fingerprint:
+                        page_fingerprints.add(fingerprint)
                     seen_jobs += len(jobs)
                     for raw in jobs:
                         if hooks.stop_event is not None and hooks.stop_event.is_set():
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
+                        raw = _decode_fields(raw) if isinstance(raw, dict) else raw
                         candidate = self._list_candidate(raw, city, city_code, keyword)
                         if not candidate:
                             combo_complete = False
                             hooks.on_parse_failed("BOSS 列表岗位缺少有效链接")
                             continue
                         if not hooks.on_list_candidate(candidate): continue
-                        if self.config and quick_score(raw if isinstance(raw, dict) else {}, self.config)[0] <= 0:
-                            hooks.on_event(message="BOSS 列表预筛不通过", increment_filtered=True)
+                        if _PRIVATE_GLYPH.search(candidate.salary):
+                            hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
+                            return PlatformCollectionResult(
+                                self.platform, "completed_with_shortage", "salary_decode_failed",
+                                "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
+                            )
+                        score, filter_reason = quick_score(raw, self.config) if self.config else (100, "")
+                        if score <= 0:
+                            hooks.on_event(message=f"BOSS 列表预筛：{filter_reason}", increment_filtered=True)
                             continue
                         if throttle.wait(hooks.stop_event):
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
@@ -442,7 +547,15 @@ class BossCollector:
                             if guard is not None: guard.reserve("detail_page", daily_limit=detail_limit)
                         except PlatformSafetyStop as exc:
                             return limited(exc.reason)
-                        if not self.browser.navigate(worker_target, detail_url):
+                        if scroll_list:
+                            opened = self.browser.new_tab(detail_url, background=True) if detail_worker is None else self.browser.navigate(detail_worker, detail_url)
+                            if opened and detail_worker is None:
+                                detail_worker = str(opened)
+                            detail_target = detail_worker
+                        else:
+                            opened = self.browser.navigate(worker_target, detail_url)
+                            detail_target = worker_target
+                        if not opened or not detail_target:
                             combo_complete = False
                             page_failures += 1
                             hooks.on_parse_failed("无法打开 BOSS 详情页")
@@ -450,12 +563,12 @@ class BossCollector:
                             continue
                         if _wait_or_stop(hooks.stop_event, 2 * delay_multiplier, self.sleep):
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                        self.browser.wait_for_load(worker_target, timeout=10)
-                        signal = confirm_risk(worker_target)
+                        self.browser.wait_for_load(detail_target, timeout=10)
+                        signal = confirm_risk(detail_target)
                         if signal and signal["kind"] == "user_stopped":
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                         if signal: return risk(signal["kind"], signal["evidence"])
-                        detail_result = self.browser.evaluate(worker_target, JS_EXTRACT_DETAIL)
+                        detail_result = self.browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
                         try:
                             detail = json.loads(detail_result) if detail_result else None
                         except (json.JSONDecodeError, TypeError):
@@ -474,11 +587,17 @@ class BossCollector:
                             continue
                         if not hooks.on_candidate(merged):
                             return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
+                    if not hooks.can_checkpoint():
+                        combo_complete = False
+                    if combo_complete:
+                        hooks.on_page_complete(city, keyword, page)
                     if page < request.max_pages and _wait_or_stop(hooks.stop_event, 0.2 * delay_multiplier, self.sleep):
                         return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                 if not combo_complete:
                     incomplete_combos += 1
         finally:
+            if detail_worker:
+                self.browser.close_tab(detail_worker)
             if worker_target:
                 self.browser.close_tab(worker_target)
         if not seen_jobs:
@@ -497,6 +616,7 @@ class BossCollector:
     def _list_candidate(raw: Any, city: str, city_code: str, keyword: str) -> JobCandidate | None:
         if not isinstance(raw, dict):
             return None
+        raw = _decode_fields(raw)
         url = str(raw.get("url") or "").strip()
         if not url:
             return None
@@ -516,6 +636,7 @@ class BossCollector:
 
     @staticmethod
     def _merge_detail(candidate: JobCandidate, detail: dict[str, Any], detail_url: str) -> JobCandidate:
+        detail = _decode_fields(detail)
         return JobCandidate(
             platform="boss",
             source_job_id=candidate.source_job_id,

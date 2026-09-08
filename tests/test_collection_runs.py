@@ -8,11 +8,29 @@ from bosshunter.collection_run_store import (
     get_collection_run,
     mark_orphaned_collection_runs_stopped,
     update_collection_run,
+    claim_boss_resume,
 )
 from bosshunter.db import get_db, insert_job
 
 
 class CollectionRunAndMigrationTests(TestCase):
+    def test_old_runs_cannot_resume_and_one_task_cannot_be_claimed_twice(self):
+        options = {"platform_order": ["boss"], "platforms": {
+            "boss": {"cities": ["北京"], "keywords": ["AI"], "max_pages": 2},
+        }}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runs.db"
+            for run_id, enabled in (("old", False), ("new", True)):
+                create_collection_run(path, run_id=run_id, options=options, platform_states={}, enable_boss_resume=enabled)
+                update_collection_run(path, run_id, status="stopped")
+            self.assertFalse(get_collection_run(path, "old")["can_resume"])
+            with self.assertRaises(ValueError):
+                claim_boss_resume(path, "old", "task")
+            claim_boss_resume(path, "new", "task-1")
+            self.assertIsNone(get_collection_run(path, "new")["finished_at"])
+            with self.assertRaises(ValueError):
+                claim_boss_resume(path, "new", "task-2")
+
     def test_source_migration_is_idempotent_and_preserves_legacy_boss_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "jobs.db"

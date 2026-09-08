@@ -57,6 +57,7 @@ from bosshunter.collection.orchestrator import CollectionOrchestrator, normalize
 from bosshunter.collection.platforms.zhilian import load_zhilian_city_snapshot
 from bosshunter.collection.platforms.job51 import load_51job_city_snapshot
 from bosshunter.collection_run_store import (
+	boss_resume_options,
 	get_collection_run,
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
@@ -329,6 +330,8 @@ def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 	collect_config = dict(config)
 	collect_config["_workbench_stop_event"] = task.stop_requested
 	collect_config["_workbench_collect_progress"] = lambda state: _record_collect_progress(task, state)
+	collect_config["_workbench_log"] = lambda message: _log(task, message)
+	collect_config["_workbench_score_progress"] = lambda state: _record_score_progress(task, state)
 	if "_collection_options" not in config:
 		# Preserve the old private executor seam used by legacy callers. New Web
 		# collection tasks always inject normalized options before starting.
@@ -1260,9 +1263,12 @@ def api_workbench_preflight():
 	options = body.get("options") if isinstance(body.get("options"), dict) else None
 	try:
 		config = load_config(CONFIG_PATH)
+		options = _resolve_collection_resume(mode, options)
 		checks = collect_preflight_checks(mode, config, options)
 		messages = error_messages(checks)
 		return _json_response({"ok": not messages, "messages": messages, "checks": checks})
+	except ValueError as e:
+		return _json_response({"ok": False, "messages": [str(e)]}, 400)
 	except Exception as e:
 		return _json_response({"ok": False, "messages": [str(e)]}, 500)
 
@@ -1457,6 +1463,14 @@ def api_scoring_end(run_id):
 	return _json_response(ended)
 
 
+def _resolve_collection_resume(mode: str, options: dict | None) -> dict | None:
+	if options and options.get("resume_run_id"):
+		if mode != "collect" or not isinstance(options["resume_run_id"], str):
+			raise ValueError("请在岗位采集中继续原 BOSS 任务")
+		return boss_resume_options(DATA_DIR / "bosshunter.db", options["resume_run_id"])
+	return options
+
+
 @app.route("/api/workbench/task", method="POST")
 def api_workbench_task_start():
 	try:
@@ -1466,6 +1480,10 @@ def api_workbench_task_start():
 		mode = str(body.get("mode", ""))
 		base_config = load_config(CONFIG_PATH)
 		options = body.get("options") if isinstance(body.get("options"), dict) else None
+		try:
+			options = _resolve_collection_resume(mode, options)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 		collection_options = None
 		if mode == "collect":
 			try:
@@ -1491,7 +1509,7 @@ def api_workbench_task_start():
 		if messages:
 			return _json_response({"error": "请先处理启动前检查", "messages": messages}, 400)
 		extra = {"_collection_options": collection_options} if collection_options is not None else {}
-		if collection_options is not None:
+		if collection_options is not None and not collection_options.get("resume_run_id"):
 			# Persist only non-secret collection preferences so the next dialog can
 			# restore each platform's independent fields and queue order.
 			base_config["collection"] = {

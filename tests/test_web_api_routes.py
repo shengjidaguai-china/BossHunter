@@ -28,6 +28,7 @@ from bosshunter.web import server
 from threading import Event, Lock
 
 from bosshunter.scoring_run_store import create_scoring_run, get_scoring_run, update_scoring_run
+from bosshunter.collection_run_store import create_collection_run, update_collection_run
 from bosshunter.web.tasks import TaskAlreadyRunningError, WorkbenchTask, WorkbenchTaskRunner
 
 
@@ -2329,6 +2330,46 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(unresolved_item["source_platform"], "boss")
         self.assertTrue(resolved_item["resolved"])
         self.assertEqual(resolved_item["resume_path"], "/tmp/generated.md")
+
+    def test_collection_resume_preflight_and_start_use_saved_search_without_saving_preferences(self):
+        config = {"search": {"keywords": ["new defaults"], "cities": ["上海"]}}
+        saved_options = server.normalize_collection_options({}, {"platform_order": ["boss"], "platforms": {
+            "boss": {"keywords": ["original"], "cities": ["北京"], "max_pages": 2,
+                     "filters": {"experience": ["1-3年"]}},
+        }})
+        with tempfile.TemporaryDirectory() as tmp, patch.object(server, "DATA_DIR", Path(tmp)), \
+             patch.object(server, "load_config", return_value=config), \
+             patch.object(server, "_write_config") as write_config, \
+             patch.object(server, "collect_preflight_checks", return_value=[]) as preflight, \
+             patch.object(server, "_preflight_messages", return_value=[]), \
+             patch.object(server.task_runner, "start", return_value={"id": "resumed"}) as start:
+            db_path = Path(tmp) / "bosshunter.db"
+            create_collection_run(db_path, run_id="original", options=saved_options,
+                                  platform_states={"boss": {"status": "stopped"}}, enable_boss_resume=True)
+            update_collection_run(db_path, "original", status="stopped")
+            payload = {"mode": "collect", "options": {"resume_run_id": "original",
+                       "platforms": {"boss": {"keywords": ["tampered"]}}}}
+            status, _, body = self._request("/api/collection/runs")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertTrue(json.loads(body)[0]["can_resume"])
+            status, _, body = self._request("/api/workbench/preflight", "POST", payload)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(preflight.call_args.args[2]["platforms"], saved_options["platforms"])
+            status, _, body = self._request("/api/workbench/task", "POST", payload)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(start.call_args.args[0], "collect")
+            actual = start.call_args.args[1]["_collection_options"]
+            self.assertEqual(actual, {**saved_options, "resume_run_id": "original"})
+            write_config.assert_not_called()
+
+            for run_status in ("running", "completed"):
+                update_collection_run(db_path, "original", status=run_status)
+                start.reset_mock()
+                status, _, body = self._request("/api/workbench/task", "POST", payload)
+                self.assertTrue(status.startswith("400"), body)
+                start.assert_not_called()
+            status, _, body = self._request("/api/workbench/task", "POST", {**payload, "mode": "full"})
+            self.assertTrue(status.startswith("400"), body)
 
     def test_full_task_receives_global_boss_collection_options(self):
         config = {

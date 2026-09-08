@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from unittest import TestCase
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from bosshunter.collection.base import CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest
@@ -21,6 +22,9 @@ from bosshunter.collection.platforms.boss import (
     normalize_boss_search_filters,
 )
 from bosshunter.db import get_db, get_collected_combos, get_page_progress, mark_combo_collected, upsert_page_progress
+from bosshunter.collection_run_store import (
+    boss_combo_key, get_collection_run, mark_orphaned_collection_runs_stopped,
+)
 
 
 class BossCollectorUnitTests(TestCase):
@@ -329,6 +333,132 @@ class BossCollectorCollectionTests(TestCase):
 class BossFreshSearchTests(TestCase):
     """Each run refreshes search results, regardless of old checkpoints."""
 
+    def test_power_loss_resumes_original_run_and_replays_only_unfinished_page(self):
+        class PowerLoss(BaseException):
+            pass
+
+        searches = []
+        current = {}
+        crash = True
+        page_jobs = {("AI", 1): ["a"], ("AI", 2): ["b"],
+                     ("产品", 1): ["c", "d"], ("产品", 2): ["e"]}
+
+        def navigate(_target, url):
+            current["url"] = url
+            if "/web/geek/job?" in url:
+                query = parse_qs(urlparse(url).query)
+                current["search"] = (query["query"][0], int(query.get("page", [1])[0]))
+                searches.append(current["search"])
+            return True
+
+        def evaluate(_target, script):
+            if script == JS_DETECT_COLLECTION_RISK:
+                return '{"risk": null}'
+            if script == JS_EXTRACT_LIST:
+                return json.dumps([{**self._job(), "url": f"/job_detail/{job}.html"}
+                                   for job in page_jobs[current["search"]]])
+            if script == JS_EXTRACT_DETAIL:
+                if crash and current["url"].endswith("/d.html"):
+                    raise PowerLoss()
+                return json.dumps({"title": "AI 工程师", "company": "测试公司", "jd": "负责开发"})
+            return "{}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "jobs.db"
+            def registry():
+                browser = self._make_browser()
+                browser.navigate = navigate
+                browser.new_tab = lambda url, **_: navigate("tab", url) and "tab"
+                browser.evaluate = evaluate
+                return CollectorRegistry({"boss": lambda: BossCollector(
+                    browser=browser, sleep=lambda _: None,
+                    throttle_factory=lambda **_: self._make_throttle(),
+                )})
+            options = {"platform_order": ["boss"], "auto_score": False, "platforms": {"boss": {
+                "keywords": ["AI", "产品"], "cities": ["北京"], "max_pages": 2, "sort": "newest",
+            }}}
+            with self.assertRaises(PowerLoss):
+                CollectionOrchestrator({}, db_path=db_path, registry=registry(), run_id="interrupted").run(options)
+            interrupted = get_collection_run(db_path, "interrupted")
+            self.assertEqual(interrupted["boss_checkpoint"]["pages"], {boss_combo_key("北京", "AI"): 2})
+            self.assertEqual(interrupted["collected_job_ids"], ["a", "b", "c"])
+            self.assertFalse(interrupted["can_resume"])  # Still running until restart reconciliation.
+            self.assertEqual(mark_orphaned_collection_runs_stopped(db_path), 1)
+            self.assertTrue(get_collection_run(db_path, "interrupted")["can_resume"])
+
+            crash = False
+            searches.clear()
+            # Neither a changed default nor edited request can replace the original search.
+            resumed = CollectionOrchestrator(
+                {"search": {"keywords": ["changed"], "cities": ["上海"]}},
+                db_path=db_path, registry=registry(), task_id="new-worker",
+            ).run({"resume_run_id": "interrupted", "platforms": {"boss": {"keywords": ["ignored"]}}})
+            self.assertEqual(searches, [("产品", 1), ("产品", 2)])
+            self.assertEqual(resumed["run_id"], "interrupted")
+            self.assertEqual(resumed["collected_job_ids"], ["a", "b", "c", "d", "e"])
+            saved = get_collection_run(db_path, "interrupted")
+            self.assertEqual(saved["task_id"], "new-worker")
+            self.assertFalse(saved["can_resume"])
+            self.assertEqual(saved["options"]["platforms"]["boss"]["keywords"], ["AI", "产品"])
+            with self.assertRaises(ValueError):
+                CollectionOrchestrator({}, db_path=db_path, registry=registry()).run({"resume_run_id": "interrupted"})
+
+            # A new task ignores even this freshly completed run's checkpoints.
+            searches.clear()
+            page_jobs[("AI", 1)].append("latest")
+            fresh = CollectionOrchestrator({}, db_path=db_path, registry=registry()).run(options)
+            self.assertEqual(searches, list(page_jobs))
+            self.assertEqual(fresh["collected_job_ids"], ["latest"])
+            conn = get_db(db_path)
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 6)
+            conn.close()
+
+    def test_failed_save_or_failed_page_never_advances_past_the_gap(self):
+        for failure in ("save", "page"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                db_path = Path(tmp) / "jobs.db"
+                browser = self._make_browser(list_jobs=[self._job()])
+                current_page = {"value": 1}
+                def remember_page(url):
+                    if "/web/geek/job?" in url:
+                        current_page["value"] = int(parse_qs(urlparse(url).query).get("page", [1])[0])
+                original_evaluate = browser.evaluate
+                browser.evaluate = lambda target, script: (
+                    json.dumps([{**self._job(), "url": f"/job_detail/page{current_page['value']}.html"}])
+                    if script == JS_EXTRACT_LIST else original_evaluate(target, script)
+                )
+                browser.navigate = lambda target, url: remember_page(url) or True
+                if failure == "page":
+                    opens = iter([None, "tab"])
+                    browser.new_tab = lambda url, **_: remember_page(url) or next(opens)
+                registry = CollectorRegistry({"boss": lambda: BossCollector(
+                    browser=browser, sleep=lambda _: None,
+                    throttle_factory=lambda **_: self._make_throttle(),
+                )})
+                options = {"platform_order": ["boss"], "platforms": {"boss": {
+                    "keywords": ["AI"], "cities": ["北京"], "max_pages": 2,
+                }}}
+                if failure == "save":
+                    from bosshunter.collection.orchestrator import insert_job_if_new
+                    attempts = []
+                    def save_after_failure(*args):
+                        attempts.append(True)
+                        if len(attempts) == 1:
+                            raise RuntimeError("disk full")
+                        return insert_job_if_new(*args)
+                    with patch("bosshunter.collection.orchestrator.insert_job_if_new",
+                               side_effect=save_after_failure):
+                        result = CollectionOrchestrator({}, db_path=db_path, registry=registry).run(options)
+                else:
+                    result = CollectionOrchestrator({}, db_path=db_path, registry=registry).run(options)
+                run = get_collection_run(db_path, result["run_id"])
+                self.assertEqual(run["boss_checkpoint"]["pages"], {})
+                self.assertTrue(run["can_resume"])
+                # Once the failure is fixed, the same task can advance checkpoints again.
+                browser.new_tab = lambda url, **_: remember_page(url) or "tab"
+                resumed = CollectionOrchestrator({}, db_path=db_path, registry=registry).run({"resume_run_id": result["run_id"]})
+                self.assertFalse(get_collection_run(db_path, resumed["run_id"])["can_resume"])
+
     def test_repeated_runs_find_new_jobs_despite_old_word_and_page_checkpoints(self):
         jobs = [self._job()]
         browser = self._make_browser(list_jobs=jobs)
@@ -348,21 +478,21 @@ class BossFreshSearchTests(TestCase):
                 config={"platforms": {"boss": {"search": {"resume_ttl_hours": 720}}}},
             )})
             options = {"platform_order": ["boss"], "auto_score": False, "platforms": {"boss": {
-                "keywords": ["AI", "产品"], "cities": ["北京"], "max_pages": 2, "sort": "default",
+                "keywords": ["AI", "产品"], "cities": ["北京"], "max_pages": 1, "sort": "default",
             }}}
             first = CollectionOrchestrator({}, db_path=db_path, registry=registry).run(options)
             jobs.append({**self._job(), "url": "/job_detail/new002.html"})
             second = CollectionOrchestrator({}, db_path=db_path, registry=registry).run(options)
             self.assertEqual(first["collected_job_ids"], ["test001"])
             self.assertEqual(second["collected_job_ids"], ["new002"])
-            self.assertEqual(second["platforms"]["boss"]["seen"], 8)
-            self.assertEqual(second["platforms"]["boss"]["duplicate"], 7)
+            self.assertEqual(second["platforms"]["boss"]["seen"], 4)
+            self.assertEqual(second["platforms"]["boss"]["duplicate"], 3)
             self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 2)
             urls = [call.args[0] for call in browser.new_tab.call_args_list]
             urls += [call.args[1] for call in browser.navigate.call_args_list if "/web/geek/job?" in call.args[1]]
             searches = [parse_qs(urlparse(url).query) for url in urls]
             for keyword in ("AI", "产品"):
-                for page in ("1", "2"):
+                for page in ("1",):
                     self.assertEqual(sum(
                         query["query"] == [keyword] and query.get("page", ["1"]) == [page]
                         for query in searches

@@ -49,6 +49,13 @@ const TASK_STAGE_LABELS = [
 ]
 
 function currentTaskStage(task: WorkbenchTask) {
+  if (task.progress?.outcome === 'scoring' && ['running', 'stopping'].includes(task.status)) {
+    const completed = task.metrics?.ai_completed
+    const total = task.metrics?.ai_total
+    return typeof total === 'number'
+      ? `AI 评分进度 ${completed || 0}/${total}`
+      : '采集已结束，正在为本轮新增岗位进行 AI 评分'
+  }
   const logs = task.logs || []
   for (const log of logs.slice().reverse()) {
     if (log.includes('AI 评分进度')) return log
@@ -980,7 +987,7 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
     <div className="mt-3 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-black text-primary">多平台采集进度</div>
-        <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '执行中' : progress.outcome || '已结束'}</div>
+        <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '采集中' : progress.outcome === 'scoring' ? '正在自动评分' : progress.outcome || '已结束'}</div>
       </div>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
         {Object.entries(progress.platforms || {}).map(([platform, state]) => (

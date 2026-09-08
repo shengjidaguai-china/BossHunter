@@ -169,6 +169,7 @@ platforms:
                  side_effect=[
                      json.dumps({"risk": "blocked", "evidence": "blocked_page"}),
                      json.dumps({"risk": None}),
+                     False,
                      json.dumps([]),
                  ],
              ), \
