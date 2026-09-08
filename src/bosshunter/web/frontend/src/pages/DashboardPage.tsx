@@ -31,6 +31,7 @@ import {
   MessageCircle,
   Play,
   RefreshCw,
+  ShieldCheck,
   Send,
   Square,
   Trash2,
@@ -349,6 +350,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [statsScope, setStatsScope] = useState<StatsScope>('today')
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
+  const [preflightRunning, setPreflightRunning] = useState(false)
   const [activityData, setActivityData] = useState<ActivityData[]>([])
   const [topCompanies, setTopCompanies] = useState<TopCompany[]>([])
 
@@ -396,7 +398,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       }
     }
     void fetchVisualizationData()
-    const interval = window.setInterval(fetchVisualizationData, 60000) // refresh every minute
+    const interval = window.setInterval(fetchVisualizationData, 60000)
     return () => window.clearInterval(interval)
   }, [])
 
@@ -478,6 +480,20 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       setNotice('重新检查失败，请确认 BossHunter 后端仍在运行。')
     } finally {
       setModePending(null)
+    }
+  }
+
+  const runStandalonePreflight = async () => {
+    if (modePending || preflightRunning) return
+    try {
+      setPreflightRunning(true)
+      setNotice('正在检查全流程运行环境...')
+      const ok = await runPreflight('full')
+      setNotice(ok ? '全流程预检通过，可以开始任务。' : '仍有问题需要处理，请查看检查结果。')
+    } catch {
+      setNotice('预检失败，请确认 BossHunter 后端仍在运行。')
+    } finally {
+      setPreflightRunning(false)
     }
   }
 
@@ -647,6 +663,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </div>
               )}
             </div>
+            <Button variant="secondary" size="sm" onClick={runStandalonePreflight} disabled={refreshing || Boolean(modePending) || preflightRunning}>
+              <ShieldCheck className={cn('mr-2 h-4 w-4', preflightRunning && 'animate-spin')} />
+              {preflightRunning ? '预检中' : '全流程预检'}
+            </Button>
             <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">
               {activeTask ? `${activeTask.label}中` : '当前空闲'}
             </span>
@@ -700,7 +720,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </div>
         {notice && <div className="mt-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
         {preflightChecks.some(check => check.status !== 'pass') && (
-          <PreflightPanel checks={preflightChecks} checking={Boolean(modePending)} onRetry={retryPreflight} />
+          <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} />
         )}
         {error && <div className="mt-3 rounded-2xl bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
         {visibleTask && (
