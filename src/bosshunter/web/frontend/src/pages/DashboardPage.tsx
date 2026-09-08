@@ -6,6 +6,11 @@ import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
+import { TrendChart } from '@/components/dashboard/TrendChart'
+import { TopCompanies } from '@/components/dashboard/TopCompanies'
+import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
+import { RecentActivity } from '@/components/dashboard/RecentActivity'
+import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { parseHistoryDetail } from '@/lib/historyDetail'
 import {
@@ -344,6 +349,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [statsScope, setStatsScope] = useState<StatsScope>('today')
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
+  const [activityData, setActivityData] = useState<ActivityData[]>([])
+  const [topCompanies, setTopCompanies] = useState<TopCompany[]>([])
 
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
@@ -373,6 +380,25 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     window.addEventListener('bosshunter-config-saved', handleConfigSaved)
     return () => window.removeEventListener('bosshunter-config-saved', handleConfigSaved)
   }, [refresh])
+
+  // Fetch dashboard visualization data (7-day activity + top companies)
+  useEffect(() => {
+    const fetchVisualizationData = async () => {
+      try {
+        const [activityRes, topRes] = await Promise.all([
+          fetch('/api/activity?days=7', { cache: 'no-store' }),
+          fetch('/api/top-companies?limit=5', { cache: 'no-store' }),
+        ])
+        if (activityRes.ok) setActivityData(await activityRes.json())
+        if (topRes.ok) setTopCompanies(await topRes.json())
+      } catch {
+        // Silently fail - visualization is non-critical
+      }
+    }
+    void fetchVisualizationData()
+    const interval = window.setInterval(fetchVisualizationData, 60000) // refresh every minute
+    return () => window.clearInterval(interval)
+  }, [])
 
   const pendingGreetingJobs = workbench.pending_greetings
   const activeTask = workbench.task
@@ -800,13 +826,41 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </div>
       </section>
 
+      {/* 数据可视化概览：7日趋势 + 高分公司 + 最近活动 */}
+      {(activityData.length > 0 || topCompanies.length > 0 || history.length > 0) ? (
+        <section>
+          <div className="mb-3">
+            <h3 className="text-lg font-black">求职数据概览</h3>
+            <p className="mt-0.5 text-xs text-muted">7 日投递趋势与高分公司分布</p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <TrendChart data={activityData} />
+            </div>
+            <TopCompanies data={topCompanies} />
+          </div>
+          <div className="mt-3">
+            <RecentActivity data={history} />
+          </div>
+        </section>
+      ) : (
+        /* 空状态：首次使用时展示流程引导 */
+        <section>
+          <div className="mb-3">
+            <h3 className="text-lg font-black">开始你的求职之旅</h3>
+            <p className="mt-0.5 text-xs text-muted">配置好简历和 AI 接口后，点击上方按钮启动岗位采集</p>
+          </div>
+          <PipelineFlow />
+        </section>
+      )}
+
       <section className="rounded-3xl border border-card-border bg-white p-5">
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>
             <h3 className="text-lg font-black">优先处理：HR 要简历 / 定制简历下载</h3>
             <p className="mt-1 text-xs text-muted">首页只展示需要你手动下载并自行发给 HR 的定制简历事项。</p>
           </div>
-          <Button variant="secondary" size="sm">查看全部简历事项</Button>
+          <Button variant="secondary" size="sm" onClick={() => { window.location.href = "/monitor" }}>查看全部简历事项</Button>
         </div>
         {workbench.needs_resume.length ? (
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">

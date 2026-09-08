@@ -11,26 +11,26 @@ const steps = [
 
 export function PipelineFlow() {
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
-      <h3 className="text-sm font-medium text-zinc-400 mb-4">BossHunter 自动求职流程</h3>
+    <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-6">
+      <h3 className="text-sm font-black text-foreground mb-4">BossHunter 自动求职流程</h3>
       <div className="flex items-center justify-between">
         {steps.map((step, i) => (
           <div key={step.label} className="flex items-center">
             <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center mb-2 hover:border-primary/50 transition-colors">
+              <div className="w-12 h-12 rounded-xl bg-white border border-card-border flex items-center justify-center mb-2 hover:border-primary/50 hover:shadow-md transition-all shadow-sm">
                 <step.icon className="w-5 h-5 text-primary" />
               </div>
-              <span className="text-xs font-medium text-zinc-200">{step.label}</span>
-              <span className="text-[10px] text-zinc-500 mt-0.5">{step.desc}</span>
+              <span className="text-xs font-black text-foreground">{step.label}</span>
+              <span className="text-[10px] text-muted mt-0.5">{step.desc}</span>
             </div>
             {i < steps.length - 1 && (
-              <div className="w-8 h-px bg-gradient-to-r from-zinc-600 to-zinc-700 mx-2 mb-6" />
+              <div className="w-8 h-px bg-gradient-to-r from-[#F2E7DE] to-[#F2E7DE] mx-2 mb-6" />
             )}
           </div>
         ))}
       </div>
-      <p className="text-xs text-zinc-500 mt-4">
-        每个步骤都可独立运行，也可 <code className="text-zinc-300">bosshunter run</code> 一键全流程执行
+      <p className="text-xs text-muted mt-4">
+        每个步骤都可独立运行，也可 <code className="rounded bg-white px-1.5 py-0.5 text-primary font-mono text-[11px] border border-card-border">bosshunter run</code> 一键全流程执行
       </p>
     </div>
   )

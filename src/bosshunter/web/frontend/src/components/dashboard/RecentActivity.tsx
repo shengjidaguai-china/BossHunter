@@ -31,10 +31,10 @@ export function RecentActivity({ data }: RecentActivityProps) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>最近活动</CardTitle>
+          <CardTitle className="font-black text-foreground">最近活动</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-zinc-500">暂无活动记录</p>
+          <p className="text-sm text-muted">暂无活动记录</p>
         </CardContent>
       </Card>
     )
@@ -43,23 +43,23 @@ export function RecentActivity({ data }: RecentActivityProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>最近活动</CardTitle>
+        <CardTitle className="font-black text-foreground">最近活动</CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0">
         <div className="space-y-3">
-          {data.map((item, i) => (
+          {data.slice(0, 8).map((item, i) => (
             <div key={i} className="flex items-start gap-3">
-              <div className="w-1.5 h-1.5 rounded-full bg-zinc-600 mt-2 shrink-0" />
+              <div className="w-1.5 h-1.5 rounded-full bg-primary mt-2 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <Badge variant={item.action as any} className="text-[10px] px-1.5 py-0">
                     {ACTION_LABELS[item.action] || item.action}
                   </Badge>
-                  <span className="text-xs text-zinc-300 truncate">
+                  <span className="text-xs font-bold text-foreground truncate">
                     {item.company} · {item.title}
                   </span>
                 </div>
-                <p className="text-[11px] text-zinc-500 mt-0.5">{formatTime(item.created_at)}</p>
+                <p className="text-[11px] text-muted mt-0.5">{formatTime(item.created_at)}</p>
               </div>
             </div>
           ))}
