@@ -64,14 +64,28 @@ def run_pipeline(config: dict) -> None:
 
     # Step 6: Auto-start monitor loop
     console.print("\n[bold]Step 6/6: 启动持续监测[/bold]")
-    interval_min = config.get("monitor", {}).get("interval", 30)
+    from bosshunter.executor.monitor import (
+        get_effective_monitor_interval_minutes,
+        monitor_and_send_resumes,
+    )
+
+    interval_min = get_effective_monitor_interval_minutes(config)
     interval_sec = interval_min * 60
-    console.print(f"[dim]每 {interval_min} 分钟检查一次HR回复和跟进，按 Ctrl+C 停止[/dim]\n")
+    console.print(f"[dim]每 {interval_min:g} 分钟检查一次HR回复和跟进，按 Ctrl+C 停止[/dim]\n")
 
     import time
-    from bosshunter.executor.monitor import monitor_and_send_resumes
 
     try:
+        raw_cooldown = config.get("monitor", {}).get("initial_cooldown_minutes", 10)
+        try:
+            initial_cooldown_sec = max(float(raw_cooldown), 0) * 60
+        except (TypeError, ValueError):
+            initial_cooldown_sec = 10 * 60
+        if initial_cooldown_sec > 0:
+            console.print(
+                f"[dim]发送结束后先冷却 {initial_cooldown_sec / 60:g} 分钟；按 Ctrl+C 可取消[/dim]\n"
+            )
+            time.sleep(initial_cooldown_sec)
         while True:
             try:
                 summary = monitor_and_send_resumes(config)
@@ -84,9 +98,12 @@ def run_pipeline(config: dict) -> None:
                     parts.append(f"[bold yellow]待手动发简历{summary['needs_resume']}份[/bold yellow]")
                 if parts:
                     console.print(f"  本轮: {', '.join(parts)}")
+                if summary.get("stop_reason"):
+                    console.print("[red]监测检测到风险信号，已安全停止[/red]")
+                    break
             except Exception as e:
                 console.print(f"[red]  监测出错: {e}[/red]")
-            console.print(f"[dim]  下次检查: {interval_min} 分钟后...[/dim]\n")
+            console.print(f"[dim]  下次检查: {interval_min:g} 分钟后...[/dim]\n")
             time.sleep(interval_sec)
     except KeyboardInterrupt:
         console.print("\n[yellow]已停止监测[/yellow]")

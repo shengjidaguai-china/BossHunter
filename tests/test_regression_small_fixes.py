@@ -57,10 +57,10 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('version = "2.3.0"', pyproject)
-        self.assertEqual(bosshunter.__version__, "2.3.0")
-        self.assertEqual(json.loads(health())["version"], "2.3.0")
-        self.assertIn("v2.3 · 本地控制台", sidebar_source)
+        self.assertIn('version = "2.3.2"', pyproject)
+        self.assertEqual(bosshunter.__version__, "2.3.2")
+        self.assertEqual(json.loads(health())["version"], "2.3.2")
+        self.assertIn("v2.3.2 · 本地控制台", sidebar_source)
         self.assertNotIn("v1.1.0", sidebar_source)
 
 
@@ -76,6 +76,12 @@ class ConfigExampleTests(unittest.TestCase):
         config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
 
         self.assertIs(config["profile"]["allow_internship"], False)
+
+    def test_example_includes_salary_filter_controls(self):
+        config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
+
+        self.assertEqual(config["profile"]["salary_ceil_ratio"], 1.5)
+        self.assertIs(config["profile"]["filter_unparsed_salary"], True)
 
     def test_example_defaults_to_disabled_follow_up(self):
         config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
@@ -109,6 +115,8 @@ class ConfigValidationTests(unittest.TestCase):
             config = load_config(config_path)
 
         self.assertIs(config["profile"]["allow_internship"], False)
+        self.assertEqual(config["profile"]["salary_ceil_ratio"], 1.5)
+        self.assertIs(config["profile"]["filter_unparsed_salary"], True)
         self.assertNotIn("prefilter_threshold", config["scoring"])
 
     def test_load_config_defaults_to_disabled_follow_up(self):
@@ -342,53 +350,32 @@ class PrefilterHardGateTests(unittest.TestCase):
         self.assertEqual(score, 0)
         self.assertEqual(reason, "薪资低于硬性要求: 12K < 100K")
 
-    def test_salary_above_maximum_is_filtered(self):
+    def test_salary_ceiling_uses_range_lower_bound(self):
         from bosshunter.ai.prefilter import quick_score
 
-        config = {"profile": {"deal_breakers": [], "salary_min": 8, "salary_max": 10}}
-        job = {"title": "AI产品经理", "jd": "", "salary": "15-20K"}
+        config = {"profile": {"deal_breakers": [], "salary_min": 7, "salary_max": 10, "salary_ceil_ratio": 1.0}}
 
-        score, reason = quick_score(job, config)
+        score, reason = quick_score({"title": "AI产品经理", "jd": "", "salary": "6-11K"}, config)
 
+        self.assertEqual(score, 100, reason)
+        score, reason = quick_score({"title": "AI产品经理", "jd": "", "salary": "15-20K"}, config)
         self.assertEqual(score, 0)
-        self.assertEqual(reason, "薪资高于预期范围: 15K > 10K")
+        self.assertIn("薪资远超期望上限", reason)
 
-    def test_salary_range_intersecting_passes(self):
+    def test_unparsed_salary_is_filtered_by_default_and_can_be_kept(self):
         from bosshunter.ai.prefilter import quick_score
 
-        config = {"profile": {"deal_breakers": [], "salary_min": 8, "salary_max": 10}}
-        job = {"title": "AI产品经理", "jd": "", "salary": "6-12K"}
-
-        score, reason = quick_score(job, config)
-
-        self.assertEqual(score, 100)
-        self.assertEqual(reason, "预筛通过")
-
-    def test_salary_exact_range_passes(self):
-        from bosshunter.ai.prefilter import quick_score
-
-        config = {"profile": {"deal_breakers": [], "salary_min": 8, "salary_max": 10}}
-        job = {"title": "AI产品经理", "jd": "", "salary": "8-10K"}
-
-        score, reason = quick_score(job, config)
-
-        self.assertEqual(score, 100)
-        self.assertEqual(reason, "预筛通过")
-
-    def test_salary_max_only_filters_high(self):
-        from bosshunter.ai.prefilter import quick_score
-
-        config = {"profile": {"deal_breakers": [], "salary_min": 0, "salary_max": 10}}
-
-        high_job = {"title": "AI产品经理", "jd": "", "salary": "15-20K"}
-        score, reason = quick_score(high_job, config)
+        job = {"title": "AI产品经理", "jd": "", "salary": "面议"}
+        score, reason = quick_score(job, {"profile": {"deal_breakers": [], "salary_min": 7}})
         self.assertEqual(score, 0)
-        self.assertEqual(reason, "薪资高于预期范围: 15K > 10K")
+        self.assertIn("无法解析", reason)
 
-        low_job = {"title": "AI产品经理", "jd": "", "salary": "5-8K"}
-        score, reason = quick_score(low_job, config)
+        score, reason = quick_score(
+            job,
+            {"profile": {"deal_breakers": [], "salary_min": 7, "filter_unparsed_salary": False}},
+        )
         self.assertEqual(score, 100)
-        self.assertEqual(reason, "预筛通过")
+        self.assertIn("交由 AI 判断", reason)
 
     def test_passing_job_returns_hard_gate_pass(self):
         from bosshunter.ai.prefilter import quick_score
@@ -446,7 +433,8 @@ class DashboardPageTests(unittest.TestCase):
     def test_dashboard_renders_monitor_execution_history(self):
         self.assertIn("MonitorExecutionView", self.source)
         self.assertIn("history", self.source)
-        self.assertIn("<MonitorExecutionView history={history}", self.source)
+        self.assertIn("<MonitorExecutionView", self.source)
+        self.assertIn("history={history}", self.source)
 
     def test_dashboard_exposes_manual_refresh_button(self):
         self.assertIn("RefreshCw", self.source)
@@ -454,6 +442,19 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("refreshing ? '刷新中' : '刷新'", self.source)
         self.assertIn("最后刷新：", self.source)
         self.assertIn("refreshing && 'animate-spin'", self.source)
+
+    def test_dashboard_shows_detailed_greeting_queue_progress(self):
+        self.assertIn("if (log.includes('招呼语进度')) return log", self.source)
+        self.assertIn("whitespace-pre-line text-lg", self.source)
+
+    def test_dashboard_falls_back_to_concrete_task_status(self):
+        self.assertNotIn("return '等待后端返回阶段'", self.source)
+        self.assertIn("`${task.label}正在启动`", self.source)
+        self.assertIn("`${task.label}正在停止`", self.source)
+        self.assertIn("`${task.label}已完成`", self.source)
+        self.assertIn("`${task.label}已停止`", self.source)
+        self.assertIn("`${task.label}运行失败`", self.source)
+        self.assertIn("currentTaskStage(visibleTask)", self.source)
 
     def test_dashboard_can_stop_after_start_response_arrives(self):
         active_branch = self.source.index("if (activeTask?.mode === mode)")
@@ -476,6 +477,9 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("refreshingRef.current", hook_source)
         self.assertIn("setLastRefreshedAt", hook_source)
         self.assertIn("setWorkbench(prev => ({ ...prev, task, last_task: task }))", hook_source)
+        self.assertIn("scope === 'monitor' ? 2000 : 5000", hook_source)
+        self.assertIn("visibilitychange", hook_source)
+        self.assertIn("window.addEventListener('focus'", hook_source)
 
     def test_dashboard_filters_today_jobs_and_clears_hidden_selection(self):
         self.assertIn("filteredTodayJobs", self.source)
@@ -612,6 +616,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertNotIn("全流程卡在打招呼环节", self.source)
         self.assertIn("放弃已失效岗位", self.source)
         self.assertIn("放弃全部", self.source)
+        self.assertIn("sendReadyGreetings(workbench.send_errors.map(job => job.id))", self.source)
+        self.assertNotIn("confirmDeliver(workbench.send_errors.map(job => job.id))", self.source)
 
     def test_monitor_pending_replies_can_be_dismissed(self):
         # Arrange: DashboardPage source is loaded in setUp.
@@ -621,6 +627,63 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("/dismiss", self.source)
         self.assertIn("reply_dismissed", self.source)
         self.assertIn("放弃", self.source)
+
+    def test_monitor_cards_link_to_the_corresponding_chat_conversation(self):
+        self.assertIn("openMonitorConversation", self.source)
+        self.assertIn("/open-chat", self.source)
+        self.assertIn("打开聊天对话", self.source)
+        self.assertIn("已在 BOSS 中定位到对应聊天对话。", self.source)
+        self.assertNotIn("https://www.zhipin.com/web/geek/chat?jobId=${encodeURIComponent(item.job_id)}", self.source)
+
+    def test_monitor_cards_render_scrollable_hr_ai_conversation_history(self):
+        self.assertIn("monitorConversationMessages(item, history)", self.source)
+        self.assertIn("const resumeRequestParsed", self.source)
+        self.assertIn("candidate.action === 'needs_resume'", self.source)
+        self.assertIn("max-h-[260px]", self.source)
+        self.assertIn("overflow-y-auto", self.source)
+        self.assertNotIn("可上下滚动", self.source)
+        self.assertNotIn("{fromHr ? 'HR' : 'AI 已回答'}", self.source)
+        self.assertIn("{fromHr ? 'HR' : 'AI'}", self.source)
+        self.assertIn("grid-cols-[28px_minmax(0,1fr)]", self.source)
+        self.assertNotIn("{message.time || item.created_at}", self.source)
+        self.assertNotIn("监测记录时间", self.source)
+        self.assertIn("AI 建议回复（尚未回答）", self.source)
+        self.assertIn("已回复：定制简历已发送，本轮聊天记录保留在上方。", self.source)
+
+    def test_monitor_replied_tab_keeps_each_outbound_round(self):
+        self.assertIn("const repliedRecords = history.filter(isOutboundReplyRecord)", self.source)
+        self.assertIn("暂无近 7 天已回复对话。", self.source)
+        self.assertIn("parseHistoryDetail(item).schema.startsWith('replied.')", self.source)
+        self.assertIn("item.action === 'auto_replied'", self.source)
+        self.assertIn("item.action === 'resume_sent'", self.source)
+        self.assertIn("item.action === 'needs_resume' && !isResumeRequestResolved(item, history)", self.source)
+
+    def test_monitor_shows_detected_hr_messages_while_full_chat_is_loading(self):
+        self.assertIn("item.action === 'hr_reply_detected'", self.source)
+        self.assertIn("isDetectedReplyResolved", self.source)
+        self.assertIn("detectedReplies", self.source)
+        self.assertIn("detectedReplyPreview", self.source)
+        self.assertIn("已检测到 HR 新消息，等待继续读取完整对话并生成处理结果。", self.source)
+        self.assertIn("prepareDetectedReply", self.source)
+        self.assertIn("/prepare-reply", self.source)
+        self.assertIn("读取并生成建议", self.source)
+        self.assertNotIn("disabled={!canReply}", self.source)
+
+    def test_monitor_resolution_parser_shows_manual_reply_and_hr_question(self):
+        history_detail_source = (
+            ROOT
+            / "src"
+            / "bosshunter"
+            / "web"
+            / "frontend"
+            / "src"
+            / "lib"
+            / "historyDetail.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("item.detail_payload.manual_reply", history_detail_source)
+        self.assertIn("item.detail_payload.pending_hr_question", history_detail_source)
+        self.assertIn("item.detail_payload.pending_history_id", history_detail_source)
 
     def test_monitor_surfaces_resume_generation_failures_as_pending_items(self):
         # Arrange: DashboardPage source is loaded in setUp.
@@ -754,6 +817,12 @@ class ConfigPageTests(unittest.TestCase):
         self.assertIn("profile.jd_deal_breakers", self.source)
         self.assertIn("完整 JD 含这些词时会在 AI 评分前跳过", self.source)
 
+    def test_config_page_exposes_salary_filter_controls(self):
+        self.assertIn("薪资上限放宽倍数", self.source)
+        self.assertIn("profile.salary_ceil_ratio", self.source)
+        self.assertIn("过滤面议/无法解析薪资", self.source)
+        self.assertIn("profile.filter_unparsed_salary", self.source)
+
     def test_config_page_api_failure_displays_error_instead_of_infinite_loading(self):
         # Act / Assert
         self.assertIn("error", self.hook_source)
@@ -765,6 +834,54 @@ class ConfigPageTests(unittest.TestCase):
 
     def test_follow_up_switch_defaults_to_off_when_config_field_is_missing(self):
         self.assertIn("config.follow_up?.enabled ?? false", self.source)
+
+    def test_config_page_merges_boss_safety_and_throttle_settings(self):
+        self.assertEqual(self.source.count('title="反监测设置"'), 1)
+        self.assertNotIn('title="BOSS 直聘采集安全"', self.source)
+        self.assertNotIn('title="反检测设置"', self.source)
+        self.assertIn('label="BOSS 操作间隔倍率"', self.source)
+        self.assertNotIn('label="BOSS 采集间隔倍数"', self.source)
+
+    def test_random_delivery_cooldown_is_below_ai_settings(self):
+        ai_index = self.source.index('title="AI 设置"')
+        anti_monitor_index = self.source.index('title="反监测设置"')
+        monitor_index = self.source.index('title="监控设置"')
+
+        self.assertLess(ai_index, anti_monitor_index)
+        self.assertLess(anti_monitor_index, monitor_index)
+        self.assertNotIn("BOSS 页面访问相关设置同时用于采集和监测", self.source)
+        self.assertIn("collection.delivery_cooldown_min_minutes", self.source)
+        self.assertIn("collection.delivery_cooldown_max_minutes", self.source)
+        self.assertNotIn("collection.delivery_cooldown_minutes", self.source)
+
+    def test_minimum_and_maximum_fields_share_compact_range_controls(self):
+        for label in (
+            "期望薪资范围（K）",
+            "BOSS 风险暂停范围（分钟）",
+            "BOSS 采集后投递冷却范围（分钟）",
+            "发送间隔范围（秒）",
+            "模拟浏览时长范围（秒）",
+        ):
+            self.assertIn(f'label="{label}"', self.source)
+
+        for retired_label in (
+            "BOSS 风险暂停最少分钟",
+            "BOSS 风险暂停最多分钟",
+            "BOSS 采集后投递冷却最少（分钟）",
+            "BOSS 采集后投递冷却最多（分钟）",
+            "最短间隔 (秒)",
+            "最长间隔 (秒)",
+            "浏览最短时长 (秒)",
+            "浏览最长时长 (秒)",
+        ):
+            self.assertNotIn(f'label="{retired_label}"', self.source)
+
+    def test_boss_page_limit_estimate_is_directly_below_max_pages(self):
+        max_pages_field = self.source.index('<Field label="最大页数">')
+        estimate = self.source.index('理论最多 {bossTheoreticalPages} 页', max_pages_field)
+        field_end = self.source.index('</Field>', max_pages_field)
+
+        self.assertLess(estimate, field_end)
 
 
 class ConfigSchemaTests(unittest.TestCase):
@@ -791,6 +908,15 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(allow_field["type"], "switch")
         self.assertIs(allow_field["default"], False)
 
+    def test_schema_includes_salary_filter_controls(self):
+        profile = next(section for section in self.schema["sections"] if section["key"] == "profile")
+        fields = {field["key"]: field for field in profile["fields"]}
+
+        self.assertEqual(fields["salary_ceil_ratio"]["label"], "薪资上限放宽倍数")
+        self.assertEqual(fields["salary_ceil_ratio"]["default"], 1.5)
+        self.assertEqual(fields["filter_unparsed_salary"]["type"], "switch")
+        self.assertIs(fields["filter_unparsed_salary"]["default"], True)
+
     def test_schema_defaults_to_disabled_follow_up(self):
         follow_up = next(section for section in self.schema["sections"] if section["key"] == "follow_up")
         enabled = next(field for field in follow_up["fields"] if field["key"] == "enabled")
@@ -807,6 +933,11 @@ class ScorerPrefilterTests(unittest.TestCase):
     def test_scorer_no_longer_depends_on_prefilter_threshold(self):
         self.assertNotIn("prefilter_threshold", self.source)
         self.assertIn("if qs == 0:", self.source)
+
+    def test_scorer_prompt_includes_salary_ceiling_context(self):
+        self.assertIn("期望薪资区间", self.source)
+        self.assertIn("薪资上限放宽线", self.source)
+        self.assertIn("salary_ceil_ratio", self.source)
 
 
 if __name__ == "__main__":

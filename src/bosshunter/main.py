@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 
 from bosshunter import __version__
-from bosshunter.config import load_config
+from bosshunter.config import load_config, migrate_legacy_credentials
 
 console = Console()
 GITHUB_URL = "https://github.com/powerycy/BossHunter"
@@ -80,12 +80,14 @@ def _prompt_setup(port: int = 8686) -> None:
 def cli(ctx: click.Context, config_path: str | None) -> None:
     """BossHunter - 某直聘智能求职Agent"""
     ctx.ensure_object(dict)
-    path = Path(config_path) if config_path else None
+    path = Path(config_path).resolve() if config_path else None
     base_dir = _runtime_base_dir(path)
     if path is None and (base_dir / "config.yaml").exists():
         path = base_dir / "config.yaml"
     ctx.obj["base_dir"] = base_dir
     os.chdir(base_dir)
+    if path is not None:
+        migrate_legacy_credentials(path)
     ctx.obj["config"] = load_config(path)
     from bosshunter.browser import configure
     configure(ctx.obj["config"])
@@ -255,10 +257,13 @@ def resume(ctx: click.Context, job_id: str | None) -> None:
 @click.pass_context
 def monitor(ctx: click.Context, once: bool, interval: int | None) -> None:
     """监控HR回复，自动回复或发送简历"""
-    from bosshunter.executor.monitor import monitor_and_send_resumes
+    from bosshunter.executor.monitor import (
+        get_effective_monitor_interval_minutes,
+        monitor_and_send_resumes,
+    )
 
     config = ctx.obj["config"]
-    interval_min = interval or config.get("monitor", {}).get("interval", 30)
+    interval_min = get_effective_monitor_interval_minutes(config, interval)
     interval_sec = interval_min * 60
 
     if once:
@@ -275,17 +280,22 @@ def monitor(ctx: click.Context, once: bool, interval: int | None) -> None:
         if summary.get("rejected"):
             parts.append(f"拒绝{summary['rejected']}条")
         console.print(f"\n[bold]本次: {', '.join(parts)}[/bold]")
+        if summary.get("stop_reason"):
+            console.print("[red]检测到平台风险信号，本次监测已安全停止[/red]")
     else:
-        console.print(f"[bold cyan]═══ 持续监听模式 (间隔 {interval_min} 分钟) ═══[/bold cyan]\n")
+        console.print(f"[bold cyan]═══ 持续监听模式 (间隔 {interval_min:g} 分钟) ═══[/bold cyan]\n")
         console.print("[dim]按 Ctrl+C 停止[/dim]\n")
         try:
             while True:
                 try:
                     summary = monitor_and_send_resumes(config)
+                    if summary.get("stop_reason"):
+                        console.print("[red]检测到平台风险信号，持续监测已安全停止[/red]")
+                        break
                 except Exception as e:
                     console.print(f"[red]本轮监听出错: {e}[/red]")
                     console.print("[dim]将在下一轮重试...[/dim]")
-                console.print(f"\n[dim]等待 {interval_min} 分钟后再次检查...[/dim]\n")
+                console.print(f"\n[dim]等待 {interval_min:g} 分钟后再次检查...[/dim]\n")
                 import time
                 time.sleep(interval_sec)
         except KeyboardInterrupt:

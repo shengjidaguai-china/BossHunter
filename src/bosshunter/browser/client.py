@@ -27,7 +27,7 @@ class RuntimeClient:
         params: dict[str, str] = {"url": url}
         if background:
             params["background"] = "1"
-        data = self._get_json("/new", params=params, timeout=15)
+        data = self._get_json("/new", params=params, timeout=30)
         return data.get("targetId") if isinstance(data, dict) else None
 
     def close_tab(self, target_id: str) -> bool:
@@ -96,8 +96,11 @@ class RuntimeClient:
             params["y"] = y
         return self._get_ok("/scroll", params=params, timeout=5)
 
-    def screenshot(self, target_id: str, file_path: str | Path) -> bool:
-        return self._get_ok("/screenshot", params={"target": target_id, "file": str(file_path)}, timeout=15)
+    def screenshot(self, target_id: str, file_path: str | Path, *, selector: str = "") -> bool:
+        params = {"target": target_id, "file": str(file_path)}
+        if selector:
+            params["selector"] = selector
+        return self._get_ok("/screenshot", params=params, timeout=15)
 
     def print_pdf(self, target_id: str, file_path: str | Path) -> bool:
         return self._get_ok("/pdf", params={"target": target_id, "file": str(file_path)}, timeout=30)

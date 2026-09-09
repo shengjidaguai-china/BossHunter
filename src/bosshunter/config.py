@@ -1,5 +1,7 @@
 """Configuration loader for BossHunter."""
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -60,14 +62,21 @@ AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 
+AI_CREDENTIAL_FIELDS = ("api_key", "auth_token")
+
 
 DEFAULTS: dict[str, Any] = {
     "profile": {
         "resume_path": "./resume.md",
         "resume_output_dir": "./data/resumes",
         "target_cities": ["北京"],
+        "education": "",
+        "recruitment_type": "",
+        "greeting_preference": "",
         "salary_min": 0,
         "salary_max": 0,
+        "salary_ceil_ratio": 1.5,
+        "filter_unparsed_salary": True,
         "allow_internship": False,
         "deal_breakers": [],
         "jd_deal_breakers": [],
@@ -78,6 +87,53 @@ DEFAULTS: dict[str, Any] = {
         "cities": [],  # Empty = fallback to profile.target_cities
         "city_codes": {},
         "max_pages": 3,
+        "sort": "default",
+        "filters": {},
+    },
+    "collection": {
+        "default_order": ["boss"],
+        "auto_score_default": False,
+        "daily_search_page_limit": 60,
+        "daily_detail_page_limit": 150,
+        "max_consecutive_page_failures": 3,
+        "risk_pause_min_minutes": 5,
+        "risk_pause_max_minutes": 10,
+        "collection_delay_multiplier": 1.5,
+        "delivery_cooldown_min_minutes": 5,
+        "delivery_cooldown_max_minutes": 15,
+    },
+    "platforms": {
+        "boss": {
+            "enabled": True,
+            "search": {
+                "keywords": [],
+                "cities": [],
+                "city_codes": {},
+                "max_pages": 3,
+                "sort": "default",
+                "filters": {},
+            },
+        },
+        "zhilian": {
+            "enabled": False,
+            "search": {
+                "keywords": [],
+                "cities": [],
+                "city_codes": {},
+                "max_pages": 3,
+                "sort": "default",
+            },
+        },
+        "51job": {
+            "enabled": False,
+            "search": {
+                "keywords": [],
+                "cities": ["上海"],
+                "city_codes": {"上海": "020000"},
+                "max_pages": 1,
+                "sort": "default",
+            },
+        },
     },
     "scoring": {
         "threshold": 71,
@@ -112,7 +168,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "monitor": {
         "interval": 30,  # 分钟
+        "initial_cooldown_minutes": 10,
         "chat_url": "https://www.zhipin.com/web/geek/chat",
+        "max_conversations_per_cycle": 5,
+        "max_consecutive_page_failures": 3,
         "max_resume_sends_per_cycle": 5,
         "auto_reply_hr_questions": False,
     },
@@ -123,6 +182,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "dedup": {
         "history_file": "./data/history.jsonl",
+    },
+    "safety": {
+        "daily_platform_page_limit": 500,
+        "risk_lock_minutes": 10,
     },
     "browser": {
         "runtime": "builtin",
@@ -136,26 +199,156 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+def credentials_path_for(config_path: Path | None = None) -> Path:
+    """Return the local credentials file paired with a config file."""
+    config_path = Path(config_path or "config.yaml")
+    stem = config_path.stem.lstrip(".") or "config"
+    return config_path.with_name(f".{stem}.credentials.yaml")
+
+
 def load_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load configuration from YAML file, falling back to defaults."""
+    """Load public settings plus local credentials, falling back to defaults."""
     cfg = _deep_copy_dict(DEFAULTS)
-    if config_path is None:
-        config_path = Path("config.yaml")
-    if config_path.exists():
-        with open(config_path, encoding="utf-8") as f:
-            user_cfg = yaml.safe_load(f) or {}
-        if isinstance(user_cfg, dict):
-            _deep_merge(cfg, user_cfg)
+    config_path = Path(config_path or "config.yaml")
+
+    # Load the private file first so a not-yet-migrated config.yaml remains the
+    # source of truth until startup moves its legacy credential fields.
+    credentials = _load_yaml_mapping(credentials_path_for(config_path))
+    if credentials:
+        _deep_merge(cfg, credentials)
+
+    user_cfg = _load_yaml_mapping(config_path)
+    if user_cfg:
+        _deep_merge(cfg, user_cfg)
     _normalize_config_sections(cfg)
     _validate_ai_provider(cfg)
     return cfg
 
 
+def save_config(config: dict[str, Any], config_path: Path | None = None) -> None:
+    """Persist settings without writing AI credentials to config.yaml."""
+    config_path = Path(config_path or "config.yaml")
+    public_config = _deep_copy_dict(config)
+    ai_cfg = public_config.get("ai")
+    credentials: dict[str, Any] = {}
+    if isinstance(ai_cfg, dict):
+        for field in AI_CREDENTIAL_FIELDS:
+            value = ai_cfg.pop(field, None)
+            if value is not None and str(value).strip():
+                credentials[field] = value
+
+    private_path = credentials_path_for(config_path)
+    if credentials:
+        _write_yaml_atomic(private_path, {"ai": credentials})
+
+    _write_yaml_atomic(config_path, public_config)
+
+    if not credentials:
+        try:
+            private_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
+    """Move credentials out of an existing config.yaml on the next startup."""
+    config_path = Path(config_path or "config.yaml")
+    public_config = _load_yaml_mapping(config_path)
+    ai_cfg = public_config.get("ai")
+    if not isinstance(ai_cfg, dict):
+        return False
+
+    legacy_values = {field: ai_cfg.pop(field) for field in AI_CREDENTIAL_FIELDS if field in ai_cfg}
+    if not legacy_values:
+        return False
+
+    private_path = credentials_path_for(config_path)
+    private_config = _load_yaml_mapping(private_path)
+    private_ai = private_config.setdefault("ai", {})
+    if not isinstance(private_ai, dict):
+        private_ai = {}
+        private_config["ai"] = private_ai
+    for field, value in legacy_values.items():
+        if value is not None and str(value).strip():
+            private_ai[field] = value
+        else:
+            private_ai.pop(field, None)
+
+    if private_ai:
+        _write_yaml_atomic(private_path, private_config)
+    _write_yaml_atomic(config_path, public_config)
+    if not private_ai:
+        try:
+            private_path.unlink()
+        except FileNotFoundError:
+            pass
+    return True
+
+
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        content = yaml.safe_load(f) or {}
+    return content if isinstance(content, dict) else {}
+
+
+def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
+    """Atomically write a local YAML file with owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            yaml.safe_dump(data, temporary, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
-    """Replace malformed top-level sections with their safe defaults."""
+    """Replace malformed sections and discard retired collection-count settings."""
     for section, defaults in DEFAULTS.items():
         if isinstance(defaults, dict) and not isinstance(config.get(section), dict):
             config[section] = _deep_copy_dict(defaults)
+
+    return remove_retired_collection_settings(config)
+
+
+def remove_retired_collection_settings(config: dict[str, Any]) -> dict[str, Any]:
+    """Remove collection-count settings that are no longer supported."""
+
+    # These settings existed briefly, but a result-count limit is not a page-access
+    # safety control. Ignore stale values so old config files cannot re-enable it or
+    # make the removed fields reappear in the Web UI/API.
+    collection = config.get("collection", {})
+    collection.pop("daily_new_jobs_limit", None)
+    collection.pop("default_target_count", None)
+    if "delivery_cooldown_min_minutes" in collection or "delivery_cooldown_max_minutes" in collection:
+        collection.pop("delivery_cooldown_minutes", None)
+    search = config.get("search", {})
+    search.pop("target_count", None)
+    platforms = config.get("platforms", {})
+    for platform_config in platforms.values():
+        if isinstance(platform_config, dict):
+            platform_search = platform_config.get("search", {})
+            if isinstance(platform_search, dict):
+                platform_search.pop("target_count", None)
     return config
 
 

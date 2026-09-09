@@ -50,6 +50,15 @@ def find_boss_tab() -> dict | None:
     return None
 
 
+def find_zhilian_tab() -> dict | None:
+    """Find a 智联招聘 tab in Chrome without opening or logging in."""
+    for target in get_page_targets():
+        url = str(target.get("url", ""))
+        if "zhaopin.com" in url:
+            return target
+    return None
+
+
 def new_tab(url: str, background: bool = False) -> str | None:
     """Open a tab and return its target ID."""
     if not _ready():
@@ -120,11 +129,11 @@ def scroll(target_id: str, y: int = 0, direction: str = "") -> bool:
     return _client().scroll(target_id, y=y, direction=direction)
 
 
-def screenshot(target_id: str, file_path: str | Path) -> bool:
+def screenshot(target_id: str, file_path: str | Path, *, selector: str = "") -> bool:
     """Capture a screenshot to a file."""
     if not _ready():
         return False
-    return _client().screenshot(target_id, file_path)
+    return _client().screenshot(target_id, file_path, selector=selector)
 
 
 def print_pdf(target_id: str, file_path: str | Path) -> bool:

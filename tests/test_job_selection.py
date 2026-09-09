@@ -21,7 +21,7 @@ from bosshunter.executor.sender import _chat_target_matches_job
 from bosshunter.executor.sender import _confirm_preset_greeting
 from bosshunter.executor.sender import _handle_greet_popup
 from bosshunter.executor.sender import _message_delivery_state
-from bosshunter.executor.sender import _submitted_message_looks_accepted
+from bosshunter.executor.sender import _verify_greeting_in_chat_list
 from bosshunter.executor.sender import send_greetings
 from bosshunter.executor.sender import _send_greeting_once
 from bosshunter.executor.sender import _submit_chat_message_background
@@ -131,18 +131,22 @@ class JobSelectionTests(unittest.TestCase):
         self.assertIn("text.includes(expectedText)", script)
         self.assertIn("发送中|已读|未读|送达|发送成功|重试|重新发送", script)
 
-    def test_send_acceptance_fallback_requires_cleared_input_without_failure(self):
-        greeting = "您好，我的经历和岗位需求比较匹配。"
-        with patch(
-            "bosshunter.executor.sender.evaluate",
-            return_value='{"success": true, "accepted": true, "inputCleared": true, "hasFailedOwnMessage": false}',
-        ) as evaluate_mock:
-            accepted = _submitted_message_looks_accepted("target-1", greeting)
+    def test_chat_list_verification_requires_company_and_complete_greeting(self):
+        result = '{"success": true, "matched": true}'
+        with patch("bosshunter.executor.sender.new_tab", return_value="chat-target"), \
+             patch("bosshunter.executor.sender.wait_for_load"), \
+             patch("bosshunter.executor.sender.evaluate", return_value=result) as evaluate, \
+             patch("bosshunter.executor.sender.close_tab") as close_tab:
+            verified = _verify_greeting_in_chat_list(
+                {"company": "Example"},
+                "完整招呼语内容",
+                None,
+            )
 
-        self.assertTrue(accepted)
-        script = evaluate_mock.call_args.args[1]
-        self.assertIn("inputCleared && !hasFailedOwnMessage", script)
-        self.assertIn("status-error", script)
+        self.assertTrue(verified)
+        expression = evaluate.call_args.args[1]
+        self.assertIn("companyMatches && actualMessage.includes(expectedGreeting)", expression)
+        close_tab.assert_called_once_with("chat-target")
 
     def test_startchat_popup_reuses_chat_redirect_without_foreground_input(self):
         click_result = {"redirectUrl": "/web/geek/chat?jobId=first-contact"}
@@ -261,7 +265,7 @@ class JobSelectionTests(unittest.TestCase):
         self.assertEqual(evaluate_mock.call_count, len(evaluate_results))
         close_tab.assert_called_once_with("target-1")
 
-    def test_send_greeting_accepts_cleared_input_when_echo_is_missing(self):
+    def test_send_greeting_accepts_chat_list_receipt_when_echo_is_missing(self):
         job = {
             "id": "accepted-without-echo",
             "company": "Example",
@@ -276,7 +280,7 @@ class JobSelectionTests(unittest.TestCase):
              patch("bosshunter.executor.sender._wait_for_chat_page", return_value={"success": True, "target_id": "target-1"}), \
              patch("bosshunter.executor.sender._message_delivery_state", return_value="missing"), \
              patch("bosshunter.executor.sender._submit_chat_message_background", return_value={"success": True}), \
-             patch("bosshunter.executor.sender._submitted_message_looks_accepted", return_value=True), \
+             patch("bosshunter.executor.sender._verify_greeting_in_chat_list", return_value=True), \
              patch("bosshunter.executor.sender.close_tab") as close_tab, \
              patch("bosshunter.executor.sender.time.sleep"):
             result, target_id = _send_greeting_once(
@@ -287,7 +291,8 @@ class JobSelectionTests(unittest.TestCase):
 
         self.assertIsNone(target_id)
         self.assertTrue(result["success"])
-        self.assertTrue(result["accepted_without_echo"])
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["verified_from_chat_list"])
         close_tab.assert_called_once_with("target-1")
 
     def test_send_greeting_uses_original_flow_when_platform_preset_is_enabled(self):
@@ -641,7 +646,48 @@ class JobSelectionTests(unittest.TestCase):
         self.assertEqual(report["failed_count"], 1)
         self.assertEqual(report["deferred_count"], 1)
         self.assertEqual(report["quota_deferred_count"], 1)
+        self.assertEqual(report["already_sent"], 0)
+        self.assertEqual(report["daily_limit"], 2)
+        self.assertEqual(report["remaining_quota"], 2)
         self.assertEqual(report["stop_reason"], "daily_limit")
+
+    def test_send_greetings_reports_current_and_next_job_to_workbench(self):
+        jobs = [_job("first", "AI Agent"), _job("second", "Backend")]
+        jobs[0]["company"] = "First Company"
+        jobs[1]["company"] = "Second Company"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "bosshunter.db"
+            db = get_db(db_path)
+            try:
+                for score, job in zip((90, 80), jobs):
+                    insert_job(db, job)
+                    update_job_score(db, job["id"], score, "match")
+                    update_job_status(db, job["id"], "ready")
+                    update_job_greeting(db, job["id"], "您好，我对这个岗位很感兴趣。")
+            finally:
+                db.close()
+
+            logs = []
+            config = {
+                "_workbench_log": logs.append,
+                "throttle": {"daily_limit": 10, "interval_min": 0, "interval_max": 0},
+            }
+            with patch("bosshunter.db.DB_PATH", db_path), \
+                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
+                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
+                 patch("bosshunter.executor.sender._send_greeting_once", return_value=({"success": True}, None)):
+                sent = send_greetings(config, force=True)
+
+        self.assertEqual(sent, 2)
+        self.assertIn(
+            "招呼语进度 1/2\n正在发送：First Company｜AI Agent\n下一条：Second Company｜Backend",
+            logs,
+        )
+        self.assertIn(
+            "招呼语进度 2/2\n等待发送：Second Company｜Backend\n下一条：无",
+            logs,
+        )
 
     def test_pending_confirmation_excludes_jobs_with_greetings(self):
         with tempfile.TemporaryDirectory() as tmp:

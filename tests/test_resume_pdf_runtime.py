@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,8 +13,9 @@ class ResumeArtifactTests(unittest.TestCase):
         self.assertIn("不输出任何前言、说明、备注、免责声明", RESUME_TAILOR_PROMPT)
         self.assertIn("不允许单独新增“岗位匹配亮点”", RESUME_TAILOR_PROMPT)
         self.assertIn("{resume_max_pages} 页以内", RESUME_TAILOR_PROMPT)
-        self.assertIn("只保留与目标岗位相关的内容", RESUME_TAILOR_PROMPT)
+        self.assertIn("不得为了控页删除母版中的项目或教育背景", RESUME_TAILOR_PROMPT)
         self.assertIn("项目经历必须按岗位相关度排序", RESUME_TAILOR_PROMPT)
+        self.assertIn("不得把团队成果改写为候选人的个人成果", RESUME_TAILOR_PROMPT)
         self.assertIn("尽可能覆盖岗位JD中的职责和要求", RESUME_TAILOR_PROMPT)
         self.assertIn("无法用候选人真实经历支撑的要求不要硬编", RESUME_TAILOR_PROMPT)
         self.assertIn("不要输出JD逐条对照", RESUME_TAILOR_PROMPT)
@@ -500,7 +502,7 @@ class ResumeArtifactTests(unittest.TestCase):
         retry_prompt = call_claude.call_args_list[1].args[0]
         self.assertIn("上一次生成结果质量检查未通过", retry_prompt)
         self.assertIn("简历内容过长", retry_prompt)
-        self.assertIn("必须压缩到", retry_prompt)
+        self.assertIn("作为优化目标；若与完整保留项目冲突，以保留项目为先", retry_prompt)
 
     @patch("bosshunter.ai.resume._render_pdf")
     @patch("bosshunter.ai.resume._call_claude")
@@ -575,10 +577,11 @@ class ResumeArtifactTests(unittest.TestCase):
 
 
 class ResumePdfRuntimeTests(unittest.TestCase):
+    @patch("bosshunter.ai.resume.wait_for_load", return_value=True)
     @patch("bosshunter.ai.resume.close_tab")
     @patch("bosshunter.ai.resume.print_pdf")
     @patch("bosshunter.ai.resume.new_tab")
-    def test_render_pdf_via_cdp_uses_browser_facade(self, new_tab, print_pdf, close_tab):
+    def test_render_pdf_via_cdp_uses_browser_facade(self, new_tab, print_pdf, close_tab, wait_for_load):
         from bosshunter.ai.resume import _render_pdf_via_cdp
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -592,13 +595,41 @@ class ResumePdfRuntimeTests(unittest.TestCase):
         new_tab.assert_called_once()
         self.assertTrue(new_tab.call_args.args[0].startswith("file:///"))
         self.assertIs(new_tab.call_args.kwargs["background"], True)
-        print_pdf.assert_called_once_with("target-1", output)
+        wait_for_load.assert_called_once_with("target-1", timeout=10)
+        print_pdf.assert_called_once_with("target-1", output.resolve())
         close_tab.assert_called_once_with("target-1")
 
+    @patch("bosshunter.ai.resume.wait_for_load", return_value=True)
+    @patch("bosshunter.ai.resume.close_tab")
+    @patch("bosshunter.ai.resume.print_pdf")
+    @patch("bosshunter.ai.resume.new_tab", return_value="target-1")
+    def test_render_pdf_via_cdp_resolves_relative_output_for_runtime(
+        self, new_tab, print_pdf, close_tab, wait_for_load
+    ):
+        from bosshunter.ai.resume import _render_pdf_via_cdp
+
+        def write_pdf(_target, destination):
+            self.assertTrue(destination.is_absolute())
+            destination.write_bytes(b"%PDF-1.4\n")
+            return True
+
+        print_pdf.side_effect = write_pdf
+        with tempfile.TemporaryDirectory() as tmp:
+            expected_output = (Path(tmp) / "resume.pdf").resolve()
+            output = Path(os.path.relpath(expected_output, Path.cwd()))
+            self.assertFalse(output.is_absolute())
+            result = _render_pdf_via_cdp("<html><body>中文</body></html>", output)
+
+        self.assertTrue(result)
+        print_pdf.assert_called_once_with("target-1", expected_output)
+
+    @patch("bosshunter.ai.resume.wait_for_load", return_value=True)
     @patch("bosshunter.ai.resume.close_tab")
     @patch("bosshunter.ai.resume.print_pdf")
     @patch("bosshunter.ai.resume.new_tab")
-    def test_render_pdf_via_cdp_rejects_missing_output_file(self, new_tab, print_pdf, close_tab):
+    def test_render_pdf_via_cdp_rejects_missing_output_file(
+        self, new_tab, print_pdf, close_tab, wait_for_load
+    ):
         from bosshunter.ai.resume import _render_pdf_via_cdp
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -609,7 +640,23 @@ class ResumePdfRuntimeTests(unittest.TestCase):
             result = _render_pdf_via_cdp("<html><body>ok</body></html>", output)
 
         self.assertFalse(result)
-        close_tab.assert_called_once_with("target-1")
+        self.assertEqual(new_tab.call_count, 2)
+        self.assertEqual(wait_for_load.call_count, 2)
+        self.assertEqual(print_pdf.call_count, 2)
+        self.assertEqual(close_tab.call_count, 2)
+
+    @patch("bosshunter.ai.resume._render_pdf_via_cdp", return_value=False)
+    def test_render_pdf_does_not_emit_fontless_fallback_pdf(self, render_via_cdp):
+        from bosshunter.ai.resume import _render_pdf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "resume.pdf"
+
+            result = _render_pdf("# 中文简历\n\n正常正文", output)
+
+            self.assertFalse(result)
+            self.assertFalse(output.exists())
+        render_via_cdp.assert_called_once()
 
 
 if __name__ == "__main__":

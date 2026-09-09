@@ -43,6 +43,7 @@ class WorkbenchTask:
     stop_reason: str | None = None
     stop_requested: Event = field(default_factory=Event, repr=False)
     metrics: dict[str, int] = field(default_factory=dict)
+    progress: dict[str, Any] = field(default_factory=dict)
     context: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def snapshot(self) -> dict:
@@ -59,10 +60,31 @@ class WorkbenchTask:
             "stop_reason": self.stop_reason,
             "stop_requested": self.stop_requested.is_set(),
             "metrics": dict(self.metrics),
+            "progress": dict(self.progress),
         }
 
 
 Executor = Callable[[WorkbenchTask, dict], None]
+
+
+def wait_for_initial_monitor_cooldown(
+    task: WorkbenchTask,
+    config: dict,
+    log: Callable[[WorkbenchTask, str], None],
+) -> bool:
+    """Wait for the full-flow monitor cooldown; return true when cancellation wins."""
+    raw_cooldown = config.get("monitor", {}).get("initial_cooldown_minutes", 10)
+    try:
+        cooldown_sec = max(float(raw_cooldown), 0) * 60
+    except (TypeError, ValueError):
+        cooldown_sec = 10 * 60
+    if cooldown_sec <= 0:
+        return False
+    log(task, f"发送结束，首次监测将在 {cooldown_sec / 60:g} 分钟冷却后开始")
+    if task.stop_requested.wait(cooldown_sec):
+        log(task, "首次监测冷却已取消")
+        return True
+    return False
 
 
 class WorkbenchTaskRunner:
@@ -73,7 +95,13 @@ class WorkbenchTaskRunner:
         self._deadline_timers: dict[str, Timer] = {}
         self._lock = Lock()
 
-    def start(self, mode: str, config: dict) -> dict:
+    def start(
+        self,
+        mode: str,
+        config: dict,
+        *,
+        before_start: Callable[[], None] | None = None,
+    ) -> dict:
         if mode not in MODE_LABELS:
             raise ValueError(f"Unsupported workbench mode: {mode}")
 
@@ -88,16 +116,20 @@ class WorkbenchTaskRunner:
             deadline = _deadline_from_config(mode, config)
             if deadline:
                 task.deadline_at = deadline.isoformat(timespec="seconds")
-            self._tasks[task.id] = task
-
             if deadline and deadline <= datetime.now():
                 task.stop_requested.set()
                 task.status = "stopped"
                 task.stop_reason = "今日发送时间窗口已截止，后台未启动"
                 task.logs.append(task.stop_reason)
                 task.updated_at = datetime.now().isoformat(timespec="seconds")
+                self._tasks[task.id] = task
                 return task.snapshot()
 
+            # Persist start settings under the same lock as admission. A failed
+            # callback must leave no registered task or worker behind.
+            if before_start is not None:
+                before_start()
+            self._tasks[task.id] = task
             thread = Thread(target=self._run, args=(task, config), daemon=True)
             self._threads[task.id] = thread
             if deadline:

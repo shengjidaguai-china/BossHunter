@@ -14,29 +14,24 @@ export function TagsInput({ value, onChange, placeholder = '输入后按回车�
   const [input, setInput] = useState('')
 
   const commitInput = () => {
-    const tag = input.trim()
-    if (!tag) return
+    const tags = input.split(/[,，、;；]/).map(tag => tag.trim()).filter(Boolean)
+    if (!tags.length) return
     if (onAdd) {
-      onAdd(tag)
-    } else if (!value.includes(tag)) {
-      onChange([...value, tag])
+      tags.forEach(onAdd)
+    } else {
+      onChange([...new Set([...value, ...tags])])
     }
     setInput('')
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
     if (e.key === 'Enter') {
-      // 中文输入法组合阶段按回车不提交，避免把拼音当成标签
-      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
       e.preventDefault()
       commitInput()
     } else if (e.key === 'Backspace' && !input && value.length > 0) {
       onChange(value.slice(0, -1))
     }
-  }
-
-  const handleBlur = () => {
-    commitInput()
   }
 
   const removeTag = (index: number) => {
@@ -67,7 +62,7 @@ export function TagsInput({ value, onChange, placeholder = '输入后按回车�
         value={input}
         onChange={e => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
-        onBlur={handleBlur}
+        onBlur={commitInput}
         placeholder={value.length === 0 ? placeholder : ''}
         className="flex-1 min-w-[80px] bg-transparent text-sm text-foreground placeholder:text-muted/60 outline-none"
       />

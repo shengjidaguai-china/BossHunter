@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,9 @@ DB_PATH = Path("./data/bosshunter.db")
 MAX_JOB_IDS = 1000
 DELETION_PROTECTED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 DELETION_PROTECTED_HISTORY_ACTIONS = {
-    "sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
+    "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
+EXTERNAL_MANUAL_SEND_PLATFORMS = {"zhilian", "51job"}
 
 
 class JobDeletionConfirmationError(ValueError):
@@ -20,6 +22,15 @@ class JobDeletionConfirmationError(ValueError):
 
 class JobDeletionConflictError(ValueError):
     code = "deletion_conflict"
+
+    def __init__(self, message: str, *, blocked: list[dict[str, Any]] | None = None, not_found: list[str] | None = None):
+        super().__init__(message)
+        self.blocked = blocked or []
+        self.not_found = not_found or []
+
+
+class JobManualSentConflictError(ValueError):
+    code = "manual_sent_conflict"
 
     def __init__(self, message: str, *, blocked: list[dict[str, Any]] | None = None, not_found: list[str] | None = None):
         super().__init__(message)
@@ -48,6 +59,8 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             salary TEXT,
             city TEXT,
             experience TEXT,
+            education TEXT,
+            recruitment_type TEXT DEFAULT 'unknown',
             jd TEXT,
             hr_name TEXT,
             hr_title TEXT,
@@ -79,21 +92,69 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS platform_access_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL DEFAULT 'boss',
+            stage TEXT NOT NULL,
+            action TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS platform_safety_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            reason TEXT NOT NULL,
+            locked_until TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
         CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score);
         CREATE INDEX IF NOT EXISTS idx_history_job_id ON history(job_id);
         CREATE INDEX IF NOT EXISTS idx_risk_events_type ON risk_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_platform_access_stage_action
+            ON platform_access_events(stage, action, created_at);
     """)
     conn.commit()
     _migrate_v1_1(conn)
     _migrate_v1_2(conn)
+    _migrate_v1_3(conn)
+    _migrate_v1_4(conn)
+    _migrate_v1_5(conn)
+    _migrate_platform_access_events(conn)
     _init_scoring_runs(conn)
+    _init_collection_runs(conn)
+    _init_collect_progress(conn)
+    _init_score_traces(conn)
 
 
 def job_exists(conn: sqlite3.Connection, job_id: str) -> bool:
     """Check if a job already exists in the database."""
     row = conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return row is not None
+
+
+def job_identity_exists(
+    conn: sqlite3.Connection,
+    source_platform: str,
+    source_job_id: str,
+    *,
+    legacy_job_id: str | None = None,
+) -> bool:
+    """Check a platform identity while retaining old BOSS id compatibility."""
+    source_platform = str(source_platform or "boss").strip() or "boss"
+    source_job_id = str(source_job_id or "").strip()
+    if not source_job_id:
+        return bool(legacy_job_id and job_exists(conn, str(legacy_job_id)))
+    row = conn.execute(
+        "SELECT 1 FROM jobs WHERE source_platform = ? AND source_job_id = ? LIMIT 1",
+        (source_platform, source_job_id),
+    ).fetchone()
+    if row is not None:
+        return True
+    if source_platform == "boss":
+        fallback_id = str(legacy_job_id or source_job_id)
+        return job_exists(conn, fallback_id)
+    return False
 
 
 def _normalize_job_ids(job_ids: Any, *, required: bool = False) -> list[str]:
@@ -255,6 +316,60 @@ def restore_jobs(conn: sqlite3.Connection, job_ids: Any, *, confirmed: bool = Fa
     }
 
 
+def mark_external_jobs_sent(conn: sqlite3.Connection, job_ids: Any, *, confirmed: bool = False) -> dict[str, Any]:
+    """Record user-confirmed sends for collection-only platforms without automating them."""
+    if confirmed is not True:
+        raise JobDeletionConfirmationError("标记已发送需要 confirmed=true")
+    ids = _normalize_job_ids(job_ids, required=True)
+    rows = _job_rows_by_ids(conn, ids)
+    found_ids = {str(row["id"]) for row in rows}
+    not_found = [job_id for job_id in ids if job_id not in found_ids]
+    if not_found:
+        raise JobManualSentConflictError("存在不存在的岗位，未执行标记", not_found=not_found)
+
+    completed_statuses = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+    already_sent: list[str] = []
+    blocked: list[dict[str, Any]] = []
+    pending_rows: list[dict[str, Any]] = []
+    for row in rows:
+        job_id = str(row["id"])
+        reasons: list[str] = []
+        platform = str(row.get("source_platform") or "boss")
+        if row.get("deleted_at") is not None:
+            reasons.append("岗位已进入回收站")
+        if platform not in EXTERNAL_MANUAL_SEND_PLATFORMS:
+            reasons.append("仅智联招聘和前程无忧支持手动标记已发送")
+        if reasons:
+            blocked.append({"job_id": job_id, "reasons": reasons})
+        elif str(row.get("status") or "") in completed_statuses:
+            already_sent.append(job_id)
+        else:
+            pending_rows.append(row)
+    if blocked:
+        raise JobManualSentConflictError("存在不允许手动标记的岗位，批量操作已整体拒绝", blocked=blocked)
+
+    platform_labels = {"zhilian": "智联招聘", "51job": "前程无忧"}
+    with conn:
+        for row in pending_rows:
+            job_id = str(row["id"])
+            platform = str(row.get("source_platform") or "")
+            platform_label = platform_labels.get(platform, platform)
+            detail = f"用户在{platform_label}完成投递后手动标记"
+            conn.execute(
+                "UPDATE jobs SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+                (job_id,),
+            )
+            conn.execute(
+                "INSERT INTO history (job_id, action, detail) VALUES (?, 'manual_sent', ?)",
+                (job_id, detail),
+            )
+    return {
+        "requested_count": len(ids),
+        "affected_count": len(pending_rows),
+        "already_sent": already_sent,
+    }
+
+
 def permanent_delete_jobs(
     conn: sqlite3.Connection,
     job_ids: Any,
@@ -292,21 +407,61 @@ def permanent_delete_jobs(
     with conn:
         placeholders = ",".join("?" for _ in ids)
         conn.execute(f"DELETE FROM history WHERE job_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM score_traces WHERE job_id IN ({placeholders})", ids)
         cursor = conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders}) AND deleted_at IS NOT NULL", ids)
         if cursor.rowcount != len(ids):
             raise JobDeletionConflictError("永久删除数量校验失败，事务已回滚")
     return {"requested_count": len(ids), "affected_count": len(ids)}
 
 
-def insert_job(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
-    """Insert a new job record."""
-    conn.execute("""
-        INSERT OR IGNORE INTO jobs (id, title, company, salary, city, experience, jd,
-            hr_name, hr_title, hr_active, company_size, company_industry, url)
-        VALUES (:id, :title, :company, :salary, :city, :experience, :jd,
-            :hr_name, :hr_title, :hr_active, :company_size, :company_industry, :url)
-    """, job)
+def insert_job_if_new(conn: sqlite3.Connection, job: dict[str, Any]) -> bool:
+    """Insert a job atomically and return True only when a row was inserted."""
+    values = {
+        "id": str(job.get("id") or ""),
+        "title": str(job.get("title") or ""),
+        "company": str(job.get("company") or ""),
+        "salary": job.get("salary", ""),
+        "city": job.get("city", ""),
+        "experience": job.get("experience", ""),
+        "education": job.get("education", ""),
+        "recruitment_type": (
+            job.get("recruitment_type")
+            if job.get("recruitment_type") in {"campus", "experienced"}
+            else "unknown"
+        ),
+        "jd": job.get("jd", ""),
+        "hr_name": job.get("hr_name", ""),
+        "hr_title": job.get("hr_title", ""),
+        "hr_active": job.get("hr_active", ""),
+        "company_size": job.get("company_size", ""),
+        "company_industry": job.get("company_industry", ""),
+        "url": job.get("url", ""),
+        "source_platform": str(job.get("source_platform") or "boss"),
+        "source_job_id": str(job.get("source_job_id") or "") or None,
+        "source_keyword": job.get("source_keyword", ""),
+        "source_city_code": job.get("source_city_code", ""),
+    }
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO jobs (
+            id, title, company, salary, city, experience, education, recruitment_type, jd,
+            hr_name, hr_title, hr_active, company_size, company_industry, url,
+            source_platform, source_job_id, source_keyword, source_city_code
+        ) VALUES (
+            :id, :title, :company, :salary, :city, :experience, :education, :recruitment_type, :jd,
+            :hr_name, :hr_title, :hr_active, :company_size, :company_industry, :url,
+            :source_platform, :source_job_id, :source_keyword, :source_city_code
+        )
+        """,
+        values,
+    )
     conn.commit()
+    return cursor.rowcount == 1
+
+
+def insert_job(conn: sqlite3.Connection, job: dict[str, Any]) -> bool:
+    """Backward-compatible insert entry point; returns whether it was new."""
+    return insert_job_if_new(conn, job)
 
 
 def update_job_score(conn: sqlite3.Connection, job_id: str, score: int, reason: str) -> None:
@@ -316,6 +471,48 @@ def update_job_score(conn: sqlite3.Connection, job_id: str, score: int, reason: 
         (score, reason, job_id)
     )
     conn.commit()
+
+
+def persist_job_score_and_trace(
+    conn: sqlite3.Connection,
+    job_id: str,
+    score: int,
+    reason: str,
+    trace: dict[str, Any],
+) -> None:
+    """Atomically persist a completed structured score and its safe explanation trace."""
+    trace_json = json.dumps(trace, ensure_ascii=False, separators=(",", ":"))
+    with conn:
+        cursor = conn.execute(
+            "UPDATE jobs SET score = ?, score_reason = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (score, reason, job_id),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("岗位不存在或已进入回收站，未保存评分追踪")
+        conn.execute(
+            """
+            INSERT INTO score_traces (job_id, schema_version, trace_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                schema_version = excluded.schema_version,
+                trace_json = excluded.trace_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (job_id, int(trace.get("schema_version", 1)), trace_json),
+        )
+
+
+def get_score_trace(conn: sqlite3.Connection, job_id: str) -> tuple[bool, dict[str, Any] | None]:
+    """Return whether a trace row exists and its parsed object, if it is valid JSON."""
+    row = conn.execute("SELECT trace_json FROM score_traces WHERE job_id = ?", (job_id,)).fetchone()
+    if row is None:
+        return False, None
+    try:
+        trace = json.loads(row["trace_json"])
+    except (TypeError, json.JSONDecodeError):
+        return True, None
+    return True, trace if isinstance(trace, dict) else None
 
 
 def update_job_greeting(conn: sqlite3.Connection, job_id: str, greeting: str) -> None:
@@ -341,6 +538,21 @@ def add_history(conn: sqlite3.Connection, job_id: str, action: str, detail: str 
     conn.execute(
         "INSERT INTO history (job_id, action, detail) VALUES (?, ?, ?)",
         (job_id, action, detail)
+    )
+    conn.commit()
+
+
+def update_job_last_error(
+    conn: sqlite3.Connection,
+    job_id: str,
+    error_detail: str,
+    error_code: str = "",
+) -> None:
+    """Persist the latest send-failure reason + code so lists can surface and classify it."""
+    conn.execute(
+        "UPDATE jobs SET last_error = ?, last_error_code = ?, "
+        "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+        (error_detail, error_code, job_id)
     )
     conn.commit()
 
@@ -429,6 +641,93 @@ def _migrate_v1_2(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v1_3(conn: sqlite3.Connection) -> None:
+    """Add source identity columns without rewriting existing BOSS ids."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    additions = {
+        "source_platform": "TEXT NOT NULL DEFAULT 'boss'",
+        "source_job_id": "TEXT NULL",
+        "source_keyword": "TEXT NULL",
+        "source_city_code": "TEXT NULL",
+    }
+    for name, definition in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_source_identity
+        ON jobs(source_platform, source_job_id)
+        WHERE source_job_id IS NOT NULL AND TRIM(source_job_id) <> ''
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_source_platform ON jobs(source_platform)")
+    conn.commit()
+
+
+def _migrate_v1_4(conn: sqlite3.Connection) -> None:
+    """Add education and recruitment-type fields without aggressive inference."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "education" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN education TEXT")
+    if "recruitment_type" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN recruitment_type TEXT DEFAULT 'unknown'")
+    searchable = "COALESCE(title, '') || ' ' || COALESCE(jd, '') || ' ' || COALESCE(experience, '')"
+    conn.execute(f"""
+        UPDATE jobs SET education = CASE
+            WHEN {searchable} LIKE '%博士%' THEN '博士'
+            WHEN {searchable} LIKE '%硕士%' THEN '硕士'
+            WHEN {searchable} LIKE '%本科%' THEN '本科'
+            WHEN {searchable} LIKE '%大专%' OR {searchable} LIKE '%专科%' THEN '大专'
+            WHEN {searchable} LIKE '%学历不限%' OR {searchable} LIKE '%不限学历%' THEN '不限'
+            ELSE education
+        END
+        WHERE education IS NULL OR TRIM(education) = ''
+    """)
+    conn.execute(f"""
+        UPDATE jobs SET recruitment_type = CASE
+            WHEN {searchable} LIKE '%校招%' OR {searchable} LIKE '%校园招聘%'
+              OR {searchable} LIKE '%应届%' OR {searchable} LIKE '%毕业生%'
+              OR {searchable} LIKE '%管培生%' OR {searchable} LIKE '%实习生%' THEN 'campus'
+            WHEN {searchable} LIKE '%社招%' OR {searchable} LIKE '%社会招聘%' THEN 'experienced'
+            ELSE 'unknown'
+        END
+        WHERE recruitment_type IS NULL OR TRIM(recruitment_type) = '' OR recruitment_type = 'unknown'
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruitment_type ON jobs(recruitment_type)")
+    conn.commit()
+
+
+def _migrate_v1_5(conn: sqlite3.Connection) -> None:
+    """Add last_error columns and editable-resume PNG review metadata."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    additions = {
+        "last_error": "TEXT",
+        "last_error_code": "TEXT",
+        "resume_source_path": "TEXT NULL",
+        "resume_image_path": "TEXT NULL",
+        "resume_review_status": "TEXT NOT NULL DEFAULT 'missing'",
+        "resume_generation_source": "TEXT NULL",
+        "resume_failure_reason": "TEXT NULL",
+        "resume_reviewed_at": "TIMESTAMP NULL",
+    }
+    for name, definition in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+    conn.commit()
+
+
+def _migrate_platform_access_events(conn: sqlite3.Connection) -> None:
+    """Scope PR #66 access counters to a platform without losing old BOSS events."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(platform_access_events)").fetchall()}
+    if "platform" not in cols:
+        conn.execute("ALTER TABLE platform_access_events ADD COLUMN platform TEXT NOT NULL DEFAULT 'boss'")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_platform_access_platform_stage_action "
+        "ON platform_access_events(platform, stage, action, created_at)"
+    )
+    conn.commit()
+
+
 def _init_scoring_runs(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -446,6 +745,49 @@ def _init_scoring_runs(conn: sqlite3.Connection) -> None:
             finished_at TIMESTAMP NULL
         );
         CREATE INDEX IF NOT EXISTS idx_scoring_runs_status ON scoring_runs(status);
+        """
+    )
+    conn.commit()
+
+
+def _init_collection_runs(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS collection_runs (
+            id TEXT PRIMARY KEY,
+            task_id TEXT,
+            status TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            platform_states_json TEXT NOT NULL,
+            collected_job_ids_json TEXT NOT NULL,
+            current_platform TEXT,
+            stop_reason TEXT,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_runs_status ON collection_runs(status);
+        """
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(collection_runs)")}
+    if "boss_checkpoint_json" not in columns:
+        conn.execute("ALTER TABLE collection_runs ADD COLUMN boss_checkpoint_json TEXT NOT NULL DEFAULT '{}'")
+    conn.commit()
+
+
+def _init_score_traces(conn: sqlite3.Connection) -> None:
+    """Create the current-score explanation store without rewriting existing jobs."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS score_traces (
+            job_id TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            trace_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (job_id) REFERENCES jobs(id)
+        );
         """
     )
     conn.commit()
@@ -484,6 +826,89 @@ def add_risk_event(conn: sqlite3.Connection, event_type: str, detail: str = "") 
         (event_type, detail)
     )
     conn.commit()
+
+
+def count_platform_access_today(
+    conn: sqlite3.Connection,
+    *,
+    platform: str = "boss",
+    stage: str | None = None,
+    action: str | None = None,
+) -> int:
+    """Count recorded platform page opens during the current local day."""
+    clauses = [
+        "datetime(created_at, 'localtime') >= datetime('now', 'localtime', 'start of day')",
+        "platform = ?",
+    ]
+    params: list[str] = [str(platform or "boss")]
+    if stage:
+        clauses.append("stage = ?")
+        params.append(stage)
+    if action:
+        clauses.append("action = ?")
+        params.append(action)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS cnt FROM platform_access_events WHERE {' AND '.join(clauses)}",
+        params,
+    ).fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def add_platform_access(
+    conn: sqlite3.Connection,
+    stage: str,
+    action: str,
+    *,
+    platform: str = "boss",
+) -> None:
+    """Record one platform page-open attempt without URLs or account data."""
+    conn.execute(
+        "INSERT INTO platform_access_events (platform, stage, action) VALUES (?, ?, ?)",
+        (str(platform or "boss"), stage, action),
+    )
+    conn.commit()
+
+
+def set_platform_safety_lock(
+    conn: sqlite3.Connection,
+    reason: str,
+    *,
+    minutes: int = 10,
+) -> None:
+    """Persist a temporary account-safety lock across task and process restarts."""
+    locked_until = datetime.now(timezone.utc) + timedelta(minutes=max(int(minutes), 1))
+    conn.execute(
+        """
+        INSERT INTO platform_safety_state (id, reason, locked_until, updated_at)
+        VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            reason = excluded.reason,
+            locked_until = excluded.locked_until,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (reason, locked_until.isoformat()),
+    )
+    conn.commit()
+
+
+def get_active_platform_safety_lock(conn: sqlite3.Connection) -> dict[str, str] | None:
+    """Return the active safety lock, clearing it after its cooldown expires."""
+    row = conn.execute(
+        "SELECT reason, locked_until FROM platform_safety_state WHERE id = 1"
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        locked_until = datetime.fromisoformat(str(row["locked_until"]))
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        locked_until = datetime.now(timezone.utc)
+    if locked_until <= datetime.now(timezone.utc):
+        conn.execute("DELETE FROM platform_safety_state WHERE id = 1")
+        conn.commit()
+        return None
+    return {"reason": str(row["reason"]), "locked_until": locked_until.isoformat()}
 
 
 def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[str, int]:
@@ -555,7 +980,7 @@ def get_recent_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
     """Get recent history entries with job info."""
     rows = conn.execute("""
         SELECT h.id, h.job_id, h.action, h.detail, h.created_at, j.company, j.title,
-               j.resume_path,
+               j.resume_path, j.url, j.source_platform,
                CASE
                  WHEN h.action = 'resume_failed'
                   AND (
@@ -564,7 +989,7 @@ def get_recent_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
                       SELECT 1
                       FROM history r
                       WHERE r.job_id = h.job_id
-                        AND r.action IN ('needs_resume', 'resume_sent')
+                        AND r.action IN ('needs_resume', 'resume_sent', 'resume_failed_dismissed')
                         AND r.id > h.id
                     )
                   )
@@ -580,11 +1005,75 @@ def get_recent_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_recent_monitor_replies(conn: sqlite3.Connection) -> list[dict]:
+    """Get retained reply rounds and the resume-request context they need."""
+    rows = conn.execute(
+        """
+        SELECT h.id, h.job_id, h.action, h.detail, h.created_at, j.company, j.title,
+               j.resume_path, j.url, j.source_platform, 0 AS resolved
+        FROM history h
+        JOIN jobs j ON h.job_id = j.id
+        WHERE (
+            (
+                h.action IN ('replied', 'auto_replied', 'resume_sent')
+                AND h.created_at >= datetime('now', '-7 days')
+            ) OR (
+                h.action = 'needs_resume'
+                AND EXISTS (
+                    SELECT 1
+                    FROM history sent
+                    WHERE sent.job_id = h.job_id
+                      AND sent.action = 'resume_sent'
+                      AND sent.created_at >= datetime('now', '-7 days')
+                      AND h.id = (
+                          SELECT MAX(request.id)
+                          FROM history request
+                          WHERE request.job_id = h.job_id
+                            AND request.action = 'needs_resume'
+                            AND request.id < sent.id
+                      )
+                )
+            )
+        )
+          AND j.deleted_at IS NULL
+        ORDER BY h.created_at DESC, h.id DESC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_unresolved_reply_pending(conn: sqlite3.Connection) -> list[dict]:
+    """Get each job's latest reply suggestion when no later decision resolved it."""
+    rows = conn.execute("""
+        SELECT h.id, h.job_id, h.action, h.detail, h.created_at, j.company, j.title,
+               j.resume_path, j.url, j.source_platform, 0 AS resolved
+        FROM history h
+        JOIN jobs j ON h.job_id = j.id
+        WHERE h.action = 'reply_pending'
+          AND j.deleted_at IS NULL
+          AND h.id = (
+            SELECT MAX(p.id)
+            FROM history p
+            WHERE p.job_id = h.job_id
+              AND p.action = 'reply_pending'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM history r
+            WHERE r.job_id = h.job_id
+              AND r.action IN ('reply_dismissed', 'replied', 'auto_replied')
+              AND r.id > h.id
+          )
+        ORDER BY h.created_at DESC, h.id DESC
+    """).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_unresolved_resume_failures(conn: sqlite3.Connection) -> list[dict]:
     """Get the latest resume generation failure for jobs not resolved by a later success."""
     rows = conn.execute("""
         SELECT h.id, h.job_id, h.action, h.detail, h.created_at, j.company, j.title,
-               j.resume_path, 0 AS resolved
+               j.resume_path, j.url, j.source_platform, 0 AS resolved
         FROM history h
         JOIN jobs j ON h.job_id = j.id
         WHERE h.action = 'resume_failed'
@@ -600,7 +1089,7 @@ def get_unresolved_resume_failures(conn: sqlite3.Connection) -> list[dict]:
             SELECT 1
             FROM history r
             WHERE r.job_id = h.job_id
-              AND r.action IN ('needs_resume', 'resume_sent')
+              AND r.action IN ('needs_resume', 'resume_sent', 'resume_failed_dismissed')
               AND r.id > h.id
           )
         ORDER BY h.created_at DESC, h.id DESC
@@ -610,28 +1099,7 @@ def get_unresolved_resume_failures(conn: sqlite3.Connection) -> list[dict]:
 
 def count_unresolved_reply_pending(conn: sqlite3.Connection) -> int:
     """Count latest reply_pending rows that have not been resolved for each job."""
-    row = conn.execute("""
-        SELECT COUNT(*) AS cnt
-        FROM history h
-        WHERE h.action = 'reply_pending'
-          AND EXISTS (
-            SELECT 1 FROM jobs j WHERE j.id = h.job_id AND j.deleted_at IS NULL
-          )
-          AND h.id = (
-            SELECT MAX(p.id)
-            FROM history p
-            WHERE p.job_id = h.job_id
-              AND p.action = 'reply_pending'
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM history r
-            WHERE r.job_id = h.job_id
-              AND r.action IN ('reply_dismissed', 'replied', 'auto_replied')
-              AND r.id > h.id
-          )
-    """).fetchone()
-    return int(row["cnt"] or 0)
+    return len(get_unresolved_reply_pending(conn))
 
 
 def count_unresolved_monitor_items(conn: sqlite3.Connection) -> int:
@@ -645,3 +1113,183 @@ def get_jobs_needing_resume(conn: sqlite3.Connection) -> list[dict]:
         "SELECT * FROM jobs WHERE status = 'needs_resume' AND deleted_at IS NULL ORDER BY updated_at DESC"
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+# =====================================================================
+# 51job 断点续采（词级 collect_progress + 页级 collect_progress_page）
+# 由 51job API-fetch 采集器使用，随该采集器一并引入
+# =====================================================================
+
+
+def _init_collect_progress(conn: sqlite3.Connection) -> None:
+    """采集断点续采进度表：记录已完成的 (source, city, keyword) 组合。
+
+    词级断点（collect_progress）：组合采集完成即标记，默认 24h 内整词跳过。
+    页级断点（collect_progress_page）：记录 51job API 采集每个词已采到的页码，
+    支持「中途停止 → 从 N+1 页续采」。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS collect_progress (
+            source TEXT NOT NULL,
+            city TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            finished_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source, city, keyword)
+        );
+
+        CREATE TABLE IF NOT EXISTS collect_progress_page (
+            source TEXT NOT NULL,
+            city TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            page INTEGER NOT NULL DEFAULT 0,
+            finished_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source, city, keyword)
+        );
+        """
+    )
+    conn.commit()
+
+
+def get_collected_combos(conn: sqlite3.Connection, source: str, within_hours: int | None = None) -> set[tuple[str, str]]:
+    """返回某来源已完成的 (city, keyword) 组合集合（用于断点续采跳过）。
+
+    within_hours：只返回最近 N 小时内完成的组合；超过该窗口的旧断点视为"过期"，
+    会在下次采集时重新采集（招聘岗位每天都有新增）。为 None 时返回全部（兼容旧行为）。
+    """
+    if within_hours is not None:
+        rows = conn.execute(
+            "SELECT city, keyword FROM collect_progress "
+            "WHERE source = ? AND finished_at >= datetime('now', ?)",
+            (source, f"-{int(within_hours)} hours"),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT city, keyword FROM collect_progress WHERE source = ?",
+            (source,),
+        ).fetchall()
+    return {(str(r["city"]), str(r["keyword"])) for r in rows}
+
+
+def clear_collected_combos(conn: sqlite3.Connection, source: str | None = None) -> int:
+    """清空词级断点记录；source 为 None 时清空所有来源。返回删除行数。"""
+    if source is not None:
+        cursor = conn.execute(
+            "DELETE FROM collect_progress WHERE source = ?", (source,)
+        )
+    else:
+        cursor = conn.execute("DELETE FROM collect_progress")
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
+def prune_collected_combos(conn: sqlite3.Connection, source: str, keep_keywords: set[str]) -> int:
+    """清理孤儿词级断点：删除「已不在当前关键词列表里」的断点记录。
+
+    关键词可能在采集前被用户增删，删掉的词其断点记录应同步清理，
+    避免脏数据累积；重新加回该词时也会重新采集（符合预期）。返回删除行数。
+    """
+    if not keep_keywords:
+        return clear_collected_combos(conn, source)
+    placeholders = ",".join("?" for _ in keep_keywords)
+    cursor = conn.execute(
+        f"DELETE FROM collect_progress WHERE source = ? AND keyword NOT IN ({placeholders})",
+        (source, *keep_keywords),
+    )
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
+def mark_combo_collected(conn: sqlite3.Connection, source: str, city: str, keyword: str) -> None:
+    """标记一个 (source, city, keyword) 组合已完成（幂等，刷新 finished_at）。
+
+    使用 ON CONFLICT UPDATE 确保过期重采后 finished_at 被刷新为当前时间，
+    避免每次采集都因旧时间戳过期而重复采集。
+    """
+    conn.execute(
+        """
+        INSERT INTO collect_progress (source, city, keyword, finished_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(source, city, keyword) DO UPDATE SET
+            finished_at = CURRENT_TIMESTAMP
+        """,
+        (source, city, keyword),
+    )
+    conn.commit()
+
+
+def upsert_page_progress(conn: sqlite3.Connection, source: str, city: str, keyword: str, page: int) -> None:
+    """记录/更新某词已采到的页码（页级断点，支持中途续采）。"""
+    conn.execute(
+        """
+        INSERT INTO collect_progress_page (source, city, keyword, page)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source, city, keyword) DO UPDATE SET
+            page = excluded.page,
+            finished_at = CURRENT_TIMESTAMP
+        """,
+        (source, city, keyword, int(page or 0)),
+    )
+    conn.commit()
+
+
+def get_page_progress(
+    conn: sqlite3.Connection,
+    source: str,
+    city: str,
+    keyword: str,
+    within_hours: int | None = None,
+) -> int:
+    """返回某词已采到的页码（0 = 未采过/无记录/已过期）。
+
+    within_hours：只返回最近 N 小时内记录的页码；超过该窗口的旧页断点视为"过期"，
+    返回 0 以从头采集。为 None 时返回全部（兼容旧行为）。
+    """
+    if within_hours is not None:
+        row = conn.execute(
+            "SELECT page FROM collect_progress_page "
+            "WHERE source = ? AND city = ? AND keyword = ? "
+            "AND finished_at >= datetime('now', ?)",
+            (source, city, keyword, f"-{int(within_hours)} hours"),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT page FROM collect_progress_page WHERE source = ? AND city = ? AND keyword = ?",
+            (source, city, keyword),
+        ).fetchone()
+    return int(row["page"] or 0) if row else 0
+
+
+def clear_page_progress(conn: sqlite3.Connection, source: str | None = None) -> int:
+    """清空页级断点；source 为 None 时清空所有来源。返回删除行数。"""
+    if source is not None:
+        cursor = conn.execute(
+            "DELETE FROM collect_progress_page WHERE source = ?", (source,)
+        )
+    else:
+        cursor = conn.execute("DELETE FROM collect_progress_page")
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
+def delete_page_progress(conn: sqlite3.Connection, source: str, city: str, keyword: str) -> int:
+    """删除单个词的页级断点（词已完成，无需续页）。返回删除行数。"""
+    cursor = conn.execute(
+        "DELETE FROM collect_progress_page WHERE source = ? AND city = ? AND keyword = ?",
+        (source, city, keyword),
+    )
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
+def prune_page_progress(conn: sqlite3.Connection, source: str, keep_keywords: set[str]) -> int:
+    """清理孤儿页级断点（已删除词），与 prune_collected_combos 保持一致。"""
+    if not keep_keywords:
+        return clear_page_progress(conn, source)
+    placeholders = ",".join("?" for _ in keep_keywords)
+    cursor = conn.execute(
+        f"DELETE FROM collect_progress_page WHERE source = ? AND keyword NOT IN ({placeholders})",
+        (source, *keep_keywords),
+    )
+    conn.commit()
+    return int(cursor.rowcount or 0)

@@ -12,6 +12,8 @@ from zipfile import BadZipFile, ZipFile
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from bosshunter.web.resume_text import sanitize_resume_text
+
 MAX_DOCX_XML_SIZE = 20 * 1024 * 1024
 SUPPORTED_RESUME_EXTENSIONS = {".md", ".docx", ".pdf"}
 _WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -51,11 +53,15 @@ def prepare_resume_content(filename: str, content: bytes) -> tuple[str, bytes]:
 	safe_name = safe_resume_filename(filename)
 	suffix = Path(safe_name).suffix.lower()
 	if suffix == ".md":
-		return safe_name, content
+		try:
+			text = content.decode("utf-8")
+		except UnicodeDecodeError as exc:
+			raise ResumeUploadError("Markdown 文件必须使用 UTF-8 编码") from exc
+		return safe_name, sanitize_resume_text(text).encode("utf-8")
 
 	markdown = docx_to_markdown(content) if suffix == ".docx" else pdf_to_markdown(content)
 	output_name = f"{Path(safe_name).stem}.md"
-	return output_name, markdown.encode("utf-8")
+	return output_name, sanitize_resume_text(markdown).encode("utf-8")
 
 
 def pdf_to_markdown(content: bytes) -> str:

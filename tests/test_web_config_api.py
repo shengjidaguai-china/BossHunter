@@ -32,15 +32,19 @@ class WebConfigApiTests(unittest.TestCase):
 		self.assertNotIn("api_key_masked", payload)
 		self.assertNotIn("auth_token_masked", payload)
 
-	def test_write_config_replaces_the_file_without_leaving_a_temp_file(self):
+	def test_write_config_separates_credentials_without_leaving_temp_files(self):
 		with tempfile.TemporaryDirectory() as tmp:
 			config_path = Path(tmp) / "config.yaml"
 			config_path.write_text("ai:\n  model: old\n", encoding="utf-8")
+			api_key = "web-api-key-that-must-not-enter-config"
 
 			with patch.object(server, "CONFIG_PATH", config_path):
-				server._write_config({"ai": {"model": "new"}})
+				server._write_config({"ai": {"model": "new", "api_key": api_key}})
 
-			self.assertEqual(yaml.safe_load(config_path.read_text(encoding="utf-8"))["ai"]["model"], "new")
+			public_text = config_path.read_text(encoding="utf-8")
+			self.assertEqual(yaml.safe_load(public_text)["ai"]["model"], "new")
+			self.assertNotIn(api_key, public_text)
+			self.assertTrue((Path(tmp) / ".config.credentials.yaml").exists())
 			self.assertEqual(list(Path(tmp).glob(".config.*.tmp")), [])
 
 	def test_sanitize_config_strips_display_fields_and_preserves_blank_key(self):
@@ -63,6 +67,22 @@ class WebConfigApiTests(unittest.TestCase):
 		self.assertEqual(cleaned["ai"]["api_key"], "test-api-key-12345678")
 		self.assertEqual(cleaned["ai"]["model"], "new")
 		self.assertNotIn("api_key_masked", cleaned["ai"])
+
+	def test_sanitize_config_discards_retired_collection_count_fields_without_ai_section(self):
+		cleaned = server._sanitize_config_for_write({
+			"search": {"target_count": 9},
+			"collection": {"default_target_count": 8, "daily_new_jobs_limit": 100},
+			"platforms": {
+				"boss": {"search": {"target_count": 7}},
+				"zhilian": {"search": {"target_count": 6}},
+				"51job": {"search": {"target_count": 5}},
+			},
+		})
+
+		self.assertEqual(cleaned["search"], {})
+		self.assertEqual(cleaned["collection"], {})
+		for platform in ("boss", "zhilian", "51job"):
+			self.assertEqual(cleaned["platforms"][platform]["search"], {})
 
 	def test_sanitize_config_preserves_omitted_api_key(self):
 		with tempfile.TemporaryDirectory() as tmp:
