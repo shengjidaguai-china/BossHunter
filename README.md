@@ -98,6 +98,7 @@ bosshunter run
 | 文档 | 内容 |
 |---|---|
 | [完整上手指南](docs/QUICKSTART.md) | 安装、Chrome 连接、首次配置和安全边界 |
+| [手机端部署与使用指南](docs/MOBILE_DEPLOY.md) | 手机局域网访问、移动端UI自适应、扫码直达与PWA添加到主屏幕 |
 | [CLI 命令](docs/CLI.md) | 一键流程、分步命令、监听与状态查看 |
 | [配置指南](docs/CONFIGURATION.md) | 平台、AI、简历和风险控制配置 |
 | [常见问题](docs/FAQ.md) | 封号风险、平台边界、简历格式和连接排错 |

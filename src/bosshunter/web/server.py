@@ -2446,6 +2446,45 @@ def api_jobs_permanent_delete():
 		db.close()
 
 
+# ─── Mobile Connect APIs ─────────────────────────────────
+
+@app.route("/api/mobile/info")
+def api_mobile_info():
+	from bosshunter.web.network_utils import get_lan_ips
+	ips = get_lan_ips()
+	primary_ip = ips[0] if ips else "127.0.0.1"
+	host_header = request.get_header("Host", "127.0.0.1:8686")
+	port = host_header.split(":")[-1] if ":" in host_header else "8686"
+	return _json_response({
+		"primary_ip": primary_ip,
+		"all_ips": ips,
+		"port": port,
+		"mobile_url": f"http://{primary_ip}:{port}",
+	})
+
+
+@app.route("/api/mobile/qrcode")
+def api_mobile_qrcode():
+	import io
+	import qrcode
+	from bosshunter.web.network_utils import get_lan_ips
+	ips = get_lan_ips()
+	primary_ip = ips[0] if ips else "127.0.0.1"
+	host_header = request.get_header("Host", "127.0.0.1:8686")
+	port = host_header.split(":")[-1] if ":" in host_header else "8686"
+	url = f"http://{primary_ip}:{port}"
+
+	qr = qrcode.QRCode(border=2)
+	qr.add_data(url)
+	qr.make(fit=True)
+	img = qr.make_image(fill_color="#1F1F1F", back_color="#FFFFFF")
+	buf = io.BytesIO()
+	img.save(buf, format="PNG")
+
+	response.content_type = "image/png"
+	return buf.getvalue()
+
+
 # ─── Resume APIs ─────────────────────────────────────────
 
 @app.route("/api/resume")
@@ -2662,7 +2701,8 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 		import threading
 		def _open():
 			time.sleep(1)
-			webbrowser.open(f"http://{host}:{port}")
+			browser_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+			webbrowser.open(f"http://{browser_host}:{port}")
 		threading.Thread(target=_open, daemon=True).start()
 
 	app.run(

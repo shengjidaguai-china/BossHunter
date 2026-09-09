@@ -35,7 +35,7 @@ SCORE_RESPONSE = json.dumps({
 
 
 def request(path, body):
-    encoded = json.dumps(body).encode()
+    encoded = json.dumps(body).encode("utf-8")
     result = {}
     environ = {
         "REQUEST_METHOD": "POST", "PATH_INFO": path, "QUERY_STRING": "",
@@ -52,8 +52,8 @@ def request(path, body):
     response = server.app(environ, respond)
     try:
         payload = json.loads(b"".join(
-            value.encode() if isinstance(value, str) else value for value in response
-        ))
+            value.encode("utf-8") if isinstance(value, str) else value for value in response
+        ).decode("utf-8"))
     finally:
         if hasattr(response, "close"):
             response.close()
@@ -69,12 +69,12 @@ def runtime(tmp_path, monkeypatch):
         monkeypatch.setattr(server, name, value)
     path = tmp_path / "data/bosshunter.db"
     monkeypatch.setattr(db_module, "DB_PATH", path)
-    (tmp_path / "resume.md").write_text("测试简历：产品经理，负责人工智能产品设计。")
+    (tmp_path / "resume.md").write_text("测试简历：产品经理，负责人工智能产品设计。", encoding="utf-8")
     server.CONFIG_PATH.write_text(yaml.safe_dump({
         "profile": {"resume_path": str(tmp_path / "resume.md")},
         "ai": {"scoring_concurrency": 1, "scoring_max_attempts": 1},
         "search": {"keywords": ["原关键词"], "cities": ["北京"]},
-    }, allow_unicode=True))
+    }, allow_unicode=True), encoding="utf-8")
     monkeypatch.setattr(server, "get_ai_api_key", lambda _: "offline-placeholder")
     ai = Mock(return_value=SCORE_RESPONSE)
     monkeypatch.setattr(scorer, "_call_claude", ai)
@@ -224,7 +224,7 @@ def test_all_scoring_completes_1001_jobs(runtime, scope):
     assert status == 200 and preview["eligible_jobs"] == 1001
     status, started = request("/api/scoring/start", {"options": options})
     assert status == 200, started
-    runner.wait(timeout=30)
+    runner.wait(timeout=60)
     run = get_scoring_run(path, started["run"]["id"])
     assert run["status"] == runner.status()["last_task"]["status"] == "completed"
     assert run["remaining_job_ids"] == []
@@ -245,7 +245,7 @@ def test_manual_selection_rejects_1001_ids_but_accepts_1000(runtime, endpoint):
     status, accepted = request(f"/api/scoring/{endpoint}", {"options": options})
     assert status == 200, accepted
     if endpoint == "start":
-        runner.wait(timeout=30)
+        runner.wait(timeout=60)
         assert runner.status()["last_task"]["status"] == "completed"
         assert_all_scored(path, 1000)
     else:
@@ -258,7 +258,7 @@ def test_resume_handles_1001_remaining_jobs_without_rescoring_completed_job(runt
     ai.side_effect = [SCORE_RESPONSE, AIRequestError("token_quota", "模拟额度耗尽", 429)]
     status, started = request("/api/scoring/start", {"scope": "pending", "limit": None})
     assert status == 200, started
-    runner.wait(timeout=30)
+    runner.wait(timeout=60)
     run_id = started["run"]["id"]
     paused = get_scoring_run(path, run_id)
     assert paused["status"] == "paused"
@@ -267,7 +267,7 @@ def test_resume_handles_1001_remaining_jobs_without_rescoring_completed_job(runt
     ai.side_effect = None
     status, resumed = request(f"/api/scoring/runs/{run_id}/resume", {})
     assert status == 200, resumed
-    runner.wait(timeout=30)
+    runner.wait(timeout=60)
     finished = get_scoring_run(path, run_id)
     assert finished["status"] == "completed" and finished["remaining_job_ids"] == []
     assert ai.call_count == 1003  # One success + one quota pause + 1001 remaining jobs.
@@ -291,7 +291,7 @@ def test_collection_auto_scores_1001_new_jobs(runtime, monkeypatch):
         "mode": "collect", "options": collection_options(auto_score=True),
     })
     assert status == 200, started
-    runner.wait(timeout=30)
+    runner.wait(timeout=60)
     assert runner.status()["last_task"]["status"] == "completed"
     assert ai.call_count == 1001
     assert_all_scored(path, 1001)

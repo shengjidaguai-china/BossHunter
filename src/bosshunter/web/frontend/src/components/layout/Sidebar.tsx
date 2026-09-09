@@ -40,7 +40,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   }, [pendingRepliesProp])
 
   return (
-    <aside className="w-60 border-r border-card-border bg-white flex flex-col">
+    <aside className="hidden md:flex w-60 border-r border-card-border bg-white flex-col shrink-0">
       <div className="h-16 flex items-center px-5 border-b border-card-border">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-primary text-white flex items-center justify-center shadow-lg shadow-primary/20">
