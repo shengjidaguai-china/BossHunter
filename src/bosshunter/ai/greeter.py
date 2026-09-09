@@ -591,6 +591,17 @@ def generate_greetings(config: dict) -> int:
         db.close()
         return 0
 
+    # 配置了固定招呼语时直接统一填充，不再逐岗位调用 AI 定制
+    fixed_greeting = str(config.get("profile", {}).get("greeting_preference") or "").strip()
+    if fixed_greeting:
+        for job in jobs:
+            update_job_greeting(db, job["id"], fixed_greeting)
+            update_job_status(db, job["id"], "ready")
+        config["_workbench_greeting_report"].update({"generated_count": len(jobs), "failed_count": 0})
+        _notify(config, f"已用固定招呼语填充 {len(jobs)} 个岗位（未调用 AI 逐岗位定制）。")
+        db.close()
+        return len(jobs)
+
     resume_summary = _get_resume_summary(config)
     if not resume_summary:
         console.print("[red]无法读取简历[/red]")
