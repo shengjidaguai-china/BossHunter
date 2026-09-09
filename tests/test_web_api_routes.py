@@ -103,6 +103,36 @@ class WebApiRouteTests(unittest.TestCase):
                 close()
         return status_headers["status"], status_headers["headers"], body
 
+    def test_model_list_uses_draft_settings_and_preserves_saved_config(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+            server.set_base_dir(Path(tmp))
+            server._write_config({"ai": {"service": "custom", "provider": "openai_compatible", "base_url": "https://saved.example/v1", "api_key": "saved-secret", "model": "saved-model"}})
+            before = server.CONFIG_PATH.read_bytes()
+            for draft_key, expected_key in [("", "saved-secret"), ("draft-secret", "draft-secret")]:
+                with patch.object(server, "list_ai_models", return_value=["model-a"]) as discover:
+                    status, _, body = self._request("/api/config/models", "POST", {"ai": {"service": "custom", "base_url": "https://draft.example/v1", "api_key": draft_key}})
+                self.assertTrue(status.startswith("200"), body)
+                self.assertEqual(json.loads(body), {"models": ["model-a"]})
+                draft = discover.call_args.args[0]["ai"]
+                self.assertEqual(draft["base_url"], "https://draft.example/v1")
+                self.assertEqual(draft["api_key"], expected_key)
+                self.assertEqual(server.CONFIG_PATH.read_bytes(), before)
+                self.assertEqual(server.load_config(server.CONFIG_PATH)["ai"]["api_key"], "saved-secret")
+            with patch.object(server, "list_ai_models", return_value=[]) as discover:
+                self._request("/api/config/models", "POST", {"ai": {"service": "deepseek", "clear_credentials": True}})
+                self.assertNotIn("api_key", discover.call_args.args[0]["ai"])
+
+    def test_model_list_rejects_bad_input_and_hides_unexpected_errors(self):
+        for payload in ({}, {"ai": []}, {"ai": {"base_url": []}}, {"ai": {"api_key": 123}}):
+            with patch.object(server, "list_ai_models") as discover:
+                status, _, _ = self._request("/api/config/models", "POST", payload)
+                self.assertTrue(status.startswith("400"))
+                discover.assert_not_called()
+        with patch.object(server, "_sanitize_config_for_write", return_value={}), patch.object(server, "list_ai_models", side_effect=RuntimeError("private-secret")):
+            status, _, body = self._request("/api/config/models", "POST", {"ai": {}})
+        self.assertTrue(status.startswith("500"))
+        self.assertNotIn("private-secret", body)
+
     def _upload_resume(self, filename: str, content: bytes, content_type: str):
         boundary = "----BossHunterResumeUpload"
         body = (
