@@ -26,6 +26,7 @@ import {
   MessageCircle,
   Play,
   RefreshCw,
+  ShieldCheck,
   Send,
   Square,
   Trash2,
@@ -48,6 +49,13 @@ const TASK_STAGE_LABELS = [
 ]
 
 function currentTaskStage(task: WorkbenchTask) {
+  if (task.progress?.outcome === 'scoring' && ['running', 'stopping'].includes(task.status)) {
+    const completed = task.metrics?.ai_completed
+    const total = task.metrics?.ai_total
+    return typeof total === 'number'
+      ? `AI 评分进度 ${completed || 0}/${total}`
+      : '采集已结束，正在为本轮新增岗位进行 AI 评分'
+  }
   const logs = task.logs || []
   for (const log of logs.slice().reverse()) {
     if (log.includes('AI 评分进度')) return log
@@ -339,11 +347,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [preflightMode, setPreflightMode] = useState<WorkbenchMode>('full')
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [modePending, setModePending] = useState<WorkbenchMode | null>(null)
+  const [sendingGreetingIds, setSendingGreetingIds] = useState<Set<string>>(new Set())
   const [confirmedDeliveryIds, setConfirmedDeliveryIds] = useState<Set<string>>(new Set())
   const [todayFilters, setTodayFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
   const [statsScope, setStatsScope] = useState<StatsScope>('today')
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
+  const [preflightRunning, setPreflightRunning] = useState(false)
 
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
@@ -455,6 +465,20 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
+  const runStandalonePreflight = async () => {
+    if (modePending || preflightRunning) return
+    try {
+      setPreflightRunning(true)
+      setNotice('正在检查全流程运行环境...')
+      const ok = await runPreflight('full')
+      setNotice(ok ? '全流程预检通过，可以开始任务。' : '仍有问题需要处理，请查看检查结果。')
+    } catch {
+      setNotice('预检失败，请确认 BossHunter 后端仍在运行。')
+    } finally {
+      setPreflightRunning(false)
+    }
+  }
+
   const startCollection = async (options: Record<string, unknown>) => {
     const mode = collectDialogMode
     setModePending(mode)
@@ -528,8 +552,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }
 
   const sendReadyGreetings = async (ids: string[]) => {
-    if (!ids.length) return
+    if (!ids.length || ids.some(id => sendingGreetingIds.has(id))) return
     const count = ids.length
+    setSendingGreetingIds(prev => new Set([...prev, ...ids]))
+    setNotice(`正在将 ${count} 个岗位加入发送队列...`)
     try {
       const res = await fetch('/api/workbench/deliver', {
         method: 'POST',
@@ -551,6 +577,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       )
     } catch (err) {
       setNotice(err instanceof Error ? err.message : '发送失败')
+    } finally {
+      setSendingGreetingIds(prev => new Set([...prev].filter(id => !ids.includes(id))))
     }
   }
 
@@ -621,6 +649,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </div>
               )}
             </div>
+            <Button variant="secondary" size="sm" onClick={runStandalonePreflight} disabled={refreshing || Boolean(modePending) || preflightRunning}>
+              <ShieldCheck className={cn('mr-2 h-4 w-4', preflightRunning && 'animate-spin')} />
+              {preflightRunning ? '预检中' : '全流程预检'}
+            </Button>
             <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">
               {activeTask ? `${activeTask.label}中` : '当前空闲'}
             </span>
@@ -674,7 +706,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </div>
         {notice && <div className="mt-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
         {preflightChecks.some(check => check.status !== 'pass') && (
-          <PreflightPanel checks={preflightChecks} checking={Boolean(modePending)} onRetry={retryPreflight} />
+          <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} />
         )}
         {error && <div className="mt-3 rounded-2xl bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
         {visibleTask && (
@@ -837,7 +869,9 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <p className="mt-1 text-xs text-danger/80">这些岗位已生成招呼语，但没有成功发送。你可以重试，或放弃已失效岗位。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => confirmDeliver(workbench.send_errors.map(job => job.id))}>重新发送全部 {workbench.send_errors.length} 个</Button>
+              <Button size="sm" disabled={workbench.send_errors.some(job => sendingGreetingIds.has(job.id))} onClick={() => sendReadyGreetings(workbench.send_errors.map(job => job.id))}>
+                {workbench.send_errors.some(job => sendingGreetingIds.has(job.id)) ? '正在重新发送...' : `重新发送全部 ${workbench.send_errors.length} 个`}
+              </Button>
               <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(workbench.send_errors.map(job => job.id))}>放弃全部</Button>
             </div>
           </div>
@@ -853,7 +887,9 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </div>
                 <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待重新发送。'}</p>
                 <div className="mt-3 flex gap-2">
-                  <Button size="sm" onClick={() => sendReadyGreetings([job.id])}>重新发送</Button>
+                  <Button size="sm" disabled={sendingGreetingIds.has(job.id)} onClick={() => sendReadyGreetings([job.id])}>
+                    {sendingGreetingIds.has(job.id) ? '正在重新发送...' : '重新发送'}
+                  </Button>
                   <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs([job.id])}>放弃</Button>
                   <Button variant="secondary" size="sm" onClick={() => openJobDetail(job)}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
                   <Button variant="secondary" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />跳转岗位链接</Button>
@@ -960,7 +996,7 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
     <div className="mt-3 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-black text-primary">多平台采集进度</div>
-        <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '执行中' : progress.outcome || '已结束'}</div>
+        <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '采集中' : progress.outcome === 'scoring' ? '正在自动评分' : progress.outcome || '已结束'}</div>
       </div>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
         {Object.entries(progress.platforms || {}).map(([platform, state]) => (
@@ -1490,7 +1526,7 @@ function isResumeFailureResolved(item: HistoryItem, history: HistoryItem[]) {
   return Boolean(item.resolved || item.resume_path) || history.some(candidate =>
     candidate.id > item.id
     && sameHistoryJob(item, candidate)
-    && (candidate.action === 'needs_resume' || candidate.action === 'resume_sent')
+    && (candidate.action === 'needs_resume' || candidate.action === 'resume_sent' || candidate.action === 'resume_failed_dismissed')
   )
 }
 
@@ -1684,6 +1720,36 @@ function MonitorExecutionView({
     }
   }
 
+  const retryResumeGeneration = async (item: HistoryItem) => {
+    if (!window.confirm('确定重新生成这份定制简历吗？需要 AI 接口和 Chrome 环境正常。')) return
+    try {
+      const res = await fetch(`/api/history/${item.id}/resume-retry`, { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '重试生成失败')
+      }
+      await refresh()
+      setNotice('定制简历已重新生成，请到工作台HR 要简历区域下载发送。')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '重试生成失败')
+    }
+  }
+
+  const dismissResumeFailure = async (item: HistoryItem) => {
+    if (!window.confirm('确定放弃这条简历生成失败记录吗？放弃后将不再出现在待处理中。')) return
+    try {
+      const res = await fetch(`/api/history/${item.id}/resume-dismiss`, { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '忽略失败')
+      }
+      await refresh()
+      setNotice('已放弃这条简历生成失败记录。')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '忽略失败')
+    }
+  }
+
   return (
     <div className="rounded-3xl border border-card-border bg-white p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
@@ -1817,27 +1883,34 @@ function MonitorExecutionView({
                 ) : null}
               </div>
               <div className="grid gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!canOpenChat || openingChat}
-                  onClick={() => void openMonitorConversation(item)}
-                >
-                  <ExternalLink className="mr-2 h-4 w-4" />{openingChat ? '定位中…' : monitorLinkLabel(item)}
-                </Button>
-                {isDetectedReply ? (
-                  <Button size="sm" disabled={preparingReply} onClick={() => void prepareDetectedReply(item)}>
-                    {preparingReply ? '读取中…' : '读取并生成建议'}
+                <div className="grid gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!canOpenChat || openingChat}
+                    onClick={() => void openMonitorConversation(item)}
+                  >
+                    <ExternalLink className="mr-2 h-4 w-4" />{openingChat ? '定位中' : monitorLinkLabel(item)}
                   </Button>
-                ) : canReply ? (
-                  <>
-                    <Button size="sm" onClick={() => sendManualReply(item)}><MessageCircle className="mr-2 h-4 w-4" />确认回复</Button>
-                    <Button variant="secondary" size="sm" onClick={() => document.getElementById(`reply-draft-${item.id}`)?.focus()}>编辑回复</Button>
-                    <Button variant="secondary" size="sm" onClick={() => dismissPendingReply(item)}>放弃</Button>
-                  </>
-                ) : (
-                  <div className="px-2 py-1 text-center text-xs text-muted">本轮已处理，无需再次确认</div>
-                )}
+                  {isDetectedReply ? (
+                    <Button size="sm" disabled={preparingReply} onClick={() => void prepareDetectedReply(item)}>
+                      {preparingReply ? '读取中' : '读取并生成建议'}
+                    </Button>
+                  ) : canReply ? (
+                    <>
+                      <Button size="sm" onClick={() => sendManualReply(item)}><MessageCircle className="mr-2 h-4 w-4" />确认回复</Button>
+                      <Button variant="secondary" size="sm" onClick={() => document.getElementById(`reply-draft-${item.id}`)?.focus()}>编辑回复</Button>
+                      <Button variant="secondary" size="sm" onClick={() => dismissPendingReply(item)}>放弃</Button>
+                    </>
+                  ) : isResumeFailure ? (
+                    <>
+                      <Button size="sm" variant="secondary" onClick={() => retryResumeGeneration(item)}><RefreshCw className="mr-2 h-4 w-4" />重试生成</Button>
+                      <Button variant="secondary" size="sm" onClick={() => dismissResumeFailure(item)}><XCircle className="mr-2 h-4 w-4" />放弃</Button>
+                    </>
+                  ) : (
+                    <div className="px-2 py-1 text-center text-xs text-muted">本轮已处理，无需再次确认</div>
+                  )}
+                </div>
               </div>
             </div>
           )

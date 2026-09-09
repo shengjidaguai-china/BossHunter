@@ -18,10 +18,11 @@ from uuid import uuid4
 from wsgiref.simple_server import WSGIServer
 
 import yaml
-from bottle import Bottle, request, response, static_file, abort
+from bottle import Bottle, HTTPResponse, request, response, static_file, abort
 
 from bosshunter import __version__
 from bosshunter.ai.credentials import get_ai_api_key
+from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
 from bosshunter.config import AI_SERVICE_PRESETS, load_config, remove_retired_collection_settings, save_config
 from bosshunter.db import (
@@ -39,6 +40,7 @@ from bosshunter.db import (
 	get_jobs_with_send_errors,
 	get_recent_history,
 	get_recent_monitor_replies,
+	get_score_trace,
 	get_unresolved_reply_pending,
 	get_unresolved_resume_failures,
 	get_stats,
@@ -55,6 +57,7 @@ from bosshunter.collection.orchestrator import CollectionOrchestrator, normalize
 from bosshunter.collection.platforms.zhilian import load_zhilian_city_snapshot
 from bosshunter.collection.platforms.job51 import load_51job_city_snapshot
 from bosshunter.collection_run_store import (
+	boss_resume_options,
 	get_collection_run,
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
@@ -70,6 +73,19 @@ from bosshunter.scoring_run_store import (
 )
 from bosshunter.scoring_selection import preview_scoring, select_scoring_jobs, validate_options
 from bosshunter.web.preflight import check_ai_connection, collect_preflight_checks, error_messages
+from bosshunter.web.resume_info import (
+	build_resume_info_payload,
+	is_default_resume_placeholder,
+	load_resume_info,
+	resolve_resume_filesystem_path,
+)
+from bosshunter.web.resume_names import resolve_active_resume_path, select_resume_markdown_filename
+from bosshunter.web.resume_original import (
+	remove_companion_pdf,
+	resolve_configured_resume_files,
+	upload_keeps_original_pdf,
+	write_resume_artifacts,
+)
 from bosshunter.web.resume_upload import ResumeUploadError, prepare_resume_content
 from bosshunter.web.city_lookup import CityLookupError, lookup_city
 from bosshunter.web.tasks import (
@@ -327,6 +343,8 @@ def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 	collect_config = dict(config)
 	collect_config["_workbench_stop_event"] = task.stop_requested
 	collect_config["_workbench_collect_progress"] = lambda state: _record_collect_progress(task, state)
+	collect_config["_workbench_log"] = lambda message: _log(task, message)
+	collect_config["_workbench_score_progress"] = lambda state: _record_score_progress(task, state)
 	if "_collection_options" not in config:
 		# Preserve the old private executor seam used by legacy callers. New Web
 		# collection tasks always inject normalized options before starting.
@@ -930,6 +948,28 @@ def _integer_param(name: str, default: int, *, minimum: int, maximum: int | None
 	return value
 
 
+def _score_trace_missing_state(job: dict) -> str:
+	"""Classify a missing trace without inferring an AI failure from incomplete evidence."""
+	reason = str(job.get("score_reason") or "").strip()
+	if reason.startswith("预筛不通过:"):
+		return "prefilter_only"
+	if reason.startswith(("AI评分失败:", "AI 评分失败:", "评分失败:")):
+		return "failed"
+	if reason or str(job.get("status") or "") in {
+		"scored",
+		"ready",
+		"approved",
+		"rejected",
+		"sent",
+		"replied",
+		"resume_sent",
+		"needs_resume",
+		"follow_up_sent",
+	}:
+		return "legacy_missing"
+	return "unavailable"
+
+
 @app.route("/api/jobs/search")
 def api_job_search():
 	try:
@@ -1236,9 +1276,12 @@ def api_workbench_preflight():
 	options = body.get("options") if isinstance(body.get("options"), dict) else None
 	try:
 		config = load_config(CONFIG_PATH)
+		options = _resolve_collection_resume(mode, options)
 		checks = collect_preflight_checks(mode, config, options)
 		messages = error_messages(checks)
 		return _json_response({"ok": not messages, "messages": messages, "checks": checks})
+	except ValueError as e:
+		return _json_response({"ok": False, "messages": [str(e)]}, 400)
 	except Exception as e:
 		return _json_response({"ok": False, "messages": [str(e)]}, 500)
 
@@ -1257,12 +1300,16 @@ def _scoring_options_from_body(body: dict) -> dict:
 	raw_options = body.get("options", body)
 	if not isinstance(raw_options, dict):
 		raise ValueError("评分参数必须是对象")
-	return validate_options(
+	options = validate_options(
 		raw_options.get("scope", "pending"),
 		raw_options.get("limit"),
 		raw_options.get("job_ids", []),
 		raw_options.get("force_rescore", False),
 	)
+	# This cap applies to IDs supplied by the page, not internally selected jobs.
+	if len(options["job_ids"]) > 1000:
+		raise ValueError("一次最多选择 1000 个岗位")
+	return options
 
 
 @app.route("/api/scoring/preview", method="POST")
@@ -1433,6 +1480,14 @@ def api_scoring_end(run_id):
 	return _json_response(ended)
 
 
+def _resolve_collection_resume(mode: str, options: dict | None) -> dict | None:
+	if options and options.get("resume_run_id"):
+		if mode != "collect" or not isinstance(options["resume_run_id"], str):
+			raise ValueError("请在岗位采集中继续原 BOSS 任务")
+		return boss_resume_options(DATA_DIR / "bosshunter.db", options["resume_run_id"])
+	return options
+
+
 @app.route("/api/workbench/task", method="POST")
 def api_workbench_task_start():
 	try:
@@ -1442,6 +1497,10 @@ def api_workbench_task_start():
 		mode = str(body.get("mode", ""))
 		base_config = load_config(CONFIG_PATH)
 		options = body.get("options") if isinstance(body.get("options"), dict) else None
+		try:
+			options = _resolve_collection_resume(mode, options)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 		collection_options = None
 		if mode == "collect":
 			try:
@@ -1467,7 +1526,8 @@ def api_workbench_task_start():
 		if messages:
 			return _json_response({"error": "请先处理启动前检查", "messages": messages}, 400)
 		extra = {"_collection_options": collection_options} if collection_options is not None else {}
-		if collection_options is not None:
+		before_start = None
+		if collection_options is not None and not collection_options.get("resume_run_id"):
 			# Persist only non-secret collection preferences so the next dialog can
 			# restore each platform's independent fields and queue order.
 			base_config["collection"] = {
@@ -1487,9 +1547,9 @@ def api_workbench_task_start():
 				if platform not in selected_platforms and isinstance(platform_configs.get(platform), dict):
 					platform_configs[platform]["enabled"] = False
 			base_config["platforms"] = platform_configs
-			_write_config(base_config)
+			before_start = lambda: _write_config(base_config)
 		with job_mutation_lock:
-			task = task_runner.start(mode, _task_config(extra))
+			task = task_runner.start(mode, {**base_config, **extra}, before_start=before_start)
 		return _json_response(task)
 	except TaskAlreadyRunningError as e:
 		return _json_response({"error": str(e)}, 409)
@@ -1730,6 +1790,27 @@ def api_job_detail(job_id):
 		db.close()
 
 
+@app.route("/api/jobs/<job_id>/score-trace")
+def api_job_score_trace(job_id):
+	"""Expose the latest validated score explanation without changing job-list payloads."""
+	db = _get_web_db()
+	try:
+		job = db.execute(
+			"SELECT id, status, score_reason FROM jobs WHERE id = ? AND deleted_at IS NULL",
+			(job_id,),
+		).fetchone()
+		if not job:
+			return _json_response({"error": "job_not_found"}, 404)
+		found, stored_trace = get_score_trace(db, job_id)
+		trace = sanitize_score_trace(stored_trace) if found else None
+		if trace is not None:
+			return _json_response({"job_id": job_id, "state": "available", "trace": trace})
+		state = "unavailable" if found else _score_trace_missing_state(dict(job))
+		return _json_response({"job_id": job_id, "state": state})
+	finally:
+		db.close()
+
+
 @app.route("/api/jobs/<job_id>/mark-resume-sent", method="POST")
 def api_job_mark_resume_sent(job_id):
 	db = _get_web_db()
@@ -1757,6 +1838,112 @@ def api_job_resume_download(job_id):
 		if not resume_path.exists():
 			return _json_response({"error": "定制简历文件不存在"}, 404)
 		return static_file(resume_path.name, root=str(resume_path.parent), download=resume_path.name)
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/<job_id>/outreach-resume")
+def api_job_outreach_resume(job_id):
+	"""Return the editable source and review state without exposing local paths."""
+	db = _get_web_db()
+	try:
+		row = db.execute(
+			"SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL", (job_id,)
+		).fetchone()
+		if not row:
+			return _json_response({"error": "岗位不存在"}, 404)
+		job = dict(row)
+		markdown_text = ""
+		source_value = str(job.get("resume_source_path") or "")
+		if source_value:
+			source_path = Path(source_value)
+			if source_path.exists():
+				markdown_text = source_path.read_text(encoding="utf-8")
+		return _json_response({
+			"status": job.get("resume_review_status") or "missing",
+			"source": job.get("resume_generation_source"),
+			"failure_reason": job.get("resume_failure_reason"),
+			"reviewed_at": job.get("resume_reviewed_at"),
+			"markdown": markdown_text,
+			"image_url": f"/api/jobs/{job_id}/outreach-resume/image" if job.get("resume_image_path") else None,
+		})
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/<job_id>/outreach-resume", method="PUT")
+def api_job_outreach_resume_save(job_id):
+	body = request.json or {}
+	markdown_text = str(body.get("markdown") or "")
+	if len(markdown_text) > 30000:
+		return _json_response({"error": "图片简历内容过长"}, 400)
+	source = "codex" if body.get("source") == "codex" else "human_edit"
+	try:
+		from bosshunter.ai.resume import save_resume_draft
+
+		result = save_resume_draft(job_id, markdown_text, _task_config(), source=source)
+		db = _get_web_db()
+		try:
+			add_history(db, job_id, "outreach_resume_edited", f"已保存并重新渲染图片简历，来源：{source}")
+		finally:
+			db.close()
+		return _json_response({"success": True, "status": "needs_review", "resume_path": result.name})
+	except KeyError:
+		return _json_response({"error": "岗位不存在"}, 404)
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 409)
+	except Exception as exc:
+		return _json_response({"error": f"保存图片简历失败：{exc}"}, 500)
+
+
+@app.route("/api/jobs/<job_id>/outreach-resume/review", method="POST")
+def api_job_outreach_resume_review(job_id):
+	body = request.json or {}
+	if body.get("confirmed") is not True:
+		return _json_response({"error": "确认图片简历需要 confirmed=true"}, 400)
+	db = _get_web_db()
+	try:
+		row = db.execute(
+			"SELECT resume_image_path FROM jobs WHERE id = ? AND deleted_at IS NULL", (job_id,)
+		).fetchone()
+		if not row:
+			return _json_response({"error": "岗位不存在"}, 404)
+		image_path = Path(str(row["resume_image_path"] or ""))
+		if not row["resume_image_path"] or not image_path.exists():
+			return _json_response({"error": "图片简历不存在，请先生成或保存草稿"}, 409)
+		db.execute(
+			"""
+			UPDATE jobs
+			SET resume_review_status = 'ready', resume_reviewed_at = CURRENT_TIMESTAMP,
+				resume_failure_reason = NULL, updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND deleted_at IS NULL
+			""",
+			(job_id,),
+		)
+		add_history(db, job_id, "outreach_resume_reviewed", "用户已确认图片简历的事实、隐私和版式")
+		return _json_response({"success": True, "status": "ready"})
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/<job_id>/outreach-resume/image")
+def api_job_outreach_resume_image(job_id):
+	db = _get_web_db()
+	try:
+		row = db.execute(
+			"SELECT resume_image_path FROM jobs WHERE id = ? AND deleted_at IS NULL", (job_id,)
+		).fetchone()
+		if not row or not row["resume_image_path"]:
+			return _json_response({"error": "图片简历不存在"}, 404)
+		image_path = Path(str(row["resume_image_path"]))
+		if not image_path.exists():
+			return _json_response({"error": "图片简历文件不存在"}, 404)
+		download = request.params.get("download", "").lower() in {"1", "true", "yes"}
+		return static_file(
+			image_path.name,
+			root=str(image_path.parent),
+			download=image_path.name if download else False,
+		)
 	finally:
 		db.close()
 
@@ -1876,6 +2063,90 @@ def _api_history_dismiss_locked(history_id):
 			),
 		)
 		return _json_response({"success": True})
+	finally:
+		db.close()
+
+
+@app.route("/api/history/<history_id>/resume-retry", method="POST")
+def api_history_resume_retry(history_id):
+	db = _get_web_db()
+	try:
+		row = db.execute(
+			"SELECT id, job_id, action, detail FROM history WHERE id = ?",
+			(history_id,),
+		).fetchone()
+		if not row:
+			return _json_response({"error": "简历失败记录不存在"}, 404)
+		if row["action"] != "resume_failed":
+			return _json_response({"error": "只能重试简历生成失败记录"}, 400)
+
+		job = db.execute(
+			"SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL",
+			(row["job_id"],),
+		).fetchone()
+		if not job:
+			return _json_response({"error": "对应岗位不存在或已删除"}, 404)
+
+		from bosshunter.ai.resume import generate_tailored_resume, get_last_resume_failure_reason
+
+		try:
+			resume_path = generate_tailored_resume(job["id"], _task_config())
+		except Exception as exc:
+			return _json_response({"error": f"重新生成失败：{exc}"}, 500)
+
+		if not resume_path:
+			reason = get_last_resume_failure_reason(job["id"]) or "定制简历生成失败，未获得更具体的错误信息"
+			add_history(
+				db,
+				job["id"],
+				"resume_failed",
+				json.dumps({
+					"schema": "resume_failed.v2",
+					"system_reason": reason,
+					"hr_question": "",
+					"conversation_tail": [],
+				}, ensure_ascii=False),
+			)
+			return _json_response({"error": reason}, 400)
+
+		current_status = str(job["status"] or "").strip()
+		if current_status not in {"replied", "resume_sent", "needs_resume", "follow_up_sent"}:
+			update_job_status(db, job["id"], "needs_resume")
+		history_detail = json.dumps({
+			"schema": "needs_resume.v1",
+			"message": f"Web Dashboard 重试生成定制简历成功，待手动发送: {resume_path}",
+			"resume_path": str(resume_path),
+		}, ensure_ascii=False)
+		add_history(db, job["id"], "needs_resume", history_detail)
+		return _json_response({"success": True, "resume_path": str(resume_path)})
+	except Exception as exc:
+		return _json_response({"error": str(exc)}, 500)
+	finally:
+		db.close()
+
+
+@app.route("/api/history/<history_id>/resume-dismiss", method="POST")
+def api_history_resume_dismiss(history_id):
+	db = _get_web_db()
+	try:
+		row = db.execute(
+			"SELECT id, job_id, action, detail FROM history WHERE id = ?",
+			(history_id,),
+		).fetchone()
+		if not row:
+			return _json_response({"error": "简历失败记录不存在"}, 404)
+		if row["action"] != "resume_failed":
+			return _json_response({"error": "只能忽略简历生成失败记录"}, 400)
+
+		add_history(
+			db,
+			row["job_id"],
+			"resume_failed_dismissed",
+			json.dumps({"schema": "resume_failed_dismissed.v1", "message": "Web Dashboard 忽略简历生成失败记录"}, ensure_ascii=False),
+		)
+		return _json_response({"success": True})
+	except Exception as exc:
+		return _json_response({"error": str(exc)}, 500)
 	finally:
 		db.close()
 
@@ -2182,24 +2453,51 @@ def api_resume_get():
 	try:
 		config = load_config(CONFIG_PATH)
 		resume_path = config.get("profile", {}).get("resume_path", "")
-		if resume_path and Path(resume_path).exists():
-			p = Path(resume_path)
-			stat = p.stat()
-			return _json_response({
-				"filename": p.name,
-				"size": stat.st_size,
-				"uploaded_at": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
-				"path": str(p)
-			})
-		return _json_response(None)
+		if not resume_path or not str(resume_path).strip():
+			return _json_response(None)
+		configured = resolve_resume_filesystem_path(resume_path, BASE_DIR)
+		info = load_resume_info(configured)
+		if info is None:
+			# Default ./resume.md from config DEFAULTS is a placeholder, not an error.
+			if is_default_resume_placeholder(resume_path):
+				return _json_response(None)
+			return _json_response({"error": "配置的简历文件不存在或无法读取"}, 404)
+		canonical = str(info["path"])
+		if Path(canonical).resolve() != configured.resolve():
+			# Point AI/config at Markdown after PDF-only or legacy PDF paths.
+			config.setdefault("profile", {})["resume_path"] = canonical
+			_write_config(config)
+		return _json_response(info)
+	except ResumeUploadError as e:
+		return _json_response({"error": str(e)}, 400)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/resume/original")
+def api_resume_original():
+	"""Serve the companion original PDF for in-panel preview."""
+	try:
+		config = load_config(CONFIG_PATH)
+		resume_path = config.get("profile", {}).get("resume_path", "")
+		# Match GET /api/resume: blank/whitespace means no resume configured.
+		if not resume_path or not str(resume_path).strip():
+			abort(404, "No resume configured")
+		configured = resolve_resume_filesystem_path(resume_path, BASE_DIR)
+		_, pdf_path = resolve_configured_resume_files(configured)
+		if not pdf_path.is_file():
+			abort(404, "Original PDF not found")
+		return static_file(pdf_path.name, root=str(pdf_path.parent), mimetype="application/pdf")
+	except HTTPResponse:
+		raise
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
 
 
 @app.route("/api/resume/upload", method="POST")
 def api_resume_upload():
 	try:
-		import yaml
 		upload = request.files.get("file")
 		if not upload:
 			return _json_response({"error": "No file uploaded"}, 400)
@@ -2214,20 +2512,35 @@ def api_resume_upload():
 		raw_name = upload.raw_filename or upload.filename
 		safe_name, stored_content = prepare_resume_content(raw_name, content)
 		RESUME_DIR.mkdir(parents=True, exist_ok=True)
-		dest = RESUME_DIR / safe_name
-		dest.write_bytes(stored_content)
-
-		# Update config
 		config = load_config(CONFIG_PATH)
-		config.setdefault("profile", {})["resume_path"] = str(dest)
+		active_path = resolve_active_resume_path(
+			config.get("profile", {}).get("resume_path") or None,
+			BASE_DIR,
+		)
+		final_name = select_resume_markdown_filename(
+			RESUME_DIR,
+			safe_name,
+			stored_content,
+			active_path,
+		)
+		dest = RESUME_DIR / final_name
+		original_pdf_bytes = content if upload_keeps_original_pdf(raw_name) else None
+		write_resume_artifacts(dest, stored_content, original_pdf_bytes=original_pdf_bytes)
+
+		# Always store an absolute path so AI/preflight can Path(...).exists() directly.
+		config.setdefault("profile", {})["resume_path"] = str(dest.resolve())
 		_write_config(config)
 
-		return _json_response({
-			"success": True,
-			"filename": safe_name,
-			"size": len(stored_content),
-			"path": str(dest)
-		})
+		info = build_resume_info_payload(
+			filename=final_name,
+			size=len(stored_content),
+			mtime=dest.stat().st_mtime,
+			content=stored_content.decode("utf-8"),
+			path=str(dest.resolve()),
+			has_original_pdf=original_pdf_bytes is not None,
+			original_pdf_path=str(dest.with_suffix(".pdf").resolve()) if original_pdf_bytes is not None else None,
+		)
+		return _json_response({"success": True, **info})
 	except ResumeUploadError as e:
 		return _json_response({"error": str(e)}, 400)
 	except Exception as e:
@@ -2237,14 +2550,24 @@ def api_resume_upload():
 @app.route("/api/resume", method="DELETE")
 def api_resume_delete():
 	try:
-		import yaml
 		config = load_config(CONFIG_PATH)
 
-		# Never delete the master resume from disk; only detach it from config.
+		# Detach from config always. Only drop the companion PDF when a Markdown
+		# master already exists — never force PDF→MD conversion here, or a bad
+		# PDF-only resume would block DELETE.
+		resume_path = config.get("profile", {}).get("resume_path", "")
+		if resume_path:
+			configured = resolve_resume_filesystem_path(resume_path, BASE_DIR)
+			markdown_path, pdf_path = resolve_configured_resume_files(configured)
+			if markdown_path.is_file() and pdf_path.is_file():
+				remove_companion_pdf(configured)
+
 		config.setdefault("profile", {})["resume_path"] = ""
 		_write_config(config)
 
 		return _json_response({"success": True})
+	except ResumeUploadError as e:
+		return _json_response({"error": str(e)}, 400)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
 
@@ -2263,9 +2586,29 @@ _STATIC_MIME_TYPES = {
 
 
 def _serve_static(filename: str, root: Path):
-	"""Serve static assets with stable MIME types while retaining range/cache support."""
-	mimetype = _STATIC_MIME_TYPES.get(Path(filename).suffix.lower(), "auto")
-	return static_file(filename, root=str(root), mimetype=mimetype)
+	"""Serve static assets with stable MIME types while retaining range/cache support.
+
+	Reads the file bytes directly instead of relying on ``bottle.static_file``,
+	which gates on ``os.access(..., os.R_OK)``. On macOS (sandboxed/TCC-restricted
+	processes) that check can report a false 403 denial even though the file is
+	actually readable, which makes the dashboard fail to load.
+	"""
+	file_path = (root / filename).resolve()
+	resolved_root = root.resolve()
+	if str(file_path).startswith(str(resolved_root)):
+		try:
+			data = file_path.read_bytes()
+		except OSError:
+			pass
+		else:
+			mimetype = _STATIC_MIME_TYPES.get(Path(filename).suffix.lower(), "auto")
+			if mimetype == "auto":
+				mimetype, _ = mimetypes.guess_type(filename)
+			response.content_type = mimetype or "application/octet-stream"
+			response.headers["Content-Length"] = str(len(data))
+			return data
+
+	return static_file(filename, root=str(root), mimetype="auto")
 
 
 @app.route("/assets/<filepath:path>")
@@ -2308,6 +2651,12 @@ def error500(error):
 
 def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = True):
 	"""Start the web server."""
+	if not (FRONTEND_DIR / "index.html").is_file():
+		raise SystemExit(
+			"前端资源未构建：请在 src/bosshunter/web/frontend 下执行 "
+			"`npm ci && npm run build`（或安装官方发布的 wheel）后重试。"
+		)
+
 	if open_browser:
 		import webbrowser
 		import threading

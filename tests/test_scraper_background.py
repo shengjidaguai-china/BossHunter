@@ -1,14 +1,64 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, call, patch
 
 from bosshunter.scraper.jobs import scrape_jobs
 from bosshunter.web.server import _execute_collect
 from bosshunter.web.tasks import WorkbenchTask
+from bosshunter.collection.models import JobCandidate, PlatformCollectionResult
+from bosshunter.collection.orchestrator import CollectionOrchestrator
+from bosshunter.collection.registry import CollectorRegistry
 
 
 class ScraperBackgroundTests(unittest.TestCase):
+    def test_collection_options_report_automatic_scoring_to_workbench(self):
+        task = WorkbenchTask(id="auto-score-task", mode="collect", label="单独采集")
+        config = {"_collection_options": {
+            "platform_order": ["boss"], "auto_score": True,
+            "platforms": {"boss": {"keywords": ["AI"], "cities": ["北京"], "max_pages": 1}},
+        }}
+        candidate = JobCandidate(platform="boss", source_job_id="new-scoring-job",
+                                 title="AI运营", company="测试公司", city="北京", jd="负责运营",
+                                 url="https://example.test/job_detail/new-scoring-job.html")
+
+        def collect(_request, hooks):
+            if hooks.on_list_candidate(candidate):
+                hooks.on_candidate(candidate)
+            return PlatformCollectionResult("boss", "completed", "search_exhausted", "采集结束")
+
+        registry = CollectorRegistry({"boss": lambda: Mock(collect=collect)})
+
+        def score_with_progress(score_config, **options):
+            self.assertEqual(options["job_ids"], ["new-scoring-job"])
+            self.assertEqual(task.progress["outcome"], "scoring")
+            self.assertTrue(any("开始 AI 评分" in log for log in task.logs))
+            score_config["_workbench_score_progress"]({
+                "completed": 1, "total": 1, "scored": 1, "filtered": 0, "failed": 0,
+            })
+            score_config["_workbench_log"]("评分结果已保存")
+            return 1, 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            def orchestrator(collect_config, **kwargs):
+                return CollectionOrchestrator(collect_config, db_path=Path(tmp) / "jobs.db",
+                                              task_id=kwargs["task_id"], registry=registry)
+
+            with patch("bosshunter.web.server.CollectionOrchestrator", side_effect=orchestrator), \
+                 patch("bosshunter.ai.scorer.score_jobs", side_effect=score_with_progress) as score:
+                _execute_collect(task, config)
+
+        score.assert_called_once()
+        self.assertEqual(task.metrics["collect_new"], 1)
+        self.assertEqual(task.metrics["ai_completed"], 1)
+        self.assertEqual(task.metrics["ai_total"], 1)
+        self.assertEqual(task.metrics["ai_passed"], 1)
+        self.assertEqual(task.metrics["ai_failed"], 0)
+        self.assertIn("AI 评分进度 1/1：通过 1，过滤 0，失败 0", task.logs)
+        self.assertIn("评分结果已保存", task.logs)
+
     def test_stopped_collection_does_not_open_a_search_page(self):
         db = Mock()
         stop_event = Event()
@@ -87,7 +137,7 @@ class ScraperBackgroundTests(unittest.TestCase):
              patch("bosshunter.scraper.jobs.new_tab", return_value="worker-target"), \
              patch("bosshunter.scraper.jobs.navigate", return_value=True), \
              patch("bosshunter.scraper.jobs.evaluate", side_effect=[
-                 json.dumps({"risk": None}), json.dumps(jobs),
+                 json.dumps({"risk": None}), False, json.dumps(jobs),
                  json.dumps({"risk": None}), json.dumps(detail),
              ]), \
              patch("bosshunter.scraper.jobs.wait_for_load"), \
@@ -148,7 +198,7 @@ class ScraperBackgroundTests(unittest.TestCase):
              patch(
                  "bosshunter.scraper.jobs.evaluate",
                  side_effect=[
-                     json.dumps({"risk": None}), json.dumps(jobs),
+                     json.dumps({"risk": None}), False, json.dumps(jobs),
                      json.dumps({"risk": None}), json.dumps(detail),
                  ],
              ), \

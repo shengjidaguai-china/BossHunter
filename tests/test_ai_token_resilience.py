@@ -335,7 +335,7 @@ class ScorerTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.scorer.quick_score", return_value=(80, "通过")),
             patch("bosshunter.ai.scorer._call_claude", side_effect=[first, review]) as call_ai,
             patch("bosshunter.ai.scorer.update_job_quick_score"),
-            patch("bosshunter.ai.scorer.update_job_score") as update_score,
+            patch("bosshunter.ai.scorer.persist_job_score_and_trace") as persist_score,
             patch("bosshunter.ai.scorer.update_job_status"),
         ):
             scored, filtered = scorer.score_jobs(
@@ -347,8 +347,8 @@ class ScorerTokenResilienceTests(unittest.TestCase):
 
         self.assertEqual((scored, filtered), (1, 0))
         self.assertEqual(call_ai.call_count, 2)
-        self.assertEqual(update_score.call_args.args[2], 71)
-        self.assertIn("二次复核", update_score.call_args.args[3])
+        self.assertEqual(persist_score.call_args.args[2], 71)
+        self.assertIn("二次复核", persist_score.call_args.args[3])
 
     def test_ai_calls_run_with_configured_concurrency_but_db_writes_stay_on_main_thread(self):
         db = MagicMock()
@@ -498,13 +498,14 @@ class ScorerTokenResilienceTests(unittest.TestCase):
         self.assertEqual(progress_updates[-1]["completed"], 1)
         self.assertEqual(progress_updates[-1]["scored"], 1)
 
-    def test_context_limit_retries_once_with_compact_prompt(self):
+    def test_context_limit_retry_preserves_full_resume_and_jd(self):
         db = MagicMock()
         job = _job("long")
+        resume = "简历内容" * 1000
 
         with (
             patch("bosshunter.ai.scorer.get_db", return_value=db),
-            patch("bosshunter.ai.scorer._load_resume", return_value="简历内容" * 1000),
+            patch("bosshunter.ai.scorer._load_resume", return_value=resume),
             patch("bosshunter.ai.scorer.get_jobs_by_status", return_value=[job]),
             patch("bosshunter.ai.scorer.quick_score", return_value=(80, "通过")),
             patch(
@@ -526,10 +527,37 @@ class ScorerTokenResilienceTests(unittest.TestCase):
         self.assertEqual(scored, 1)
         self.assertEqual(call_ai.call_count, 2)
         full_prompt = call_ai.call_args_list[0].args[0]
-        compact_prompt = call_ai.call_args_list[1].args[0]
-        self.assertLess(len(compact_prompt), len(full_prompt))
-        self.assertIn("为适配模型上下文已裁剪", compact_prompt)
-        self.assertEqual(call_ai.call_args_list[1].args[2], 128)
+        retry_prompt = call_ai.call_args_list[1].args[0]
+        self.assertEqual(retry_prompt, full_prompt)
+        self.assertIn(resume, full_prompt)
+        self.assertIn(job["jd"], full_prompt)
+        self.assertEqual(call_ai.call_args_list[1].args[2], 1024)
+
+    def test_context_limit_does_not_score_from_incomplete_evidence(self):
+        with patch(
+            "bosshunter.ai.scorer._call_claude",
+            side_effect=credentials.AIRequestError("context_limit", "上下文过长"),
+        ) as call_ai:
+            outcome = scorer._request_score(_job("long"), "简历内容" * 1000, {}, 2)
+
+        self.assertIsNone(outcome.result)
+        self.assertIn("完整简历与JD仍超过", outcome.failure_detail)
+        self.assertEqual(call_ai.call_count, 2)
+
+    def test_context_retry_does_not_increase_a_smaller_output_budget(self):
+        with patch(
+            "bosshunter.ai.scorer._call_claude",
+            side_effect=[
+                credentials.AIRequestError("context_limit", "上下文过长"),
+                _score_response(82),
+            ],
+        ) as call_ai:
+            outcome = scorer._request_score(
+                _job("long"), "完整简历", {"ai": {"scoring_max_tokens": 512}}, 2,
+            )
+
+        self.assertIsNotNone(outcome.result)
+        self.assertEqual(call_ai.call_args_list[1].args[2], 512)
 
     def test_output_limit_retries_once_with_lower_single_request_limit(self):
         db = MagicMock()
@@ -740,6 +768,7 @@ class ScorerTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.scorer.update_job_quick_score"),
             patch("bosshunter.ai.scorer.update_job_score") as update_score,
             patch("bosshunter.ai.scorer.update_job_status") as update_status,
+            patch("bosshunter.ai.scorer.persist_job_score_and_trace") as persist_score,
         ):
             scored, filtered = scorer.score_jobs(
                 {
@@ -751,14 +780,52 @@ class ScorerTokenResilienceTests(unittest.TestCase):
 
         self.assertEqual((scored, filtered), (1, 0))
         self.assertEqual(call_ai.call_count, 3)
-        self.assertEqual(update_score.call_count, 2)
+        self.assertEqual(update_score.call_count, 1)
         self.assertEqual(
             update_score.call_args_list[0].args,
             (db, "1", 0, "AI评分失败: AI 未返回评分内容"),
         )
+        self.assertEqual(persist_score.call_count, 1)
+        self.assertEqual(persist_score.call_args.args[1], "2")
+        self.assertEqual(persist_score.call_args.args[2], 82)
         update_status.assert_called_once_with(db, "2", "ready")
         self.assertTrue(any("已跳过 公司 1｜AI 产品经理 1" in message for message in logs))
         self.assertEqual(checkpoints[-1]["status"], "completed_with_errors")
+
+    def test_deleted_job_mid_batch_is_skipped_and_batch_continues(self):
+        db = MagicMock()
+        jobs = [_job("1"), _job("2")]
+        checkpoints: list[dict] = []
+
+        with (
+            patch("bosshunter.ai.scorer.get_db", return_value=db),
+            patch("bosshunter.ai.scorer._load_resume", return_value="真实简历"),
+            patch("bosshunter.ai.scorer.get_jobs_by_status", return_value=jobs),
+            patch("bosshunter.ai.scorer.quick_score", return_value=(80, "通过")),
+            patch(
+                "bosshunter.ai.scorer._call_claude",
+                side_effect=[_score_response(82), _score_response(78)],
+            ),
+            patch("bosshunter.ai.scorer.update_job_quick_score"),
+            patch("bosshunter.ai.scorer.update_job_score"),
+            patch("bosshunter.ai.scorer.update_job_status") as update_status,
+            patch(
+                "bosshunter.ai.scorer.persist_job_score_and_trace",
+                side_effect=[ValueError("岗位不存在或已进入回收站，未保存评分追踪"), None],
+            ) as persist_score,
+        ):
+            scored, filtered = scorer.score_jobs(
+                {
+                    "scoring": {"threshold": 70},
+                    "_workbench_log": lambda message: None,
+                    "_workbench_score_checkpoint": checkpoints.append,
+                }
+            )
+
+        self.assertEqual((scored, filtered), (1, 0))
+        self.assertEqual(persist_score.call_count, 2)
+        update_status.assert_called_once_with(db, "2", "ready")
+        self.assertEqual(checkpoints[-1]["status"], "completed")
 
     def test_truncation_retry_empty_response_stays_job_level(self):
         db = MagicMock()

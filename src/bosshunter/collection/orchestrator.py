@@ -20,7 +20,10 @@ from bosshunter.collection.platforms.job51 import Job51Collector, get_51job_city
 from bosshunter.collection.platforms.liepin import LiepinCollector, get_liepin_city_code
 from bosshunter.collection.platforms.zhilian import ZhilianCollector, get_zhilian_city_code
 from bosshunter.collection.registry import CollectorRegistry
-from bosshunter.collection_run_store import create_collection_run, update_collection_run
+from bosshunter.collection_run_store import (
+    boss_combo_key, boss_resume_options, claim_boss_resume, create_collection_run,
+    save_boss_checkpoint, update_collection_run,
+)
 from bosshunter.db import get_db, insert_job_if_new, job_identity_exists
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 
@@ -119,6 +122,8 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
         "auto_score": supplied.get("auto_score", False) is True,
         "platforms": {platform: platforms[platform] for platform in order if platform in platforms},
     }
+    if supplied.get("resume_run_id"):
+        options["resume_run_id"] = supplied["resume_run_id"]
     return validate_collection_options(options)
 
 
@@ -139,6 +144,10 @@ def validate_collection_options(options: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(options.get("auto_score", False), bool):
         raise ValueError("auto_score 必须是布尔值")
     normalized: dict[str, Any] = {"platform_order": order, "auto_score": bool(options.get("auto_score")), "platforms": {}}
+    if options.get("resume_run_id"):
+        if not isinstance(options["resume_run_id"], str) or order != ["boss"]:
+            raise ValueError("继续采集必须选择原来的 BOSS 任务")
+        normalized["resume_run_id"] = options["resume_run_id"]
     for platform in order:
         value = platforms.get(platform)
         if not isinstance(value, dict):
@@ -313,16 +322,36 @@ class CollectionOrchestrator:
         self.stop_event = config.get("_workbench_stop_event")
 
     def run(self, raw_options: dict[str, Any] | None = None) -> dict[str, Any]:
+        resume_id = raw_options.get("resume_run_id") if isinstance(raw_options, dict) else None
+        if resume_id:
+            # The stored search is authoritative, including filters and page limits.
+            raw_options = boss_resume_options(self.db_path, str(resume_id))
         options = normalize_collection_options(self.config, raw_options)
         order = options["platform_order"]
         states: dict[str, dict[str, Any]] = {
             platform: {"status": "queued", "new": 0, "target": None, "percent": None}
             for platform in order
         }
-        create_collection_run(self.db_path, run_id=self.run_id, task_id=self.task_id, options=options, platform_states=states)
-        all_new_ids: list[str] = []
+        previous = None
+        if resume_id:
+            self.run_id = str(resume_id)
+            previous = claim_boss_resume(self.db_path, self.run_id, self.task_id)
+            states = deepcopy(previous["platform_states"])
+            states.setdefault("boss", {}).update(status="queued", reason_code="", message="继续原任务")
+        else:
+            create_collection_run(
+                self.db_path, run_id=self.run_id, task_id=self.task_id, options=options,
+                platform_states=states, enable_boss_resume=order == ["boss"],
+            )
+        checkpoint_pages = dict(previous["boss_checkpoint"]["pages"]) if previous else {}
+        all_new_ids: list[str] = list(previous["collected_job_ids"]) if previous else []
         platform_results: list[PlatformCollectionResult] = []
         conn = get_db(self.db_path)
+
+        def checkpoint(city: str, keyword: str, page: int) -> None:
+            checkpoint_pages[boss_combo_key(city, keyword)] = page
+            save_boss_checkpoint(conn, self.run_id, checkpoint_pages)
+
         try:
             for index, platform in enumerate(order, start=1):
                 if self.stop_event is not None and self.stop_event.is_set():
@@ -332,7 +361,7 @@ class CollectionOrchestrator:
                 raw = options["platforms"][platform]
                 request = PlatformCollectionRequest(platform=platform, **raw)
                 states[platform]["status"] = "running"
-                self._persist(states, all_new_ids, platform)
+                self._persist(states, all_new_ids, platform, status="running")
                 processor = _SharedProcessor(
                     conn, request, run_id=self.run_id, platform_index=index, platform_total=len(order),
                     stop_event=self.stop_event, config=self.config,
@@ -340,6 +369,11 @@ class CollectionOrchestrator:
                         states, p, progress, all_new_ids, processor_ref.new_job_ids if processor_ref else []
                     ),
                 )
+                if previous:
+                    processor.new_job_ids = list(previous["collected_job_ids"])
+                    for name in ("seen", "duplicate", "filtered", "parse_failed", "save_failed"):
+                        setattr(processor.progress, name, int(previous["platform_states"].get(platform, {}).get(name) or 0))
+                prior_save_failures = processor.progress.save_failed
                 # Bind the processor into the callback after construction so the
                 # current platform's progress is not confused with prior IDs.
                 processor.emit = lambda progress, p=platform, processor_ref=processor: self._emit(
@@ -351,6 +385,9 @@ class CollectionOrchestrator:
                     on_candidate=processor.save,
                     on_parse_failed=lambda reason, p=processor: self._parse_failed(p, reason),
                     on_event=lambda p=processor, **kwargs: p.event(**kwargs),
+                    can_checkpoint=lambda p=processor, baseline=prior_save_failures: p.progress.save_failed == baseline,
+                    completed_page=(lambda city, keyword: checkpoint_pages.get(boss_combo_key(city, keyword), 0)),
+                    on_page_complete=checkpoint if order == ["boss"] else lambda *_: None,
                 )
                 try:
                     collector = (
@@ -358,9 +395,10 @@ class CollectionOrchestrator:
                         if platform == "boss" and self._uses_default_registry
                         else Job51Collector(config=self.config, safety_conn=conn)
                         if platform == "51job" and self._uses_default_registry
-
                         else ZhilianCollector(config=self.config, safety_conn=conn)
                         if platform == "zhilian" and self._uses_default_registry
+                        else LiepinCollector(config=self.config, safety_conn=conn)
+                        if platform == "liepin" and self._uses_default_registry
                         else self.registry.get(platform)
                     )
                     result = collector.collect(request, hooks)
@@ -370,6 +408,15 @@ class CollectionOrchestrator:
                     result = PlatformCollectionResult(platform, "failed", "network_error", f"{platform} 采集失败", error=str(exc)[:500])
                 result.new_job_ids = list(processor.new_job_ids)
                 result.counts = self._counts(processor.progress)
+                if platform == "boss" and result.status in {"completed", "completed_with_shortage"}:
+                    if result.status == "completed" and not result.new_job_ids:
+                        result.status = "completed_with_shortage"
+                        result.reason_code = "no_new_jobs"
+                    result.message += (
+                        f"；本轮新增 {len(result.new_job_ids)} 条，读取 {processor.progress.seen} 条，"
+                        f"重复 {processor.progress.duplicate} 条，过滤 {processor.progress.filtered} 条，"
+                        f"解析失败 {processor.progress.parse_failed} 条，保存失败 {processor.progress.save_failed} 条"
+                    )
                 platform_results.append(result)
                 states[platform].update({
                     "status": result.status,
@@ -469,6 +516,9 @@ class CollectionOrchestrator:
         self._persist(states, [*all_new_ids, *platform_new_ids], platform)
 
     def _emit_scoring(self, states: dict[str, dict[str, Any]], new_ids: list[str]) -> None:
+        log = self.config.get("_workbench_log")
+        if callable(log):
+            log(f"开始 AI 评分：本轮采集已结束，处理 {len(new_ids)} 个新增岗位")
         callback = self.config.get("_workbench_collect_progress")
         if callable(callback):
             callback({

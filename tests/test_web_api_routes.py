@@ -18,6 +18,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from bosshunter.db import (
     add_history,
     get_db,
+    get_unresolved_resume_failures,
     insert_job,
     update_job_greeting,
     update_job_score,
@@ -28,6 +29,7 @@ from bosshunter.web import server
 from threading import Event, Lock
 
 from bosshunter.scoring_run_store import create_scoring_run, get_scoring_run, update_scoring_run
+from bosshunter.collection_run_store import create_collection_run, update_collection_run
 from bosshunter.web.tasks import TaskAlreadyRunningError, WorkbenchTask, WorkbenchTaskRunner
 
 
@@ -2330,6 +2332,46 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(resolved_item["resolved"])
         self.assertEqual(resolved_item["resume_path"], "/tmp/generated.md")
 
+    def test_collection_resume_preflight_and_start_use_saved_search_without_saving_preferences(self):
+        config = {"search": {"keywords": ["new defaults"], "cities": ["上海"]}}
+        saved_options = server.normalize_collection_options({}, {"platform_order": ["boss"], "platforms": {
+            "boss": {"keywords": ["original"], "cities": ["北京"], "max_pages": 2,
+                     "filters": {"experience": ["1-3年"]}},
+        }})
+        with tempfile.TemporaryDirectory() as tmp, patch.object(server, "DATA_DIR", Path(tmp)), \
+             patch.object(server, "load_config", return_value=config), \
+             patch.object(server, "_write_config") as write_config, \
+             patch.object(server, "collect_preflight_checks", return_value=[]) as preflight, \
+             patch.object(server, "_preflight_messages", return_value=[]), \
+             patch.object(server.task_runner, "start", return_value={"id": "resumed"}) as start:
+            db_path = Path(tmp) / "bosshunter.db"
+            create_collection_run(db_path, run_id="original", options=saved_options,
+                                  platform_states={"boss": {"status": "stopped"}}, enable_boss_resume=True)
+            update_collection_run(db_path, "original", status="stopped")
+            payload = {"mode": "collect", "options": {"resume_run_id": "original",
+                       "platforms": {"boss": {"keywords": ["tampered"]}}}}
+            status, _, body = self._request("/api/collection/runs")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertTrue(json.loads(body)[0]["can_resume"])
+            status, _, body = self._request("/api/workbench/preflight", "POST", payload)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(preflight.call_args.args[2]["platforms"], saved_options["platforms"])
+            status, _, body = self._request("/api/workbench/task", "POST", payload)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(start.call_args.args[0], "collect")
+            actual = start.call_args.args[1]["_collection_options"]
+            self.assertEqual(actual, {**saved_options, "resume_run_id": "original"})
+            write_config.assert_not_called()
+
+            for run_status in ("running", "completed"):
+                update_collection_run(db_path, "original", status=run_status)
+                start.reset_mock()
+                status, _, body = self._request("/api/workbench/task", "POST", payload)
+                self.assertTrue(status.startswith("400"), body)
+                start.assert_not_called()
+            status, _, body = self._request("/api/workbench/task", "POST", {**payload, "mode": "full"})
+            self.assertTrue(status.startswith("400"), body)
+
     def test_full_task_receives_global_boss_collection_options(self):
         config = {
             "search": {"keywords": ["旧关键词"], "cities": ["北京"]},
@@ -2547,6 +2589,172 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertEqual(paused_calls[1].kwargs.get("error"), None)
             self.assertEqual(task.error, ai_pause)
             self.assertTrue(task.stop_requested.is_set())
+
+    def test_web_api_resume_retry_success_marks_needs_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("resume-retry-ok"))
+                add_history(db, "resume-retry-ok", "resume_failed", json.dumps({"schema": "resume_failed.v2", "system_reason": "fail"}))
+                history_id = db.execute(
+                    "SELECT id FROM history WHERE job_id = ? AND action = ?",
+                    ("resume-retry-ok", "resume_failed"),
+                ).fetchone()["id"]
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            fake_resume = base_dir / "data" / "resumes" / "retry.pdf"
+            fake_resume.parent.mkdir(parents=True, exist_ok=True)
+            fake_resume.write_text("pdf", encoding="utf-8")
+            with patch("bosshunter.ai.resume.generate_tailored_resume", return_value=fake_resume):
+                status, _, body = self._request(f"/api/history/{history_id}/resume-retry", method="POST", json_body={})
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertTrue(payload["success"])
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                job_status = verify_db.execute("SELECT status FROM jobs WHERE id = ?", ("resume-retry-ok",)).fetchone()["status"]
+                actions = [row["action"] for row in verify_db.execute("SELECT action FROM history WHERE job_id = ?", ("resume-retry-ok",)).fetchall()]
+            finally:
+                verify_db.close()
+            self.assertEqual(job_status, "needs_resume")
+            self.assertIn("needs_resume", actions)
+
+    def test_web_api_resume_retry_does_not_overwrite_replied_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("resume-retry-replied"))
+                update_job_status(db, "resume-retry-replied", "replied")
+                add_history(db, "resume-retry-replied", "resume_failed", json.dumps({"schema": "resume_failed.v2", "system_reason": "fail"}))
+                history_id = db.execute(
+                    "SELECT id FROM history WHERE job_id = ? AND action = ?",
+                    ("resume-retry-replied", "resume_failed"),
+                ).fetchone()["id"]
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            fake_resume = base_dir / "data" / "resumes" / "retry.pdf"
+            fake_resume.parent.mkdir(parents=True, exist_ok=True)
+            fake_resume.write_text("pdf", encoding="utf-8")
+            with patch("bosshunter.ai.resume.generate_tailored_resume", return_value=fake_resume):
+                status, _, body = self._request(f"/api/history/{history_id}/resume-retry", method="POST", json_body={})
+            self.assertTrue(status.startswith("200"), body)
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                job_status = verify_db.execute("SELECT status FROM jobs WHERE id = ?", ("resume-retry-replied",)).fetchone()["status"]
+            finally:
+                verify_db.close()
+            self.assertEqual(job_status, "replied")
+
+    def test_web_api_resume_retry_failure_writes_resume_failed_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("resume-retry-fail"))
+                add_history(db, "resume-retry-fail", "resume_failed", json.dumps({"schema": "resume_failed.v2", "system_reason": "old"}))
+                history_id = db.execute(
+                    "SELECT id FROM history WHERE job_id = ? AND action = ?",
+                    ("resume-retry-fail", "resume_failed"),
+                ).fetchone()["id"]
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            with patch("bosshunter.ai.resume.generate_tailored_resume", return_value=None), patch(
+                "bosshunter.ai.resume.get_last_resume_failure_reason", return_value="test failure"
+            ):
+                status, _, body = self._request(f"/api/history/{history_id}/resume-retry", method="POST", json_body={})
+            self.assertTrue(status.startswith("400"), body)
+            self.assertIn("test failure", body)
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                failed_count = verify_db.execute(
+                    "SELECT COUNT(*) AS cnt FROM history WHERE job_id = ? AND action = ?",
+                    ("resume-retry-fail", "resume_failed"),
+                ).fetchone()["cnt"]
+            finally:
+                verify_db.close()
+            self.assertGreaterEqual(failed_count, 2)
+
+    def test_web_api_resume_dismiss_removes_failure_from_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("resume-dismiss-test"))
+                add_history(db, "resume-dismiss-test", "resume_failed", json.dumps({"schema": "resume_failed.v2", "system_reason": "fail"}))
+                history_id = db.execute(
+                    "SELECT id FROM history WHERE job_id = ? AND action = ?",
+                    ("resume-dismiss-test", "resume_failed"),
+                ).fetchone()["id"]
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            status, _, body = self._request(f"/api/history/{history_id}/resume-dismiss", method="POST", json_body={})
+            self.assertTrue(status.startswith("200"), body)
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                actions = [row["action"] for row in verify_db.execute("SELECT action FROM history WHERE job_id = ? ORDER BY id", ("resume-dismiss-test",)).fetchall()]
+                unresolved = get_unresolved_resume_failures(verify_db)
+            finally:
+                verify_db.close()
+            self.assertIn("resume_failed_dismissed", actions)
+            self.assertNotIn("resume-dismiss-test", [row["job_id"] for row in unresolved])
+
+    def test_outreach_resume_can_be_read_and_explicitly_reviewed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server.set_base_dir(root)
+            source_path = root / "data" / "resumes" / "job-review.md"
+            image_path = root / "data" / "resumes" / "job-review.png"
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text("# 候选人\n\n## 教育经历\n本科\n", encoding="utf-8")
+            image_path.write_bytes(b"png")
+            db = get_db(root / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("job-review"))
+                db.execute(
+                    """
+                    UPDATE jobs
+                    SET resume_source_path = ?, resume_image_path = ?,
+                        resume_review_status = 'needs_review', resume_generation_source = 'deepseek'
+                    WHERE id = ?
+                    """,
+                    (str(source_path), str(image_path), "job-review"),
+                )
+                db.commit()
+            finally:
+                db.close()
+
+            status, _, body = self._request("/api/jobs/job-review/outreach-resume")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual(payload["status"], "needs_review")
+            self.assertEqual(payload["source"], "deepseek")
+            self.assertIn("教育经历", payload["markdown"])
+            self.assertNotIn(str(source_path), body)
+
+            status, _, body = self._request(
+                "/api/jobs/job-review/outreach-resume/review",
+                method="POST",
+                json_body={"confirmed": True},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body)["status"], "ready")
+
+            db = get_db(root / "data" / "bosshunter.db")
+            try:
+                row = db.execute(
+                    "SELECT resume_review_status, resume_reviewed_at FROM jobs WHERE id = ?",
+                    ("job-review",),
+                ).fetchone()
+            finally:
+                db.close()
+            self.assertEqual(row["resume_review_status"], "ready")
+            self.assertIsNotNone(row["resume_reviewed_at"])
 
 
 if __name__ == "__main__":

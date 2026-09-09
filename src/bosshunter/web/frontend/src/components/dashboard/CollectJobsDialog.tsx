@@ -22,6 +22,16 @@ interface PlatformCityOption {
   code: string
 }
 
+interface ResumableRun {
+  id: string
+  created_at: string
+  can_resume: boolean
+  options: {
+    auto_score: boolean
+    platforms: { boss: { keywords: string[]; cities: string[]; max_pages: number } }
+  }
+}
+
 interface CollectJobsDialogProps {
   open: boolean
   mode?: 'collect' | 'full'
@@ -93,12 +103,32 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [order, setOrder] = useState<PlatformId[]>(['boss'])
   const [autoScore, setAutoScore] = useState(false)
   const [error, setError] = useState('')
+  const [resumableRuns, setResumableRuns] = useState<ResumableRun[]>([])
+  const [resumeRunId, setResumeRunId] = useState('')
   const [zhilianCities, setZhilianCities] = useState<PlatformCityOption[]>([])
   const [job51Cities, setJob51Cities] = useState<PlatformCityOption[]>([])
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    setResumableRuns([])
+    setResumeRunId('')
+    if (mode === 'collect') {
+      fetch('/api/collection/runs?limit=100', { cache: 'no-store' })
+        .then(response => {
+          if (!response.ok) throw new Error('读取未完成任务失败')
+          return response.json()
+        })
+        .then((runs: ResumableRun[]) => {
+          if (cancelled) return
+          const available = runs.filter(run => run.can_resume)
+          setResumableRuns(available)
+          setResumeRunId(available[0]?.id || '')
+        })
+        .catch(() => {
+          if (!cancelled) setError('读取未完成任务失败，可关闭窗口后重试。')
+        })
+    }
     fetch('/api/config', { cache: 'no-store' })
       .then(response => response.json())
       .then(config => {
@@ -223,6 +253,22 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           <Button variant="ghost" size="sm" onClick={onClose} aria-label="关闭"><X className="h-5 w-5" /></Button>
         </div>
 
+        {mode === 'collect' && <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+          <div className="text-sm font-black">继续未完成的 BOSS 采集</div>
+          <p className="mt-1 text-xs leading-5 text-muted">沿用原任务的搜索条件，从中断页恢复；已完成的组合不再重复搜索。想查看最新岗位，请使用下方“重新采集”。</p>
+          {resumableRuns.length > 0 ? <>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Select aria-label="未完成的 BOSS 采集任务" value={resumeRunId} onChange={event => setResumeRunId(event.target.value)}>
+                {resumableRuns.map(run => <option key={run.id} value={run.id}>
+                  {new Date(run.created_at.replace(' ', 'T') + 'Z').toLocaleString()} · {run.options.platforms.boss.cities.join('、')} · {run.options.platforms.boss.keywords.join('、')} · 每组 {run.options.platforms.boss.max_pages} 页
+                </option>)}
+              </Select>
+              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId} onClick={() => onStart({ resume_run_id: resumeRunId })}>继续采集</Button>
+            </div>
+            <p className="mt-2 text-xs text-muted">{resumableRuns.find(run => run.id === resumeRunId)?.options.auto_score ? '原任务已开启采集后自动评分，继续采集后也会执行评分。' : '原任务未开启自动评分，继续采集后结束。'}</p>
+          </> : <p className="mt-2 text-xs text-muted">暂无可恢复任务。新版本开始的 BOSS 单平台采集会保存进度；旧版本记录需重新采集。</p>}
+        </div>}
+
         {activeTask?.progress?.platforms && (
           <div className="mt-4 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
             <div className="text-sm font-black text-primary">采集进行中</div>
@@ -282,7 +328,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
 
         <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-white p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程必须先评分；评分后进入人工确认，再按平台适配器执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
         {error && <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-danger">{error}</div>}
-        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={start} disabled={Boolean(activeTask)}>{mode === 'full' ? '开始全流程' : '开始采集'}</Button></div>
+        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={start} disabled={Boolean(activeTask)}>{mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
       </div>
     </div>
   )
