@@ -614,7 +614,7 @@ class ResumePdfRuntimeTests(unittest.TestCase):
             return True
 
         print_pdf.side_effect = write_pdf
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
             expected_output = (Path(tmp) / "resume.pdf").resolve()
             output = Path(os.path.relpath(expected_output, Path.cwd()))
             self.assertFalse(output.is_absolute())

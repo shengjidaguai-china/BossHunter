@@ -118,7 +118,125 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
         <span className="text-xs text-muted">{total} 条记录</span>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="overflow-x-auto">
+        {/* 移动端专属卡片视图 */}
+        <div className="md:hidden divide-y divide-card-border">
+          {jobs.map(job => {
+            const isExpanded = expanded === job.id
+            const isExternalPlatform = job.source_platform === 'zhilian' || job.source_platform === '51job'
+            const jobUrl = safeJobUrl(job)
+            const alreadySent = ['sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent'].includes(job.status)
+            return (
+              <div key={job.id} className="p-4 bg-white space-y-2.5 transition-colors hover:bg-[#FFFCFA]">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(job.id)}
+                      onChange={() => onToggleSelected(job.id)}
+                      className="h-4 w-4 rounded accent-primary shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-black text-sm text-foreground truncate">{job.company}</span>
+                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${job.source_platform === 'boss' || !job.source_platform ? 'bg-[#FFF0E5] text-primary' : 'bg-blue-50 text-blue-700'}`}>
+                          {job.source_platform === 'zhilian' ? '智联' : job.source_platform === '51job' ? '51job' : 'BOSS'}
+                        </span>
+                      </div>
+                      <div className="font-bold text-xs text-foreground mt-0.5 truncate">{job.title}</div>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className={`font-mono text-base font-black ${getScoreColor(job.score)}`}>{job.score || '-'}</span>
+                    <div className="text-[10px] text-muted">匹配分</div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-xs text-muted pt-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-primary">{job.salary || '薪资未标'}</span>
+                    <span>·</span>
+                    <span>{job.city || '城市未知'}</span>
+                    <span>·</span>
+                    <span>{job.education || '学历不限'}</span>
+                  </div>
+                  <Badge variant={statusVariant(job.status) as any}>{getStatusLabel(job.status)}</Badge>
+                </div>
+
+                <div className="flex items-center justify-between text-xs text-muted pt-1 border-t border-card-border/50">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span>{timeAgo(job.created_at)}</span>
+                    <span>·</span>
+                    <span>{job.hr_active || '活跃度未知'}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setExpanded(isExpanded ? null : job.id)}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline"
+                  >
+                    {isExpanded ? '收起详情' : '展开详情'}
+                    {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                  </button>
+                </div>
+
+                {isExpanded && (
+                  <div className="space-y-2 pt-2 text-xs">
+                    {job.jd && (
+                      <div className="rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+                        <p className="mb-1 font-black text-primary">JD 摘要</p>
+                        <p className="line-clamp-4 leading-5 text-muted">{job.jd}</p>
+                      </div>
+                    )}
+                    {job.greeting && (
+                      <div className="rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+                        <p className="mb-1 font-black text-primary">招呼语</p>
+                        <p className="line-clamp-4 leading-5 text-muted">{job.greeting}</p>
+                      </div>
+                    )}
+                    {job.score_reason && (
+                      <div className="rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+                        <p className="mb-1 font-black text-primary">评分理由</p>
+                        <p className="line-clamp-4 leading-5 text-muted">{job.score_reason}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {hasActions && (
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-card-border/50">
+                    {jobUrl && (
+                      <a href={jobUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2.5 py-1.5 text-xs font-bold text-primary hover:bg-[#FFF0E5]">
+                        <ExternalLink className="h-3.5 w-3.5" />{isExternalPlatform ? '打开平台' : '跳转岗位'}
+                      </a>
+                    )}
+                    {isExternalPlatform && onMarkManuallySent && (
+                      <button
+                        type="button"
+                        disabled={alreadySent}
+                        onClick={() => onMarkManuallySent(job)}
+                        className="inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:bg-emerald-50 disabled:text-emerald-700 disabled:opacity-100"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />{alreadySent ? '已发送' : '我已发送'}
+                      </button>
+                    )}
+                    {onSoftDelete && (
+                      <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-1.5 text-muted hover:bg-red-50 hover:text-danger">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {!jobs.length && (
+            <div className="p-8 text-center text-xs text-muted">
+              {loading ? '正在读取岗位…' : '没有符合当前条件的岗位'}
+            </div>
+          )}
+        </div>
+
+        {/* 桌面端多列宽表格视图 */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-card-border bg-[#FFF0E5] text-xs text-muted">

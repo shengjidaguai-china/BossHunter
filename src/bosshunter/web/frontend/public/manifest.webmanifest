@@ -1,0 +1,17 @@
+{
+  "name": "BossHunter 智能求职控制台",
+  "short_name": "BossHunter",
+  "description": "某直聘智能求职与自动化投递助手移动看板",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFCFA",
+  "theme_color": "#FF6B00",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}

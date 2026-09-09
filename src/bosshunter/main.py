@@ -303,19 +303,20 @@ def monitor(ctx: click.Context, once: bool, interval: int | None) -> None:
 
 
 @cli.command()
+@click.option("--host", "-h", default="0.0.0.0", help="监听地址（默认 0.0.0.0，支持局域网手机与本机同时访问）")
 @click.option("--port", "-p", default=8686, help="服务端口（默认 8686）")
-@click.option("--no-open", is_flag=True, help="不自动打开浏览器")
+@click.option("--no-open", is_flag=True, help="不自动在电脑打开浏览器")
+@click.option("--no-qr", is_flag=True, help="不显示手机扫码二维码")
 @click.pass_context
-def web(ctx: click.Context, port: int, no_open: bool) -> None:
-    """启动 Web Dashboard（本地看板 + 配置管理）"""
+def web(ctx: click.Context, host: str, port: int, no_open: bool, no_qr: bool) -> None:
+    """启动 Web Dashboard（本地看板 + 手机移动端控制台）"""
     from bosshunter.web.server import run_server, set_base_dir
+    from bosshunter.web.network_utils import print_mobile_banner
 
     set_base_dir(ctx.obj["base_dir"])
-    console.print("[bold cyan]═══ BossHunter Web Dashboard ═══[/bold cyan]")
-    console.print(f"[dim]http://127.0.0.1:{port}[/dim]")
+    print_mobile_banner(host=host, port=port, show_qr=not no_qr)
     _hint_star_support(ctx.obj["base_dir"])
-    console.print()
-    run_server(host="127.0.0.1", port=port, open_browser=not no_open)
+    run_server(host=host, port=port, open_browser=not no_open)
 
 
 if __name__ == "__main__":

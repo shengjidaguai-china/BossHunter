@@ -107,9 +107,12 @@ class BossSearchRegressionTests(TestCase):
                 }},
             })
             self.assertEqual(result["collected_job_ids"], ["new-job"])
-            with get_db(path) as conn:
+            conn = get_db(path)
+            try:
                 row = conn.execute("SELECT salary FROM jobs WHERE id='new-job'").fetchone()
                 self.assertEqual(row["salary"], "25-50K·15薪")
+            finally:
+                conn.close()
         self.assertEqual(decode_boss_text("\ue031\ue032\ue033\ue034\ue035\ue036\ue037\ue038\ue039\ue03a"), "0123456789")
         self.assertEqual(decode_boss_text("面议"), "面议")
 
@@ -128,18 +131,20 @@ class BossSearchRegressionTests(TestCase):
                                  [card("a"), card("b"), card("c")]])
         with tempfile.TemporaryDirectory() as tmp:
             conn = get_db(Path(tmp) / "jobs.db")
-            self.addCleanup(conn.close)
-            result = self.collector(browser, conn).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=3), self.hooks())
-            self.assertEqual(result.status, "completed")
-            self.assertEqual([c.source_job_id for c in self.seen], ["a", "b", "c"])
-            self.assertEqual(len(self.saved), 3)
-            self.assertEqual(browser.scrolls, 2)
-            self.assertEqual(browser.scroll_events, 2)
-            self.assertEqual(len([u for u in browser.opens if "/job_detail/" not in u]), 1)
-            self.assertEqual(count_platform_access_today(conn, stage="collection", action="search_page"), 3)
-            self.assertEqual([x[2] for x in self.checkpoints], [1, 2, 3])
-            self.assertEqual(len(browser.closed), 2)
+            try:
+                result = self.collector(browser, conn).collect(
+                    PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=3), self.hooks())
+                self.assertEqual(result.status, "completed")
+                self.assertEqual([c.source_job_id for c in self.seen], ["a", "b", "c"])
+                self.assertEqual(len(self.saved), 3)
+                self.assertEqual(browser.scrolls, 2)
+                self.assertEqual(browser.scroll_events, 2)
+                self.assertEqual(len([u for u in browser.opens if "/job_detail/" not in u]), 1)
+                self.assertEqual(count_platform_access_today(conn, stage="collection", action="search_page"), 3)
+                self.assertEqual([x[2] for x in self.checkpoints], [1, 2, 3])
+                self.assertEqual(len(browser.closed), 2)
+            finally:
+                conn.close()
 
     def test_ignored_page_parameter_does_not_count_same_cards_seven_times(self):
         browser = SearchBrowser([[card("a"), card("b")]], scrolling=False)
@@ -175,12 +180,14 @@ class BossSearchRegressionTests(TestCase):
         browser = SearchBrowser([[card("a")], [card("a"), card("b")]])
         with tempfile.TemporaryDirectory() as tmp:
             conn = get_db(Path(tmp) / "jobs.db")
-            self.addCleanup(conn.close)
-            result = self.collector(browser, conn, collection={"daily_search_page_limit": 1}).collect(
-                PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=3), self.hooks())
-            self.assertEqual(result.reason_code, "daily_search_page_limit")
-            self.assertEqual(browser.scrolls, 0)
-            self.assertEqual(len(self.seen), 1)
+            try:
+                result = self.collector(browser, conn, collection={"daily_search_page_limit": 1}).collect(
+                    PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=3), self.hooks())
+                self.assertEqual(result.reason_code, "daily_search_page_limit")
+                self.assertEqual(browser.scrolls, 0)
+                self.assertEqual(len(self.seen), 1)
+            finally:
+                conn.close()
 
     def test_stalled_run_remains_resumable_and_saves_only_remaining_new_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:

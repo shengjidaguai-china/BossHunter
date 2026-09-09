@@ -242,20 +242,20 @@ export default function ConfigPage() {
   const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
 
   return (
-    <div className="h-full overflow-y-auto space-y-4 pr-4">
+    <div className="h-full overflow-y-auto space-y-4 pr-1 sm:pr-4">
         {/* Actions bar */}
-        <div className="flex items-center justify-between sticky top-0 bg-background z-10 py-2">
+        <div className="flex flex-wrap items-center justify-between sticky top-0 bg-background/95 backdrop-blur-md z-20 py-2.5 px-1 border-b border-card-border gap-2">
           <div className="flex items-center gap-2">
-            {dirty && <span className="text-xs text-amber-400">有未保存的更改</span>}
+            {dirty && <span className="text-xs font-bold text-amber-500">有未保存的更改</span>}
             {message && (
-              <span className={`text-xs ${message.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`text-xs font-bold ${message.type === 'success' ? 'text-green-500' : 'text-red-500'}`}>
                 {message.text}
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3 h-3 mr-1" />重置</Button>
-            <Button size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
+            <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3.5 h-3.5 mr-1" />重置</Button>
+            <Button size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3.5 h-3.5 mr-1" />{saving ? '保存中...' : '保存配置'}</Button>
           </div>
         </div>
 

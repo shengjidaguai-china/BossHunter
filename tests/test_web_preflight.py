@@ -7,7 +7,8 @@ from bosshunter.web.preflight import check_ai_connection, check_browser_connecti
 
 
 class AiPreflightTests(unittest.TestCase):
-	def test_missing_api_key_returns_actionable_error(self):
+	@patch("bosshunter.web.preflight.get_ai_api_key", return_value=None)
+	def test_missing_api_key_returns_actionable_error(self, _mock_key):
 		checks = check_ai_connection({"ai": {"model": "claude-sonnet-4-6"}}, required=True)
 
 		self.assertEqual(checks[0]["id"], "ai_credentials")
