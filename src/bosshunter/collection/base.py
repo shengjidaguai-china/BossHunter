@@ -35,6 +35,11 @@ class CollectorHooks:
     on_candidate: Callable[[JobCandidate], bool]
     on_parse_failed: Callable[[str], None]
     on_event: Callable[..., None]
+    # Continuing a scan does not imply every candidate was saved reliably.
+    can_checkpoint: Callable[[], bool] = lambda: True
+    # Checkpoints belong to one explicitly selected run, never to global searches.
+    completed_page: Callable[[str, str], int] = lambda city, keyword: 0
+    on_page_complete: Callable[[str, str, int], None] = lambda city, keyword, page: None
 
 
 class Collector(Protocol):

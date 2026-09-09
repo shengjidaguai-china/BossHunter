@@ -28,6 +28,7 @@ def create_collection_run(
     options: dict[str, Any],
     platform_states: dict[str, Any],
     task_id: str = "",
+    enable_boss_resume: bool = False,
 ) -> dict[str, Any]:
     conn = get_db(db_path)
     try:
@@ -35,10 +36,11 @@ def create_collection_run(
             """
             INSERT OR REPLACE INTO collection_runs (
                 id, task_id, status, options_json, platform_states_json,
-                collected_job_ids_json, current_platform, stop_reason, error, finished_at
-            ) VALUES (?, ?, 'pending', ?, ?, '[]', '', '', '', NULL)
+                collected_job_ids_json, current_platform, stop_reason, error, finished_at, boss_checkpoint_json
+            ) VALUES (?, ?, 'pending', ?, ?, '[]', '', '', '', NULL, ?)
             """,
-            (run_id, task_id, _serialize(options), _serialize(platform_states)),
+            (run_id, task_id, _serialize(options), _serialize(platform_states),
+             _serialize({"version": 1, "pages": {}} if enable_boss_resume else {})),
         )
         conn.commit()
     finally:
@@ -104,7 +106,65 @@ def get_collection_run(db_path: Path, run_id: str) -> dict[str, Any] | None:
     result["options"] = _decode(result.pop("options_json", ""), {})
     result["platform_states"] = _decode(result.pop("platform_states_json", ""), {})
     result["collected_job_ids"] = _decode(result.pop("collected_job_ids_json", ""), [])
+    result["boss_checkpoint"] = _decode(result.pop("boss_checkpoint_json", ""), {})
+    result["can_resume"] = can_resume_boss_run(result)
     return result
+
+
+def boss_combo_key(city: str, keyword: str) -> str:
+    return _serialize([city, keyword])
+
+
+def can_resume_boss_run(run: dict[str, Any]) -> bool:
+    """Only explicit, unfinished BOSS runs with reliable checkpoints can resume."""
+    if run.get("status") not in {"stopped", "failed", "completed_with_errors", "completed_with_shortage"}:
+        return False
+    options = run.get("options", {})
+    checkpoint = run.get("boss_checkpoint", {})
+    if options.get("platform_order") != ["boss"] or checkpoint.get("version") != 1:
+        return False
+    search = options.get("platforms", {}).get("boss", {})
+    pages = checkpoint.get("pages", {})
+    return any(
+        pages.get(boss_combo_key(city, keyword), 0) < search.get("max_pages", 1)
+        for city in search.get("cities", []) for keyword in search.get("keywords", [])
+    )
+
+
+def boss_resume_options(db_path: Path, run_id: str) -> dict[str, Any]:
+    run = get_collection_run(db_path, run_id)
+    if not run or not run["can_resume"]:
+        raise ValueError("该任务没有可恢复的 BOSS 采集进度，请重新采集")
+    return {**run["options"], "resume_run_id": run_id}
+
+
+def claim_boss_resume(db_path: Path, run_id: str, task_id: str) -> dict[str, Any]:
+    run = get_collection_run(db_path, run_id)
+    if not run or not run["can_resume"]:
+        raise ValueError("该任务没有可恢复的 BOSS 采集进度，请重新采集")
+    conn = get_db(db_path)
+    try:
+        cursor = conn.execute(
+            """UPDATE collection_runs SET status = 'running', task_id = ?,
+                finished_at = NULL, stop_reason = '', error = '', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = ?""", (task_id, run_id, run["status"]),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            raise ValueError("该采集任务的状态已变化，请刷新后重试")
+    finally:
+        conn.close()
+    return run
+
+
+def save_boss_checkpoint(conn: sqlite3.Connection, run_id: str, pages: dict[str, int]) -> None:
+    # Jobs are committed before this callback. A crash before the checkpoint
+    # merely replays the current page and the job identity constraint deduplicates it.
+    conn.execute(
+        "UPDATE collection_runs SET boss_checkpoint_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (_serialize({"version": 1, "pages": pages}), run_id),
+    )
+    conn.commit()
 
 
 def list_collection_runs(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:

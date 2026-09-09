@@ -498,13 +498,14 @@ class ScorerTokenResilienceTests(unittest.TestCase):
         self.assertEqual(progress_updates[-1]["completed"], 1)
         self.assertEqual(progress_updates[-1]["scored"], 1)
 
-    def test_context_limit_retries_once_with_compact_prompt(self):
+    def test_context_limit_retry_preserves_full_resume_and_jd(self):
         db = MagicMock()
         job = _job("long")
+        resume = "简历内容" * 1000
 
         with (
             patch("bosshunter.ai.scorer.get_db", return_value=db),
-            patch("bosshunter.ai.scorer._load_resume", return_value="简历内容" * 1000),
+            patch("bosshunter.ai.scorer._load_resume", return_value=resume),
             patch("bosshunter.ai.scorer.get_jobs_by_status", return_value=[job]),
             patch("bosshunter.ai.scorer.quick_score", return_value=(80, "通过")),
             patch(
@@ -526,10 +527,37 @@ class ScorerTokenResilienceTests(unittest.TestCase):
         self.assertEqual(scored, 1)
         self.assertEqual(call_ai.call_count, 2)
         full_prompt = call_ai.call_args_list[0].args[0]
-        compact_prompt = call_ai.call_args_list[1].args[0]
-        self.assertLess(len(compact_prompt), len(full_prompt))
-        self.assertIn("为适配模型上下文已裁剪", compact_prompt)
-        self.assertEqual(call_ai.call_args_list[1].args[2], 128)
+        retry_prompt = call_ai.call_args_list[1].args[0]
+        self.assertEqual(retry_prompt, full_prompt)
+        self.assertIn(resume, full_prompt)
+        self.assertIn(job["jd"], full_prompt)
+        self.assertEqual(call_ai.call_args_list[1].args[2], 1024)
+
+    def test_context_limit_does_not_score_from_incomplete_evidence(self):
+        with patch(
+            "bosshunter.ai.scorer._call_claude",
+            side_effect=credentials.AIRequestError("context_limit", "上下文过长"),
+        ) as call_ai:
+            outcome = scorer._request_score(_job("long"), "简历内容" * 1000, {}, 2)
+
+        self.assertIsNone(outcome.result)
+        self.assertIn("完整简历与JD仍超过", outcome.failure_detail)
+        self.assertEqual(call_ai.call_count, 2)
+
+    def test_context_retry_does_not_increase_a_smaller_output_budget(self):
+        with patch(
+            "bosshunter.ai.scorer._call_claude",
+            side_effect=[
+                credentials.AIRequestError("context_limit", "上下文过长"),
+                _score_response(82),
+            ],
+        ) as call_ai:
+            outcome = scorer._request_score(
+                _job("long"), "完整简历", {"ai": {"scoring_max_tokens": 512}}, 2,
+            )
+
+        self.assertIsNotNone(outcome.result)
+        self.assertEqual(call_ai.call_args_list[1].args[2], 512)
 
     def test_output_limit_retries_once_with_lower_single_request_limit(self):
         db = MagicMock()

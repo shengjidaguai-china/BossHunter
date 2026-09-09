@@ -15,9 +15,13 @@
 
 ## 2. 安装
 
+首次使用请先在 frontend 目录构建前端产物（`dist` 不随 git 仓库跟踪，需本地按需构建），再安装 Python 包；否则 `pip install -e .` 会报 `frontend/dist` 缺失。
+
 ```bash
 git clone https://github.com/shengjidaguai-china/BossHunter.git
 cd BossHunter
+npm --prefix src/bosshunter/web/frontend ci
+npm --prefix src/bosshunter/web/frontend run build
 pip install -e .
 ```
 

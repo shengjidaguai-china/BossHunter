@@ -176,7 +176,7 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 		headers["anthropic-version"] = "2023-06-01"
 
 	try:
-		result = httpx.get(models_url, headers=headers, timeout=8, follow_redirects=True)
+		result = httpx.get(models_url, headers=headers, timeout=8, follow_redirects=True, trust_env=False)
 	except httpx.TimeoutException:
 		return [
 			_check(
@@ -185,6 +185,17 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 				severity,
 				"AI 接口连接超时",
 				"请检查 Base URL、网络或代理设置，然后重新检测。",
+				"config",
+			)
+		]
+	except httpx.InvalidURL:
+		return [
+			_check(
+				"ai_connection",
+				"AI 接口连接",
+				severity,
+				"AI 接口地址无效",
+				"请检查 Base URL 是否填写正确；IPv6 地址需用方括号包裹，如 http://[::1]:8000。",
 				"config",
 			)
 		]
@@ -447,6 +458,7 @@ def _configuration_checks(mode: str, config: dict, options: dict | None = None) 
 	ai_required = mode in {"full", "rescore"} or (mode == "collect" and bool(options and options.get("auto_score")))
 	if ai_required:
 		resume_path = config.get("profile", {}).get("resume_path", "")
+		# Upload writes an absolute path under data/resumes/; check that file directly.
 		if not resume_path or not Path(str(resume_path)).exists():
 			checks.append(
 				_check(
