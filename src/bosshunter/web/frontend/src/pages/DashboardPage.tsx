@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
+import { useConfig } from '@/hooks/useConfig'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
 import { JobsTable } from '@/components/dashboard/JobsTable'
@@ -498,7 +499,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const confirmDeliver = async (ids: string[]) => {
     if (!ids.length) return
     const count = ids.length
-    if (!window.confirm(`是否投递以下 ${count} 个岗位？确认后将进入投递/打招呼流程。`)) return
+    if (!window.confirm(`是否投递以下 ${count} 个岗位？BOSS 岗位会生成并发送招呼语，51job 岗位会使用已登录账号的在线简历申请。`)) return
     try {
       const res = await fetch('/api/workbench/deliver', {
         method: 'POST',
@@ -1053,7 +1054,7 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
           <InfoBlock label="招聘者活跃" value={job.hr_active || '活跃度未知'} />
           <InfoBlock label="公司" value={[job.company_size, job.company_industry].filter(Boolean).join(' · ') || '-'} />
-          <InfoBlock label="来源平台" value={job.source_platform === 'zhilian' ? '智联招聘｜当前只开放采集' : job.source_platform === '51job' ? '前程无忧｜当前只开放采集' : 'BOSS 直聘'} />
+          <InfoBlock label="来源平台" value={job.source_platform === 'zhilian' ? '智联招聘｜当前只开放采集' : job.source_platform === '51job' ? '前程无忧｜确认后投递在线简历' : job.source_platform === 'liepin' ? '猎聘｜当前只开放采集' : 'BOSS 直聘'} />
           <InfoBlock label="匹配分" value={String(job.score || '-')} />
           <InfoBlock label="定制简历" value={job.resume_path || '未生成'} />
         </div>
@@ -1084,6 +1085,7 @@ function InfoBlock({ label, value }: { label: string; value: string }) {
 }
 
 function JobsPoolView() {
+  const { config: dashboardConfig } = useConfig()
   const pageSize = 15
   const [page, setPage] = useState(0)
   const [filters, setFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
@@ -1213,7 +1215,7 @@ function JobsPoolView() {
   const deliverSelectedJobs = async () => {
     if (!selectedIds.length) return
     const count = selectedIds.length
-    if (!window.confirm(`确认投递已选择的 ${count} 个岗位吗？仅 BOSS 岗位可进入发送队列，且仍受发送时间窗口和每日额度限制。`)) return
+    if (!window.confirm(`确认投递已选择的 ${count} 个岗位吗？BOSS 岗位发送招呼语，51job 岗位申请在线简历；仍受发送时间窗口和每日额度限制。`)) return
     try {
       const result = await postJobAction('/api/workbench/deliver', { job_ids: selectedIds })
       setSelectedIds([])
@@ -1227,6 +1229,29 @@ function JobsPoolView() {
       )
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '一键投递失败')
+    }
+  }
+
+  const startPilotDelivery = async () => {
+    if (!selectedIds.length) return
+    const delivery = (dashboardConfig?.delivery || {}) as Record<string, unknown>
+    if (delivery.auto_apply_pilot_enabled !== true || delivery.parallel_platforms_enabled !== true) {
+      setNotice('请先到「配置 → 投递并行试点」开启两个开关后再试。')
+      return
+    }
+    const count = selectedIds.length
+    if (!window.confirm(
+      `确认对已选择的 ${count} 个岗位启动三平台自动投递试点吗？` +
+      'BOSS 会发送已生成的招呼语；智联和 51job 会打开岗位页并自动点击明确的投递动作。' +
+      '要求这三个平台均已登录且智联/51job 有可投递的在线简历；遇到验证码、登录墙或需要上传附件时会停止或跳过。'
+    )) return
+    try {
+      const result = await postJobAction('/api/jobs/auto-deliver-pilot', { job_ids: selectedIds, confirmed: true })
+      setSelectedIds([])
+      refreshJobs()
+      setNotice(result.id ? `试点投递任务已启动：${result.id}` : `已启动三平台试点投递，共 ${count} 个岗位。`)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '试点投递失败')
     }
   }
 
@@ -1408,8 +1433,14 @@ function JobsPoolView() {
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
         <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
-          <Send className="mr-1 h-4 w-4" />BOSS 一键投递已选
+          <Send className="mr-1 h-4 w-4" />一键投递已选
         </Button>
+        {dashboardConfig?.delivery?.auto_apply_pilot_enabled === true
+          && dashboardConfig?.delivery?.parallel_platforms_enabled === true && (
+          <Button variant="secondary" size="sm" disabled={!selectedIds.length} onClick={() => void startPilotDelivery()}>
+            三平台试点投递
+          </Button>
+        )}
         <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total}>
           {quickScoring ? '启动评分中…' : '一键 AI 评分'}
         </Button>
@@ -1422,7 +1453,7 @@ function JobsPoolView() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-black">投递队列</div>
-              <p className="mt-1 text-xs text-muted">只展示已人工确认的 BOSS 发送任务；智联和 51job 不会进入此队列。</p>
+              <p className="mt-1 text-xs text-muted">只展示已人工确认的投递任务；智联默认不进入此队列，51job 确认后会投递在线简历。</p>
             </div>
             <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
               {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}

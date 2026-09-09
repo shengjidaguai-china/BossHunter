@@ -731,6 +731,24 @@ class JobSelectionTests(unittest.TestCase):
 
         self.assertEqual([job["id"] for job in jobs], ["approved"])
 
+    def test_pending_confirmation_keeps_51job_jobs_with_optional_greetings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                insert_job(db, {
+                    **_job("51job:ready"),
+                    "source_platform": "51job",
+                    "source_job_id": "ready",
+                    "url": "https://jobs.51job.com/all/ready.html",
+                })
+                update_job_score(db, "51job:ready", 88, "good match")
+                update_job_status(db, "51job:ready", "ready")
+                update_job_greeting(db, "51job:ready", "可选招呼语")
+                jobs = get_jobs_pending_confirmation(db)
+            finally:
+                db.close()
+        self.assertEqual([job["id"] for job in jobs], ["51job:ready"])
+
     def test_rescore_reset_only_requeues_jobs_filtered_by_ai_score(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = get_db(Path(tmp) / "bosshunter.db")

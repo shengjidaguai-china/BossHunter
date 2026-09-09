@@ -27,6 +27,10 @@ class CollectionSafetyTests(unittest.TestCase):
         self.assertEqual(collection["risk_pause_min_minutes"], 5)
         self.assertEqual(collection["risk_pause_max_minutes"], 10)
         self.assertEqual(collection["collection_delay_multiplier"], 1.5)
+        self.assertEqual(collection["job51_manual_verification_timeout_seconds"], 300.0)
+        self.assertEqual(collection["job51_manual_verification_poll_interval_seconds"], 2.0)
+        self.assertFalse(DEFAULTS["delivery"]["auto_apply_pilot_enabled"])
+        self.assertFalse(DEFAULTS["delivery"]["parallel_platforms_enabled"])
         self.assertNotIn("max_new_jobs_per_cycle", collection)
         self.assertNotIn("max_search_pages_per_cycle", collection)
 

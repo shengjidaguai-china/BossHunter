@@ -43,6 +43,8 @@ collection:
   collection_delay_multiplier: 1.5 # BOSS 采集等待时间倍数
   delivery_cooldown_min_minutes: 5   # BOSS 采集结束到 BOSS 投递的随机冷却下限
   delivery_cooldown_max_minutes: 15  # BOSS 采集结束到 BOSS 投递的随机冷却上限
+  job51_manual_verification_timeout_seconds: 300  # 51job 人工验证最长等待时间（秒）
+  job51_manual_verification_poll_interval_seconds: 2  # 验证状态检查间隔（秒）
 
 platforms:
   boss:
@@ -64,7 +66,7 @@ platforms:
       sort: default
   51job:
     enabled: false
-    # 51job 目前只开放采集/评分/招呼语生成，真实发送和监听仍锁定。
+    # 51job 可在工作台人工确认后投递已登录账号的在线简历；不监听消息、不上传附件简历。
     search:
       keywords: []
       cities: ["上海"]
@@ -75,6 +77,10 @@ platforms:
 scoring:
   threshold: 70
   max_candidates: 20
+
+delivery:
+  auto_apply_pilot_enabled: false  # 三平台自动投递试点，默认关闭
+  parallel_platforms_enabled: false  # 三平台并行投递，默认关闭
 
 throttle:
   daily_limit: 30

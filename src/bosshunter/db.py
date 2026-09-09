@@ -566,12 +566,20 @@ def get_jobs_by_status(conn: sqlite3.Connection, status: str) -> list[dict]:
 
 
 def get_jobs_pending_confirmation(conn: sqlite3.Connection) -> list[dict]:
-    """Get selected jobs whose greeting workflow is not complete."""
+    """Get selected jobs waiting for a human delivery decision.
+
+    BOSS jobs stay here until a greeting exists. 51job jobs apply with the
+    existing online resume, so they remain pending even after an optional
+    greeting draft is generated.
+    """
     rows = conn.execute("""
         SELECT * FROM jobs
         WHERE status IN ('ready', 'approved')
           AND deleted_at IS NULL
-          AND (greeting IS NULL OR TRIM(greeting) = '')
+          AND (
+            greeting IS NULL OR TRIM(greeting) = ''
+            OR COALESCE(source_platform, 'boss') = '51job'
+          )
         ORDER BY score DESC
     """).fetchall()
     return [dict(row) for row in rows]

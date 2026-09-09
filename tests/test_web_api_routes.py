@@ -603,6 +603,26 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), body)
         self.assertEqual(payload["pending_confirmation"], [])
 
+    def test_workbench_includes_51job_jobs_in_pending_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                job = _job("51job-ready")
+                job.update({"source_platform": "51job", "source_job_id": "51job-ready", "url": "https://jobs.51job.com/all/ready.html"})
+                insert_job(db, job)
+                update_job_score(db, "51job-ready", 90, "匹配")
+                update_job_status(db, "51job-ready", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/workbench")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual([job["id"] for job in payload["pending_confirmation"]], ["51job-ready"])
+
     def test_web_api_workbench_reports_daily_send_quota(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)

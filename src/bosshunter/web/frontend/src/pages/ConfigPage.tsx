@@ -470,6 +470,20 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* Scoring Section */}
+        <SectionCard title="投递并行试点" sectionKey="delivery" expanded={expandedSections} toggle={toggleSection}>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-800">
+              <span>三平台自动投递试点 <span className="font-normal">（BOSS + 智联 + 51job）</span></span>
+              <Switch checked={config.delivery?.auto_apply_pilot_enabled ?? false} onChange={value => updateConfig('delivery.auto_apply_pilot_enabled', value)} />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+              <span>三平台并行投递 <span className="font-normal">（每平台一个标签页）</span></span>
+              <Switch checked={config.delivery?.parallel_platforms_enabled ?? false} onChange={value => updateConfig('delivery.parallel_platforms_enabled', value)} />
+            </div>
+            <p className="text-xs leading-5 text-muted">此试点会真实点击招聘网站的投递动作，不是岗位采集。开启前请确认智联和 51job 账号已登录、平台内有可投递的在线简历。BOSS 仍发送已生成的招呼语；智联和 51job 尝试投递在线简历。无法识别投递按钮、出现登录/验证码/限流、或平台要求上传简历附件时，本轮会停止或跳过并保留记录。</p>
+          </div>
+        </SectionCard>
+
         <SectionCard title="评分设置" sectionKey="scoring" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
             <Field label={`通过阈值: ${config.scoring?.threshold || 60}`}>
@@ -631,6 +645,27 @@ export default function ConfigPage() {
               />
             </div>
             <p className="text-xs text-muted">完成 BOSS 采集后，每次会在设定区间内随机等待一次再投递；默认为 5–15 分钟，单独采集不受影响。</p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="51job 人工验证等待上限（秒）">
+                <Input
+                  type="number"
+                  value={config.collection?.job51_manual_verification_timeout_seconds ?? 300}
+                  onChange={e => updateConfig('collection.job51_manual_verification_timeout_seconds', Number(e.target.value))}
+                  min={0}
+                  max={1800}
+                />
+              </Field>
+              <Field label="51job 验证状态检查间隔（秒）">
+                <Input
+                  type="number"
+                  value={config.collection?.job51_manual_verification_poll_interval_seconds ?? 2}
+                  onChange={e => updateConfig('collection.job51_manual_verification_poll_interval_seconds', Number(e.target.value))}
+                  min={0.5}
+                  max={30}
+                  step={0.5}
+                />
+              </Field>
+            </div>
             <Field label="BOSS 单日页面访问总上限">
               <Input type="number" value={config.safety?.daily_platform_page_limit ?? 500} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={1} max={2000} />
               <p className="mt-1 text-xs text-muted">只合计 BOSS 采集、自动投递和监测打开的页面；智联和 51job 不占用。</p>

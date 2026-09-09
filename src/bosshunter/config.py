@@ -101,6 +101,8 @@ DEFAULTS: dict[str, Any] = {
         "collection_delay_multiplier": 1.5,
         "delivery_cooldown_min_minutes": 5,
         "delivery_cooldown_max_minutes": 15,
+        "job51_manual_verification_timeout_seconds": 300.0,
+        "job51_manual_verification_poll_interval_seconds": 2.0,
     },
     "platforms": {
         "boss": {
@@ -138,6 +140,11 @@ DEFAULTS: dict[str, Any] = {
     "scoring": {
         "threshold": 71,
         "max_candidates": 20,
+    },
+    "delivery": {
+        # Guarded auto-apply pilot. Stays off until explicitly enabled.
+        "auto_apply_pilot_enabled": False,
+        "parallel_platforms_enabled": False,
     },
     "throttle": {
         "daily_limit": 30,

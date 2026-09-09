@@ -778,38 +778,122 @@ def _wait_for_collection_delivery_cooldown(task: WorkbenchTask, config: dict) ->
 	return False
 
 
+
+def _split_delivery_job_ids(job_ids: list[str]) -> tuple[list[str], list[str]]:
+	"""Split a delivery batch into BOSS greeting jobs and 51job resume jobs."""
+	if not job_ids:
+		return [], []
+	db = _get_web_db()
+	try:
+		placeholders = ",".join("?" for _ in job_ids)
+		rows = db.execute(
+			f"""SELECT id, COALESCE(source_platform, 'boss') AS source_platform
+				FROM jobs WHERE deleted_at IS NULL AND id IN ({placeholders})""",
+			job_ids,
+		).fetchall()
+	finally:
+		db.close()
+	by_id = {str(row["id"]): str(row["source_platform"] or "boss") for row in rows}
+	boss_ids = [job_id for job_id in job_ids if by_id.get(job_id, "boss") != "51job"]
+	job51_ids = [job_id for job_id in job_ids if by_id.get(job_id) == "51job"]
+	return boss_ids, job51_ids
+
+
+def _merge_send_reports(left: dict, right: dict) -> dict:
+	merged = dict(left or {})
+	right = right if isinstance(right, dict) else {}
+	for key in (
+		"sent_count",
+		"failed_count",
+		"deferred_count",
+		"quota_deferred_count",
+		"attempted_count",
+		"eligible_count",
+	):
+		merged[key] = int(merged.get(key, 0) or 0) + int(right.get(key, 0) or 0)
+	if right.get("already_sent") not in (None, ""):
+		merged["already_sent"] = int(right.get("already_sent", 0) or 0)
+	if right.get("daily_limit") not in (None, ""):
+		merged["daily_limit"] = int(right.get("daily_limit", 0) or 0)
+	if right.get("remaining_quota") not in (None, ""):
+		merged["remaining_quota"] = int(right.get("remaining_quota", 0) or 0)
+	if right.get("stop_reason"):
+		merged["stop_reason"] = right.get("stop_reason")
+	elif left.get("stop_reason") and not merged.get("stop_reason"):
+		merged["stop_reason"] = left.get("stop_reason")
+	return merged
+
+
 def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.ai.greeter import generate_greetings
 	from bosshunter.executor.sender import send_greetings
 
 	config = dict(config)
+	config["_workbench_db_path"] = str(DATA_DIR / "bosshunter.db")
 	config["_workbench_stop_event"] = task.stop_requested
 	config["_workbench_log"] = lambda message: _log(task, message)
 	selected_job_ids = [str(job_id) for job_id in config.get("_workbench_job_ids", []) if str(job_id)]
-	if not config.get("_workbench_skip_greeting"):
-		_log(task, "生成招呼语")
-		generated_count = generate_greetings(config)
-		greeting_report = config.get("_workbench_greeting_report", {})
-		skipped_existing = int(greeting_report.get("skipped_existing", 0) or 0)
-		ready_count = generated_count + skipped_existing
-		_log(task, f"招呼语准备完成：{ready_count}/{len(selected_job_ids) or ready_count}（新生成 {generated_count}）")
-		if task.stop_requested.is_set():
-			return
-		if selected_job_ids and ready_count < len(selected_job_ids):
-			missing_count = len(selected_job_ids) - ready_count
-			# 生成失败的岗位保留为待生成且无招呼语文本，本就不会进入发送；其余岗位继续走
-			# 现有人工确认、发送窗口与风控规则（#101 回归：不再因部分失败放弃整个批次）。
-			_log(
-				task,
-				f"{missing_count} 个岗位未生成招呼语，已保留为待生成，请在 BOSS 中手动填写；"
-				"其余岗位继续进入发送流程。",
-			)
-	_log(task, "发送招呼语")
-	# The workbench must obey the same send window and day-off guard as the CLI.
-	# ``force`` remains an explicit CLI-only override and is never implied by a
-	# browser button click.
-	sent_count = send_greetings(config, force=False)
-	report = config.get("_workbench_send_report", {})
+	pilot_mode = bool(config.get("_workbench_delivery_pilot"))
+	boss_job_ids, job51_job_ids = _split_delivery_job_ids(selected_job_ids)
+	if pilot_mode:
+		from bosshunter.executor.pilot_sender import deliver_pilot
+
+		_log(task, "三平台试点自动投递（智联/51job 尝试投递在线简历）")
+		deliver_pilot(config)
+		report = config.get("_workbench_send_report", {})
+		sent_count = int(report.get("sent_count", 0) or 0)
+	else:
+		if boss_job_ids and not config.get("_workbench_skip_greeting"):
+			_log(task, "生成招呼语")
+			greet_config = dict(config)
+			greet_config["_workbench_job_ids"] = boss_job_ids
+			generated_count = generate_greetings(greet_config)
+			greeting_report = greet_config.get("_workbench_greeting_report", {})
+			skipped_existing = int(greeting_report.get("skipped_existing", 0) or 0)
+			ready_count = generated_count + skipped_existing
+			_log(task, f"招呼语准备完成：{ready_count}/{len(boss_job_ids) or ready_count}（新生成 {generated_count}）")
+			if task.stop_requested.is_set():
+				return
+			if boss_job_ids and ready_count < len(boss_job_ids):
+				missing_count = len(boss_job_ids) - ready_count
+				# 生成失败的岗位保留为待生成且无招呼语文本，本就不会进入发送；其余岗位继续走
+				# 现有人工确认、发送窗口与风控规则（#101 回归：不再因部分失败放弃整个批次）。
+				_log(
+					task,
+					f"{missing_count} 个岗位未生成招呼语，已保留为待生成，请在 BOSS 中手动填写；"
+					"其余岗位继续进入发送流程。",
+				)
+		_log(task, "发送招呼语" if not job51_job_ids else "开始投递")
+		# The workbench must obey the same send window and day-off guard as the CLI.
+		# ``force`` remains an explicit CLI-only override and is never implied by a
+		# browser button click.
+		report = {
+			"requested_count": len(selected_job_ids),
+			"sent_count": 0,
+			"failed_count": 0,
+			"deferred_count": 0,
+			"quota_deferred_count": 0,
+			"already_sent": 0,
+			"daily_limit": 0,
+			"remaining_quota": 0,
+			"stop_reason": None,
+		}
+		if boss_job_ids:
+			boss_config = dict(config)
+			boss_config["_workbench_job_ids"] = boss_job_ids
+			send_greetings(boss_config, force=False)
+			report = _merge_send_reports(report, boss_config.get("_workbench_send_report", {}))
+		if job51_job_ids and not task.stop_requested.is_set():
+			from bosshunter.executor.job51_sender import deliver_job51
+
+			_log(task, "投递 51job 在线简历")
+			job51_config = dict(config)
+			job51_config["_workbench_job_ids"] = job51_job_ids
+			deliver_job51(job51_config)
+			report = _merge_send_reports(report, job51_config.get("_workbench_send_report", {}))
+		report["requested_count"] = len(selected_job_ids)
+		config["_workbench_send_report"] = report
+		sent_count = int(report.get("sent_count", 0) or 0)
 	failed_count = int(report.get("failed_count", 0) or 0)
 	deferred_count = int(report.get("deferred_count", 0) or 0)
 	quota_deferred_count = min(
@@ -830,7 +914,7 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 	total_count = len(selected_job_ids) or sent_count + failed_count + deferred_count
 	_log(
 		task,
-		f"招呼语发送结果：成功 {sent_count}，失败 {failed_count}，待下次发送 {deferred_count}（共 {total_count}）",
+		f"投递结果：成功 {sent_count}，失败 {failed_count}，待下次处理 {deferred_count}（共 {total_count}）",
 	)
 	if failed_count:
 		_log(task, f"{failed_count} 个岗位发送失败已单独记录，继续后续流程")
@@ -1518,7 +1602,7 @@ def api_workbench_task_start():
 			]
 			if collection_only:
 				return _json_response({
-					"error": "智联和前程无忧当前只支持单独采集，不能进入发送全流程",
+					"error": "所选平台当前只支持单独采集，不能进入发送全流程",
 					"collection_only_platforms": collection_only,
 				}, 400)
 			collection_options["auto_score"] = True
@@ -1634,6 +1718,7 @@ def api_workbench_deliver():
 			for row in platform_rows
 			if direct_send
 			and str(row["status"] or "") in allowed_statuses
+			and str(row["source_platform"] or "boss") != "51job"
 			and not str(row["greeting"] or "").strip()
 		}
 		not_ready_ids = {
@@ -1739,6 +1824,67 @@ def api_workbench_deliver():
 		if direct_send:
 			deliver_options["_workbench_skip_greeting"] = True
 		task = task_runner.start("deliver", _task_config(deliver_options))
+		return _json_response(task)
+	except TaskAlreadyRunningError as e:
+		return _json_response({"error": str(e)}, 409)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/jobs/auto-deliver-pilot", method="POST")
+def api_jobs_auto_deliver_pilot():
+	"""Start the guarded three-platform auto-apply pilot for selected jobs."""
+	try:
+		body = request.json or {}
+		if body.get("confirmed") is not True:
+			return _json_response({"error": "三平台试点投递需要明确确认"}, 400)
+		job_ids = [str(job_id) for job_id in body.get("job_ids", []) if str(job_id)]
+		if not job_ids:
+			return _json_response({"error": "请选择要投递的岗位"}, 400)
+
+		base_config = load_config(CONFIG_PATH)
+		from bosshunter.executor.pilot_sender import delivery_pilot_allowed
+		if not delivery_pilot_allowed(base_config):
+			return _json_response({
+				"error": "三平台自动投递试点未开启。请先到“配置 → 投递并行试点”开启两个开关，并确认智联/51job 已登录且平台内有可投递简历。"
+			}, 403)
+
+		validation_db = _get_web_db()
+		try:
+			placeholders = ",".join("?" for _ in job_ids)
+			rows = validation_db.execute(
+				f"""SELECT id, status, greeting, COALESCE(source_platform, 'boss') AS source_platform
+					FROM jobs WHERE deleted_at IS NULL AND id IN ({placeholders})""",
+				job_ids,
+			).fetchall()
+		finally:
+			validation_db.close()
+		found_ids = {str(row["id"]) for row in rows}
+		invalid_ids = [job_id for job_id in job_ids if job_id not in found_ids]
+		if invalid_ids:
+			return _json_response({"error": "所选岗位不存在或已进入回收站", "invalid_ids": invalid_ids}, 409)
+		bad_platform = [
+			str(row["id"]) for row in rows
+			if str(row["source_platform"] or "boss") not in {"boss", "zhilian", "51job"}
+		]
+		bad_status = [
+			str(row["id"]) for row in rows
+			if str(row["status"] or "") not in {"ready", "approved"}
+			or (str(row["source_platform"] or "boss") == "boss" and not str(row["greeting"] or "").strip())
+		]
+		if bad_platform or bad_status:
+			return _json_response({
+				"error": "所选岗位状态或来源不允许试点投递：BOSS 岗位需要已生成招呼语，其他岗位需为待确认/待投递",
+				"invalid_ids": bad_platform + bad_status,
+			}, 409)
+
+		task = task_runner.start(
+			"deliver",
+			_task_config({
+				"_workbench_job_ids": job_ids,
+				"_workbench_delivery_pilot": True,
+			}),
+		)
 		return _json_response(task)
 	except TaskAlreadyRunningError as e:
 		return _json_response({"error": str(e)}, 409)

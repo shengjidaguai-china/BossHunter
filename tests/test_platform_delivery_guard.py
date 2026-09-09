@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, mock
 
-from bosshunter.db import get_db, insert_job
+from bosshunter.db import get_db, insert_job, update_job_status
 from bosshunter.web import server
 
 
@@ -40,10 +40,9 @@ class PlatformDeliveryGuardTests(TestCase):
         ).decode("utf-8")
         return result["status"], json.loads(payload)
 
-    def test_collection_only_platforms_reject_delivery_and_resume_routes(self):
+    def test_zhilian_rejects_delivery_and_resume_routes(self):
         for platform, job_id, url in (
             ("zhilian", "zhilian:zl-1", "https://www.zhaopin.com/jobdetail/zl-1.htm"),
-            ("51job", "51job:job-1", "https://jobs.51job.com/shanghai/job-1.html"),
         ):
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
                 base_dir = Path(tmp)
@@ -72,3 +71,32 @@ class PlatformDeliveryGuardTests(TestCase):
                 self.assertTrue(deliver_status.startswith("403"), deliver_payload)
                 self.assertTrue(resume_status.startswith("403"), resume_payload)
                 start.assert_not_called()
+
+    def test_job51_delivery_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, {
+                    "id": "51job:job-1",
+                    "title": "采集岗位",
+                    "company": "示例公司",
+                    "jd": "JD",
+                    "url": "https://jobs.51job.com/shanghai/job-1.html",
+                    "source_platform": "51job",
+                    "source_job_id": "job-1",
+                })
+                update_job_status(db, "51job:job-1", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            with mock.patch.object(server.task_runner, "start", return_value={"id": "deliver-51"}) as start:
+                deliver_status, deliver_payload = self._request(
+                    "/api/workbench/deliver",
+                    {"job_ids": ["51job:job-1"]},
+                )
+            self.assertTrue(deliver_status.startswith("200"), deliver_payload)
+            start.assert_called_once()
+            self.assertEqual(start.call_args.args[0], "deliver")
+            self.assertEqual(start.call_args.args[1]["_workbench_job_ids"], ["51job:job-1"])
+

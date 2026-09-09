@@ -2,11 +2,11 @@
 
 PLATFORM_CAPABILITIES: dict[str, frozenset[str]] = {
     "boss": frozenset({"collect", "score", "greet", "deliver", "monitor"}),
-    # New platforms start read-only. Delivery and monitoring stay locked until
-    # an authorized real-account acceptance test has verified the live DOM and
-    # the maintainer explicitly enables those capabilities in a later change.
+    # Zhilian and Liepin stay collection-only until a dedicated apply adapter
+    # is verified. 51job can apply the existing online resume after manual
+    # confirmation; it still does not monitor chats or upload attachment resumes.
     "zhilian": frozenset({"collect", "score", "greet"}),
-    "51job": frozenset({"collect", "score", "greet"}),
+    "51job": frozenset({"collect", "score", "greet", "deliver"}),
     "liepin": frozenset({"collect", "score", "greet"}),
 }
 

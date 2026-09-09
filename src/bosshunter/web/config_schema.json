@@ -5,19 +5,110 @@
       "label": "个人信息",
       "icon": "User",
       "fields": [
-        {"key": "resume_path", "label": "简历文件路径", "type": "file", "description": "上传 .md 格式简历"},
-        {"key": "education", "label": "最高学历", "type": "select", "options": ["博士", "硕士", "本科", "大专", "其他"], "default": "", "description": "用于 AI 评分时判断岗位学历要求与个人背景的匹配度"},
-        {"key": "recruitment_type", "label": "求职招聘类型", "type": "select", "options": ["campus", "experienced", "both"], "default": "", "description": "选择校招、社招或两者均可"},
-        {"key": "greeting_preference", "label": "招呼语偏好", "type": "textarea", "default": "", "description": "补充语气和内容偏好；不会覆盖真实简历与安全规则"},
-        {"key": "target_cities", "label": "目标城市", "type": "multi-select", "options_from": "cities", "description": "支持多城市"},
-        {"key": "salary_min", "label": "最低薪资 (K)", "type": "number", "min": 0, "max": 200, "default": 0},
-        {"key": "salary_max", "label": "最高薪资 (K)", "type": "number", "min": 0, "max": 200, "default": 0},
-        {"key": "salary_ceil_ratio", "label": "薪资上限放宽倍数", "type": "number", "min": 1, "max": 5, "step": 0.1, "default": 1.5, "description": "按岗位薪资区间下限判断是否远超期望上限"},
-        {"key": "filter_unparsed_salary", "label": "过滤面议/无法解析薪资", "type": "switch", "default": true, "description": "开启后，薪资面议或无法解析的岗位会在 AI 评分前跳过"},
-        {"key": "deal_breakers", "label": "职位名排除词", "type": "tags", "description": "职位名含这些词时自动跳过"},
-        {"key": "jd_deal_breakers", "label": "JD 排除词", "type": "tags", "description": "完整 JD 含这些词时自动跳过"},
-        {"key": "blocked_companies", "label": "屏蔽公司", "type": "tags", "description": "公司名含这些词时自动跳过"},
-        {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "关闭时自动过滤实习、intern、管培岗位"}
+        {
+          "key": "resume_path",
+          "label": "简历文件路径",
+          "type": "file",
+          "description": "上传 .md 格式简历"
+        },
+        {
+          "key": "education",
+          "label": "最高学历",
+          "type": "select",
+          "options": [
+            "博士",
+            "硕士",
+            "本科",
+            "大专",
+            "其他"
+          ],
+          "default": "",
+          "description": "用于 AI 评分时判断岗位学历要求与个人背景的匹配度"
+        },
+        {
+          "key": "recruitment_type",
+          "label": "求职招聘类型",
+          "type": "select",
+          "options": [
+            "campus",
+            "experienced",
+            "both"
+          ],
+          "default": "",
+          "description": "选择校招、社招或两者均可"
+        },
+        {
+          "key": "greeting_preference",
+          "label": "招呼语偏好",
+          "type": "textarea",
+          "default": "",
+          "description": "补充语气和内容偏好；不会覆盖真实简历与安全规则"
+        },
+        {
+          "key": "target_cities",
+          "label": "目标城市",
+          "type": "multi-select",
+          "options_from": "cities",
+          "description": "支持多城市"
+        },
+        {
+          "key": "salary_min",
+          "label": "最低薪资 (K)",
+          "type": "number",
+          "min": 0,
+          "max": 200,
+          "default": 0
+        },
+        {
+          "key": "salary_max",
+          "label": "最高薪资 (K)",
+          "type": "number",
+          "min": 0,
+          "max": 200,
+          "default": 0
+        },
+        {
+          "key": "salary_ceil_ratio",
+          "label": "薪资上限放宽倍数",
+          "type": "number",
+          "min": 1,
+          "max": 5,
+          "step": 0.1,
+          "default": 1.5,
+          "description": "按岗位薪资区间下限判断是否远超期望上限"
+        },
+        {
+          "key": "filter_unparsed_salary",
+          "label": "过滤面议/无法解析薪资",
+          "type": "switch",
+          "default": true,
+          "description": "开启后，薪资面议或无法解析的岗位会在 AI 评分前跳过"
+        },
+        {
+          "key": "deal_breakers",
+          "label": "职位名排除词",
+          "type": "tags",
+          "description": "职位名含这些词时自动跳过"
+        },
+        {
+          "key": "jd_deal_breakers",
+          "label": "JD 排除词",
+          "type": "tags",
+          "description": "完整 JD 含这些词时自动跳过"
+        },
+        {
+          "key": "blocked_companies",
+          "label": "屏蔽公司",
+          "type": "tags",
+          "description": "公司名含这些词时自动跳过"
+        },
+        {
+          "key": "allow_internship",
+          "label": "接受实习/管培岗位",
+          "type": "switch",
+          "default": false,
+          "description": "关闭时自动过滤实习、intern、管培岗位"
+        }
       ]
     },
     {
@@ -25,11 +116,41 @@
       "label": "搜索设置",
       "icon": "Search",
       "fields": [
-        {"key": "keywords", "label": "搜索关键词", "type": "tags", "description": "BOSS 搜索框使用的关键词"},
-        {"key": "cities", "label": "搜索城市", "type": "multi-select", "options_from": "cities", "description": "留空则使用目标城市"},
-        {"key": "city_codes", "label": "自定义城市编码", "type": "object", "default": {}, "description": "由配置页查询并保存，不需要手工填写"},
-        {"key": "filters", "label": "BOSS 搜索筛选", "type": "object", "default": {}, "description": "职位类型、经验、学历、公司规模、薪资和行业编码"},
-        {"key": "max_pages", "label": "每关键词翻页数", "type": "number", "min": 1, "max": 10, "default": 3}
+        {
+          "key": "keywords",
+          "label": "搜索关键词",
+          "type": "tags",
+          "description": "BOSS 搜索框使用的关键词"
+        },
+        {
+          "key": "cities",
+          "label": "搜索城市",
+          "type": "multi-select",
+          "options_from": "cities",
+          "description": "留空则使用目标城市"
+        },
+        {
+          "key": "city_codes",
+          "label": "自定义城市编码",
+          "type": "object",
+          "default": {},
+          "description": "由配置页查询并保存，不需要手工填写"
+        },
+        {
+          "key": "filters",
+          "label": "BOSS 搜索筛选",
+          "type": "object",
+          "default": {},
+          "description": "职位类型、经验、学历、公司规模、薪资和行业编码"
+        },
+        {
+          "key": "max_pages",
+          "label": "每关键词翻页数",
+          "type": "number",
+          "min": 1,
+          "max": 10,
+          "default": 3
+        }
       ]
     },
     {
@@ -37,8 +158,25 @@
       "label": "岗位采集队列",
       "icon": "ListOrdered",
       "fields": [
-        {"key": "default_order", "label": "默认平台顺序", "type": "multi-select", "options": ["boss", "zhilian", "51job"], "default": ["boss"]},
-        {"key": "auto_score_default", "label": "采集后自动评分", "type": "switch", "default": false}
+        {
+          "key": "default_order",
+          "label": "默认平台顺序",
+          "type": "multi-select",
+          "options": [
+            "boss",
+            "zhilian",
+            "51job"
+          ],
+          "default": [
+            "boss"
+          ]
+        },
+        {
+          "key": "auto_score_default",
+          "label": "采集后自动评分",
+          "type": "switch",
+          "default": false
+        }
       ]
     },
     {
@@ -46,9 +184,45 @@
       "label": "平台采集设置",
       "icon": "Layers",
       "fields": [
-        {"key": "boss", "label": "BOSS 直聘独立设置", "type": "object", "description": "配置页保存 BOSS 的关键词、城市、页数和排序；城市编码由系统管理"},
-        {"key": "zhilian", "label": "智联招聘独立设置", "type": "object", "description": "配置页保存智联的关键词、城市、页数和排序；当前默认只开放采集、评分和招呼语生成"},
-        {"key": "51job", "label": "前程无忧独立设置", "type": "object", "description": "当前开放已验证的北京、上海采集、评分和招呼语生成；验证码或限流会立即停止"}
+        {
+          "key": "boss",
+          "label": "BOSS 直聘独立设置",
+          "type": "object",
+          "description": "配置页保存 BOSS 的关键词、城市、页数和排序；城市编码由系统管理"
+        },
+        {
+          "key": "zhilian",
+          "label": "智联招聘独立设置",
+          "type": "object",
+          "description": "配置页保存智联的关键词、城市、页数和排序；当前默认只开放采集、评分和招呼语生成"
+        },
+        {
+          "key": "51job",
+          "label": "前程无忧独立设置",
+          "type": "object",
+          "description": "当前开放采集、评分和招呼语生成；工作台人工确认后可投递已登录账号的在线简历。验证码或限流会停止本轮，不会绕过验证。"
+        }
+      ]
+    },
+    {
+      "key": "delivery",
+      "label": "投递并行试点",
+      "icon": "Send",
+      "fields": [
+        {
+          "key": "auto_apply_pilot_enabled",
+          "label": "启用三平台自动投递试点",
+          "type": "switch",
+          "default": false,
+          "description": "BOSS、智联和 51job 各使用一个独立标签页自动投递，需真实登录账号且平台已有可投递在线简历"
+        },
+        {
+          "key": "parallel_platforms_enabled",
+          "label": "启用三平台并行投递",
+          "type": "switch",
+          "default": false,
+          "description": "三个平台同时处理；任一平台出现验证码、限流、登录失效或页面结构无法确认时停止本轮"
+        }
       ]
     },
     {
@@ -56,8 +230,23 @@
       "label": "评分设置",
       "icon": "Star",
       "fields": [
-        {"key": "threshold", "label": "通过阈值", "type": "slider", "min": 0, "max": 100, "default": 71, "description": "低于此分自动过滤"},
-        {"key": "max_candidates", "label": "每轮最大候选数", "type": "number", "min": 1, "max": 100, "default": 20}
+        {
+          "key": "threshold",
+          "label": "通过阈值",
+          "type": "slider",
+          "min": 0,
+          "max": 100,
+          "default": 71,
+          "description": "低于此分自动过滤"
+        },
+        {
+          "key": "max_candidates",
+          "label": "每轮最大候选数",
+          "type": "number",
+          "min": 1,
+          "max": 100,
+          "default": 20
+        }
       ]
     },
     {
@@ -65,14 +254,91 @@
       "label": "反监测设置",
       "icon": "Shield",
       "fields": [
-        {"key": "daily_search_page_limit", "label": "BOSS 单日搜索页上限", "type": "number", "min": 1, "max": 200, "default": 60},
-        {"key": "daily_detail_page_limit", "label": "BOSS 单日详情页尝试上限", "type": "number", "min": 1, "max": 500, "default": 150},
-        {"key": "max_consecutive_page_failures", "label": "BOSS 连续页面失败停止阈值", "type": "number", "min": 1, "max": 10, "default": 3},
-        {"key": "risk_pause_min_minutes", "label": "BOSS 风险暂停最少分钟", "type": "number", "min": 1, "max": 60, "default": 5},
-        {"key": "risk_pause_max_minutes", "label": "BOSS 风险暂停最多分钟", "type": "number", "min": 1, "max": 60, "default": 10},
-        {"key": "collection_delay_multiplier", "label": "BOSS 操作间隔倍率", "type": "number", "min": 1, "max": 5, "step": 0.1, "default": 1.5, "description": "同时作用于 BOSS 采集和监测的页面操作与每轮等待"},
-        {"key": "delivery_cooldown_min_minutes", "label": "BOSS 采集后投递冷却最少（分钟）", "type": "number", "min": 0, "max": 240, "default": 5},
-        {"key": "delivery_cooldown_max_minutes", "label": "BOSS 采集后投递冷却最多（分钟）", "type": "number", "min": 0, "max": 240, "default": 15}
+        {
+          "key": "daily_search_page_limit",
+          "label": "BOSS 单日搜索页上限",
+          "type": "number",
+          "min": 1,
+          "max": 200,
+          "default": 60
+        },
+        {
+          "key": "daily_detail_page_limit",
+          "label": "BOSS 单日详情页尝试上限",
+          "type": "number",
+          "min": 1,
+          "max": 500,
+          "default": 150
+        },
+        {
+          "key": "max_consecutive_page_failures",
+          "label": "BOSS 连续页面失败停止阈值",
+          "type": "number",
+          "min": 1,
+          "max": 10,
+          "default": 3
+        },
+        {
+          "key": "risk_pause_min_minutes",
+          "label": "BOSS 风险暂停最少分钟",
+          "type": "number",
+          "min": 1,
+          "max": 60,
+          "default": 5
+        },
+        {
+          "key": "risk_pause_max_minutes",
+          "label": "BOSS 风险暂停最多分钟",
+          "type": "number",
+          "min": 1,
+          "max": 60,
+          "default": 10
+        },
+        {
+          "key": "collection_delay_multiplier",
+          "label": "BOSS 操作间隔倍率",
+          "type": "number",
+          "min": 1,
+          "max": 5,
+          "step": 0.1,
+          "default": 1.5,
+          "description": "同时作用于 BOSS 采集和监测的页面操作与每轮等待"
+        },
+        {
+          "key": "delivery_cooldown_min_minutes",
+          "label": "BOSS 采集后投递冷却最少（分钟）",
+          "type": "number",
+          "min": 0,
+          "max": 240,
+          "default": 5
+        },
+        {
+          "key": "delivery_cooldown_max_minutes",
+          "label": "BOSS 采集后投递冷却最多（分钟）",
+          "type": "number",
+          "min": 0,
+          "max": 240,
+          "default": 15
+        },
+        {
+          "key": "job51_manual_verification_timeout_seconds",
+          "label": "51job 人工验证等待上限（秒）",
+          "type": "number",
+          "min": 0,
+          "max": 1800,
+          "default": 300,
+          "description": "51job 投递遇到验证码或 WAF 后保留详情页并等待人工验证的最长时间"
+        },
+        {
+          "key": "job51_manual_verification_poll_interval_seconds",
+          "label": "51job 验证状态检查间隔（秒）",
+          "type": "number",
+          "min": 0.5,
+          "max": 30,
+          "step": 0.5,
+          "default": 2,
+          "description": "人工验证期间检查详情页是否恢复的间隔"
+        }
       ]
     },
     {
@@ -80,14 +346,70 @@
       "label": "反监测设置",
       "icon": "Shield",
       "fields": [
-        {"key": "daily_limit", "label": "每日发送上限", "type": "number", "min": 1, "max": 200, "default": 30},
-        {"key": "interval_min", "label": "最短间隔 (秒)", "type": "number", "min": 10, "max": 600, "default": 60},
-        {"key": "interval_max", "label": "最长间隔 (秒)", "type": "number", "min": 10, "max": 600, "default": 180},
-        {"key": "browse_before_greet", "label": "发送前模拟浏览", "type": "switch", "default": true},
-        {"key": "browse_duration_min", "label": "浏览最短时长 (秒)", "type": "number", "min": 5, "max": 120, "default": 15},
-        {"key": "browse_duration_max", "label": "浏览最长时长 (秒)", "type": "number", "min": 5, "max": 120, "default": 30},
-        {"key": "send_windows", "label": "发送时间窗口", "type": "tags", "default": ["09:00-16:00"], "description": "格式: HH:MM-HH:MM；后台任务会在最后一个窗口结束时自动停止"},
-        {"key": "day_off_probability", "label": "随机休息概率", "type": "number", "min": 0, "max": 1, "step": 0.01, "default": 0.05}
+        {
+          "key": "daily_limit",
+          "label": "每日发送上限",
+          "type": "number",
+          "min": 1,
+          "max": 200,
+          "default": 30
+        },
+        {
+          "key": "interval_min",
+          "label": "最短间隔 (秒)",
+          "type": "number",
+          "min": 10,
+          "max": 600,
+          "default": 60
+        },
+        {
+          "key": "interval_max",
+          "label": "最长间隔 (秒)",
+          "type": "number",
+          "min": 10,
+          "max": 600,
+          "default": 180
+        },
+        {
+          "key": "browse_before_greet",
+          "label": "发送前模拟浏览",
+          "type": "switch",
+          "default": true
+        },
+        {
+          "key": "browse_duration_min",
+          "label": "浏览最短时长 (秒)",
+          "type": "number",
+          "min": 5,
+          "max": 120,
+          "default": 15
+        },
+        {
+          "key": "browse_duration_max",
+          "label": "浏览最长时长 (秒)",
+          "type": "number",
+          "min": 5,
+          "max": 120,
+          "default": 30
+        },
+        {
+          "key": "send_windows",
+          "label": "发送时间窗口",
+          "type": "tags",
+          "default": [
+            "09:00-16:00"
+          ],
+          "description": "格式: HH:MM-HH:MM；后台任务会在最后一个窗口结束时自动停止"
+        },
+        {
+          "key": "day_off_probability",
+          "label": "随机休息概率",
+          "type": "number",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "default": 0.05
+        }
       ]
     },
     {
@@ -95,16 +417,96 @@
       "label": "AI 设置",
       "icon": "Brain",
       "fields": [
-        {"key": "service", "label": "AI 服务商", "type": "select", "options": ["anthropic", "deepseek", "doubao", "custom"], "default": "anthropic", "description": "支持 Claude、DeepSeek、豆包和其他 OpenAI 兼容接口"},
-        {"key": "provider", "label": "接口协议", "type": "select", "options": ["anthropic", "openai_compatible"], "default": "anthropic", "description": "由服务商预设自动选择"},
-        {"key": "model", "label": "模型名称", "type": "text", "default": "claude-sonnet-4-6"},
-        {"key": "api_key", "label": "API Key", "type": "password", "description": "填写后优先生效；留空时才读取环境变量"},
-        {"key": "base_url", "label": "Base URL", "type": "text", "placeholder": "留空使用默认", "default": "", "description": "填写后优先生效；留空时使用环境变量或服务商默认地址"},
-        {"key": "thinking", "label": "Thinking 模式", "type": "select", "options": ["auto", "disabled", "enabled", "off"], "default": "auto", "description": "auto 优先关闭推理输出，不兼容时安全回退；off 不发送 thinking 参数"},
-        {"key": "thinking_budget", "label": "Thinking 预算", "type": "number", "min": 1024, "max": 32768, "default": 2048, "description": "仅 enabled 模式使用"},
-        {"key": "timeout_seconds", "label": "AI 请求超时 (秒)", "type": "number", "min": 5, "max": 600, "default": 180},
-        {"key": "scoring_concurrency", "label": "AI 评分并发数", "type": "number", "min": 1, "max": 3, "default": 1, "description": "仅并发调用 AI，岗位数据仍按顺序安全写入"},
-        {"key": "scoring_second_review", "label": "临界评分二次复核", "type": "switch", "default": false, "description": "开启后对首次68-79分的岗位再调用一次 AI"}
+        {
+          "key": "service",
+          "label": "AI 服务商",
+          "type": "select",
+          "options": [
+            "anthropic",
+            "deepseek",
+            "doubao",
+            "custom"
+          ],
+          "default": "anthropic",
+          "description": "支持 Claude、DeepSeek、豆包和其他 OpenAI 兼容接口"
+        },
+        {
+          "key": "provider",
+          "label": "接口协议",
+          "type": "select",
+          "options": [
+            "anthropic",
+            "openai_compatible"
+          ],
+          "default": "anthropic",
+          "description": "由服务商预设自动选择"
+        },
+        {
+          "key": "model",
+          "label": "模型名称",
+          "type": "text",
+          "default": "claude-sonnet-4-6"
+        },
+        {
+          "key": "api_key",
+          "label": "API Key",
+          "type": "password",
+          "description": "填写后优先生效；留空时才读取环境变量"
+        },
+        {
+          "key": "base_url",
+          "label": "Base URL",
+          "type": "text",
+          "placeholder": "留空使用默认",
+          "default": "",
+          "description": "填写后优先生效；留空时使用环境变量或服务商默认地址"
+        },
+        {
+          "key": "thinking",
+          "label": "Thinking 模式",
+          "type": "select",
+          "options": [
+            "auto",
+            "disabled",
+            "enabled",
+            "off"
+          ],
+          "default": "auto",
+          "description": "auto 优先关闭推理输出，不兼容时安全回退；off 不发送 thinking 参数"
+        },
+        {
+          "key": "thinking_budget",
+          "label": "Thinking 预算",
+          "type": "number",
+          "min": 1024,
+          "max": 32768,
+          "default": 2048,
+          "description": "仅 enabled 模式使用"
+        },
+        {
+          "key": "timeout_seconds",
+          "label": "AI 请求超时 (秒)",
+          "type": "number",
+          "min": 5,
+          "max": 600,
+          "default": 180
+        },
+        {
+          "key": "scoring_concurrency",
+          "label": "AI 评分并发数",
+          "type": "number",
+          "min": 1,
+          "max": 3,
+          "default": 1,
+          "description": "仅并发调用 AI，岗位数据仍按顺序安全写入"
+        },
+        {
+          "key": "scoring_second_review",
+          "label": "临界评分二次复核",
+          "type": "switch",
+          "default": false,
+          "description": "开启后对首次68-79分的岗位再调用一次 AI"
+        }
       ]
     },
     {
@@ -112,13 +514,60 @@
       "label": "监控设置",
       "icon": "Eye",
       "fields": [
-        {"key": "interval", "label": "检查间隔 (分钟)", "type": "number", "min": 1, "max": 120, "default": 30},
-        {"key": "initial_cooldown_minutes", "label": "全流程首次监测冷却 (分钟)", "type": "number", "min": 0, "max": 120, "default": 10, "description": "仅运行全流程发送结束后生效；单独监测立即执行首轮，停止任务可取消冷却"},
-        {"key": "chat_url", "label": "聊天页 URL", "type": "text", "default": "https://www.zhipin.com/web/geek/chat"},
-        {"key": "max_conversations_per_cycle", "label": "每轮最多处理对话数", "type": "number", "min": 1, "max": 20, "default": 5},
-        {"key": "max_consecutive_page_failures", "label": "连续页面失败停止阈值", "type": "number", "min": 1, "max": 10, "default": 3},
-        {"key": "max_resume_sends_per_cycle", "label": "每轮最多发简历数", "type": "number", "min": 1, "max": 20, "default": 5},
-        {"key": "auto_reply_hr_questions", "label": "检测到 HR 问题时自动回复", "type": "switch", "default": false, "description": "关闭时只生成回复建议，需要在监测执行中确认后发送"}
+        {
+          "key": "interval",
+          "label": "检查间隔 (分钟)",
+          "type": "number",
+          "min": 1,
+          "max": 120,
+          "default": 30
+        },
+        {
+          "key": "initial_cooldown_minutes",
+          "label": "全流程首次监测冷却 (分钟)",
+          "type": "number",
+          "min": 0,
+          "max": 120,
+          "default": 10,
+          "description": "仅运行全流程发送结束后生效；单独监测立即执行首轮，停止任务可取消冷却"
+        },
+        {
+          "key": "chat_url",
+          "label": "聊天页 URL",
+          "type": "text",
+          "default": "https://www.zhipin.com/web/geek/chat"
+        },
+        {
+          "key": "max_conversations_per_cycle",
+          "label": "每轮最多处理对话数",
+          "type": "number",
+          "min": 1,
+          "max": 20,
+          "default": 5
+        },
+        {
+          "key": "max_consecutive_page_failures",
+          "label": "连续页面失败停止阈值",
+          "type": "number",
+          "min": 1,
+          "max": 10,
+          "default": 3
+        },
+        {
+          "key": "max_resume_sends_per_cycle",
+          "label": "每轮最多发简历数",
+          "type": "number",
+          "min": 1,
+          "max": 20,
+          "default": 5
+        },
+        {
+          "key": "auto_reply_hr_questions",
+          "label": "检测到 HR 问题时自动回复",
+          "type": "switch",
+          "default": false,
+          "description": "关闭时只生成回复建议，需要在监测执行中确认后发送"
+        }
       ]
     },
     {
@@ -126,9 +575,29 @@
       "label": "跟进设置",
       "icon": "MessageCircle",
       "fields": [
-        {"key": "enabled", "label": "启用自动跟进", "type": "switch", "default": false, "description": "对超时未回复的HR自动发送跟进消息"},
-        {"key": "interval_hours", "label": "跟进间隔 (小时)", "type": "number", "min": 12, "max": 168, "default": 48, "description": "发送后多久未回复则跟进"},
-        {"key": "skip_weekends", "label": "跳过周末节假日", "type": "switch", "default": true, "description": "周末和节假日不发送跟进消息"}
+        {
+          "key": "enabled",
+          "label": "启用自动跟进",
+          "type": "switch",
+          "default": false,
+          "description": "对超时未回复的HR自动发送跟进消息"
+        },
+        {
+          "key": "interval_hours",
+          "label": "跟进间隔 (小时)",
+          "type": "number",
+          "min": 12,
+          "max": 168,
+          "default": 48,
+          "description": "发送后多久未回复则跟进"
+        },
+        {
+          "key": "skip_weekends",
+          "label": "跳过周末节假日",
+          "type": "switch",
+          "default": true,
+          "description": "周末和节假日不发送跟进消息"
+        }
       ]
     },
     {
@@ -136,7 +605,12 @@
       "label": "去重设置",
       "icon": "Filter",
       "fields": [
-        {"key": "history_file", "label": "历史记录文件路径", "type": "text", "default": "./data/history.jsonl"}
+        {
+          "key": "history_file",
+          "label": "历史记录文件路径",
+          "type": "text",
+          "default": "./data/history.jsonl"
+        }
       ]
     }
   ]
