@@ -7,7 +7,7 @@ import json
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
@@ -65,6 +65,23 @@ def decode_boss_text(value: Any) -> str:
 def _decode_fields(raw: dict) -> dict:
     return {key: decode_boss_text(value) if isinstance(value, str) else value
             for key, value in raw.items()}
+
+
+_SALARY_DECODE_ACTIONS = ("stop", "skip_job")
+
+
+def _salary_decode_failure_action(config: Any) -> str:
+    """How to treat a BOSS salary font the decoder cannot map.
+
+    BOSS remaps digits onto private-use codepoints and reshuffles that mapping
+    on every font load, so an unknown font can never be guessed safely:
+    ``stop`` (default) aborts the run instead of judging jobs by a salary we
+    cannot read, while ``skip_job`` keeps collecting and leaves the salary
+    empty so ``profile.filter_unparsed_salary`` decides as usual.
+    """
+    collection = config.get("collection") if isinstance(config, dict) else None
+    value = collection.get("boss_salary_decode_failure") if isinstance(collection, dict) else None
+    return value if value in _SALARY_DECODE_ACTIONS else "stop"
 
 
 JS_IS_SCROLL_LIST = "Boolean(document.querySelector('.page-jobs .job-list-container .rec-job-list'))"
@@ -297,6 +314,8 @@ class BossCollector:
         page_failures = 0
         seen_jobs = 0
         incomplete_combos = 0
+        undecodable_salary: set[str] = set()
+        salary_decode_action = _salary_decode_failure_action(self.config)
 
         def limited(reason: str) -> PlatformCollectionResult:
             return PlatformCollectionResult(
@@ -531,10 +550,20 @@ class BossCollector:
                             continue
                         if not hooks.on_list_candidate(candidate): continue
                         if _PRIVATE_GLYPH.search(candidate.salary):
-                            hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
-                            return PlatformCollectionResult(
-                                self.platform, "completed_with_shortage", "salary_decode_failed",
-                                "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
+                            if salary_decode_action != "skip_job":
+                                hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
+                                return PlatformCollectionResult(
+                                    self.platform, "completed_with_shortage", "salary_decode_failed",
+                                    "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
+                                )
+                            # Never keep a number we could not decode: an empty
+                            # salary lets filter_unparsed_salary decide instead
+                            # of dropping the whole run or storing garbage.
+                            undecodable_salary.add(candidate.source_job_id)
+                            raw["salary"] = ""
+                            candidate = replace(candidate, salary="")
+                            hooks.on_event(
+                                message="BOSS 薪资字体无法解析，已按配置保留该岗位（薪资留空）"
                             )
                         score, filter_reason = quick_score(raw, self.config) if self.config else (100, "")
                         if score <= 0:
@@ -581,6 +610,9 @@ class BossCollector:
                             continue
                         page_failures = 0
                         merged = self._merge_detail(candidate, detail, detail_url)
+                        if (merged.source_job_id in undecodable_salary
+                                and _PRIVATE_GLYPH.search(merged.salary)):
+                            merged = replace(merged, salary="")
                         if not merged.title or not merged.company or not merged.url or not merged.jd:
                             combo_complete = False
                             hooks.on_parse_failed("BOSS 详情缺少职位、公司、链接或 JD")
