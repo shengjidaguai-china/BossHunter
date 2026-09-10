@@ -2,6 +2,7 @@ import { RotateCcw, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { cn } from '@/lib/utils'
 import { STATUS_LABELS } from '@/lib/status'
 import { hasActiveJobFilters, type JobFilters } from '@/lib/jobFilters'
 
@@ -14,6 +15,7 @@ interface JobFilterBarProps {
   invalidSalary?: boolean
   showStatus?: boolean
   showSource?: boolean
+  compact?: boolean
 }
 
 export function JobFilterBar({
@@ -25,29 +27,31 @@ export function JobFilterBar({
   invalidSalary = false,
   showStatus = false,
   showSource = false,
+  compact = false,
 }: JobFilterBarProps) {
+  const controlClass = cn('min-w-0', compact && 'h-7 px-2 text-xs')
   const update = (key: keyof JobFilters, value: string) => onChange({ ...filters, [key]: value })
 
   return (
-    <div className="mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-3">
-      <div className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-4">
-        <label className="relative min-w-0 md:col-span-2 2xl:col-span-1">
-          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted" />
+    <div className={cn(!compact && "mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-3")}>
+      <div className={cn("grid min-w-0", compact ? "grid-cols-2 gap-1.5 xl:grid-cols-4" : "grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-4")}>
+        <label className={cn("relative min-w-0", compact ? "col-span-2 xl:col-span-1" : "md:col-span-2 2xl:col-span-1")}>
+          <Search className={cn("pointer-events-none absolute text-muted", compact ? "left-2 top-2 h-3 w-3" : "left-3 top-2.5 h-4 w-4")} />
           <Input
             value={filters.query}
             onChange={event => update('query', event.target.value)}
             placeholder="搜索职位、公司、JD 或评分理由"
-            className="pl-9"
+            className={cn(controlClass, compact ? "pl-7" : "pl-9")}
             aria-label="关键词"
           />
         </label>
-        <Select className="min-w-0" value={filters.createdWithin} onChange={event => update('createdWithin', event.target.value)} aria-label="采集时间">
+        <Select className={controlClass} value={filters.createdWithin} onChange={event => update('createdWithin', event.target.value)} aria-label="采集时间">
           <option value="">采集时间：全部</option>
           <option value="today">今天</option>
           <option value="3d">近 3 天</option>
           <option value="7d">近 7 天</option>
         </Select>
-        <Select className="min-w-0" value={filters.minScore} onChange={event => update('minScore', event.target.value)} aria-label="最低评分">
+        <Select className={controlClass} value={filters.minScore} onChange={event => update('minScore', event.target.value)} aria-label="最低评分">
           <option value="">最低评分：不限</option>
           <option value="60">60+</option>
           <option value="71">71+</option>
@@ -60,7 +64,7 @@ export function JobFilterBar({
           value={filters.salaryMin}
           onChange={event => update('salaryMin', event.target.value)}
           placeholder="最低薪资 K"
-          className="min-w-0"
+          className={cn(controlClass, compact && 'xl:order-1')}
           aria-label="最低薪资 K"
         />
         <Input
@@ -70,11 +74,11 @@ export function JobFilterBar({
           value={filters.salaryMax}
           onChange={event => update('salaryMax', event.target.value)}
           placeholder="最高薪资 K"
-          className="min-w-0"
+          className={cn(controlClass, compact && 'xl:order-1')}
           aria-label="最高薪资 K"
         />
         {showStatus && (
-          <Select className="min-w-0" value={filters.status} onChange={event => update('status', event.target.value)} aria-label="岗位状态">
+          <Select className={controlClass} value={filters.status} onChange={event => update('status', event.target.value)} aria-label="岗位状态">
             <option value="">全部状态</option>
             {Object.entries(STATUS_LABELS).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>
@@ -82,14 +86,15 @@ export function JobFilterBar({
           </Select>
         )}
         {showSource && (
-          <Select className="min-w-0" value={filters.sourcePlatform} onChange={event => update('sourcePlatform', event.target.value)} aria-label="来源平台">
+          <Select className={controlClass} value={filters.sourcePlatform} onChange={event => update('sourcePlatform', event.target.value)} aria-label="来源平台">
             <option value="">来源平台：全部</option>
             <option value="boss">BOSS 直聘</option>
             <option value="zhilian">智联招聘</option>
             <option value="51job">前程无忧</option>
+            <option value="liepin">猎聘</option>
           </Select>
         )}
-        <Select className="min-w-0" value={filters.education} onChange={event => update('education', event.target.value)} aria-label="学历要求">
+        <Select className={cn(controlClass, compact && 'xl:order-1')} value={filters.education} onChange={event => update('education', event.target.value)} aria-label="学历要求">
           <option value="">学历：全部</option>
           <option value="博士">博士</option>
           <option value="硕士">硕士</option>
@@ -98,19 +103,19 @@ export function JobFilterBar({
           <option value="不限">学历不限</option>
           <option value="unknown">未识别</option>
         </Select>
-        <Select className="min-w-0" value={filters.recruitmentType} onChange={event => update('recruitmentType', event.target.value)} aria-label="招聘类型">
+        <Select className={cn(controlClass, compact && 'xl:order-1')} value={filters.recruitmentType} onChange={event => update('recruitmentType', event.target.value)} aria-label="招聘类型">
           <option value="">招聘类型：全部</option>
           <option value="campus">校招</option>
           <option value="experienced">社招</option>
           <option value="unknown">未识别</option>
         </Select>
-        <div className="flex min-h-9 min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-card-border bg-white px-3 py-1">
-          <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>
+        <div className={cn("flex min-w-0 items-center gap-2", compact ? "col-span-2 justify-end xl:col-span-1" : "min-h-9 flex-wrap justify-between rounded-md border border-card-border bg-white px-3 py-1")}>
+          {!compact && <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>}
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 px-2"
+            className={cn("h-7 px-2", compact && "text-xs")}
             disabled={!hasActiveJobFilters(filters)}
             onClick={onReset}
           >
