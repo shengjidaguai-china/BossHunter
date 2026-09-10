@@ -33,22 +33,23 @@ export function TrendChart({ data }: TrendChartProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>7 日趋势</CardTitle>
+        <CardTitle className="font-black text-foreground">7 日趋势</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-[200px]">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-              <XAxis dataKey="day" stroke="#71717a" fontSize={12} />
-              <YAxis stroke="#71717a" fontSize={12} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#F2E7DE" />
+              <XAxis dataKey="day" stroke="#7A6C61" fontSize={12} />
+              <YAxis stroke="#7A6C61" fontSize={12} />
               <Tooltip
-                contentStyle={{ background: '#18181b', border: '1px solid #27272a', borderRadius: '6px' }}
-                labelStyle={{ color: '#a1a1aa' }}
+                contentStyle={{ background: '#FFFFFF', border: '1px solid #F2E7DE', borderRadius: '12px', boxShadow: '0 4px 12px rgba(251,101,17,0.08)' }}
+                labelStyle={{ color: '#1F1F1F', fontWeight: 700 }}
+                itemStyle={{ color: '#7A6C61', fontSize: '12px' }}
               />
-              <Legend wrapperStyle={{ fontSize: '12px' }} />
-              <Line type="monotone" dataKey="send" name="发送" stroke="#22c55e" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="reply" name="回复" stroke="#f59e0b" strokeWidth={2} dot={false} />
+              <Legend wrapperStyle={{ fontSize: '12px', color: '#7A6C61' }} />
+              <Line type="monotone" dataKey="send" name="发送" stroke="#16A34A" strokeWidth={2} dot={{ r: 3, fill: '#16A34A' }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="reply" name="回复" stroke="#FB6511" strokeWidth={2} dot={{ r: 3, fill: '#FB6511' }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>
