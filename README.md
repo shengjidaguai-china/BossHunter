@@ -5,7 +5,7 @@
   <a href="https://github.com/shengjidaguai-china">点击组织首页右上角 <strong>Follow</strong></a>，及时获取新项目与共建活动
 </p>
 
-<h1 align="center">BossHunter v2.3.2</h1>
+<h1 align="center">BossHunter v2.4.0</h1>
 
 <p align="center">
   某直聘智能求职 Agent：本地完成岗位采集、AI 评分、人工确认投递、回复监测与定制简历生成。
@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/shengjidaguai-china/BossHunter/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/shengjidaguai-china/BossHunter?style=social"></a>
-  <a href="https://github.com/shengjidaguai-china/BossHunter"><img alt="Version" src="https://img.shields.io/badge/version-v2.3.2-FB6511"></a>
+  <a href="https://github.com/shengjidaguai-china/BossHunter"><img alt="Version" src="https://img.shields.io/badge/version-v2.4.0-FB6511"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white"></a>
   <a href="https://github.com/shengjidaguai-china/BossHunter/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/shengjidaguai-china/BossHunter"></a>
   <a href="https://github.com/shengjidaguai-china/BossHunter/commits/main"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/shengjidaguai-china/BossHunter"></a>
@@ -38,7 +38,7 @@
 
 | 能力 | 说明 |
 |---|---|
-| 多平台岗位池 | 串行采集 BOSS 直聘、智联招聘和前程无忧 51job，支持来源去重 |
+| 多平台岗位池 | 串行采集 BOSS 直聘、智联招聘、前程无忧 51job 和猎聘，支持来源去重 |
 | AI 评分与筛选 | 先做关键词预筛，再结合岗位 JD 深度评分 |
 | 人工确认 | 投递前必须审核，支持逐个或批量确认 |
 | 个性化沟通 | 根据岗位 JD 和个人简历，为已确认岗位生成招呼语 |
@@ -53,8 +53,9 @@
 | BOSS 直聘 | 支持 | 人工确认后低频发送，并支持回复监听 |
 | 智联招聘 | 支持只读采集、评分和招呼语准备 | 在原平台手动投递，再回填“已发送” |
 | 前程无忧 51job | 支持只读采集、评分和招呼语准备 | 在原平台手动投递，再回填“已发送” |
+| 猎聘 | 支持只读采集、评分和招呼语准备 | 在原平台手动投递，再回填“已发送” |
 
-三个平台严格串行采集。检测到验证码、频率限制、登录墙或未知页面结构时会安全停止，不尝试绕过。
+各平台严格串行采集。检测到验证码、频率限制、登录墙或未知页面结构时会安全停止，不尝试绕过。
 
 ## 项目结构图
 
@@ -77,6 +78,8 @@
 ```bash
 git clone https://github.com/shengjidaguai-china/BossHunter.git
 cd BossHunter
+npm --prefix src/bosshunter/web/frontend ci
+npm --prefix src/bosshunter/web/frontend run build
 pip install -e .
 bosshunter web
 ```
@@ -104,14 +107,18 @@ bosshunter run
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、开发与维护者申请 |
 | [项目治理](GOVERNANCE.md) | 模块责任、权限、晋升与统计口径 |
 
-## 版本更新
+<details>
+<summary><strong>版本更新</strong></summary>
 
 | 日期 | 版本号 | 类型 | 更新内容 |
 |---|---|---|---|
+| 2026-09-09 | v2.4.0 | 采集、AI、简历与工作台 | 改进多平台断点续采、完整简历评分与进度反馈，补齐发送和简历失败重试、定制简历预览确认；精简首页提示和筛选，增加趋势统计，修复 AI 连接诊断、macOS 面板加载与源码安装步骤。 |
 | 2026-09-01 | v2.3.2 | 采集与简历稳定性 | 完成 51job API 只读采集的安全整合和真实环境验证；修复智联登录误判、单平台阻断后续任务和中文 PDF 简历乱码。 |
 | 2026-08-25 | v2.3.1 | 多平台与安全整合 | 合入智联/51job 只读采集、外部平台人工投递闭环、岗位池与筛选增强、Windows 兼容、招呼语与消息判定修复，并重整 BOSS 页面访问保护设置。 |
 
 完整版本历史、升级说明和验证记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+</details>
 
 ## 🧭 现任维护者
 
