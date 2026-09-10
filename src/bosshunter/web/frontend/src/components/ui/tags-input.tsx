@@ -13,16 +13,22 @@ interface TagsInputProps {
 export function TagsInput({ value, onChange, placeholder = '输入后按回车添加', className, onAdd }: TagsInputProps) {
   const [input, setInput] = useState('')
 
+  const commitInput = () => {
+    const tags = input.split(/[,，、;；]/).map(tag => tag.trim()).filter(Boolean)
+    if (!tags.length) return
+    if (onAdd) {
+      tags.forEach(onAdd)
+    } else {
+      onChange([...new Set([...value, ...tags])])
+    }
+    setInput('')
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && input.trim() && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+    if (e.key === 'Enter') {
       e.preventDefault()
-      const tags = input.split(/[,，、;；]/).map(tag => tag.trim()).filter(Boolean)
-      if (onAdd) {
-        tags.forEach(onAdd)
-      } else {
-        onChange([...new Set([...value, ...tags])])
-      }
-      setInput('')
+      commitInput()
     } else if (e.key === 'Backspace' && !input && value.length > 0) {
       onChange(value.slice(0, -1))
     }
@@ -56,6 +62,7 @@ export function TagsInput({ value, onChange, placeholder = '输入后按回车�
         value={input}
         onChange={e => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
+        onBlur={commitInput}
         placeholder={value.length === 0 ? placeholder : ''}
         className="flex-1 min-w-[80px] bg-transparent text-sm text-foreground placeholder:text-muted/60 outline-none"
       />
