@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, call, patch
 
+from bosshunter.db import get_db
 from bosshunter.scraper.jobs import scrape_jobs
 from bosshunter.web.server import _execute_collect
 from bosshunter.web.tasks import WorkbenchTask
@@ -111,7 +112,7 @@ class ScraperBackgroundTests(unittest.TestCase):
         self.assertEqual(task.snapshot()["metrics"], task.metrics)
 
     def test_scraper_reports_seen_new_and_duplicate_counts(self):
-        db = Mock()
+        db = get_db(Path(":memory:"))
         progress = Mock()
         progress.add_task.return_value = "task-1"
         progress_context = Mock()
@@ -159,7 +160,7 @@ class ScraperBackgroundTests(unittest.TestCase):
         })
 
     def test_search_and_detail_pages_reuse_one_background_worker_tab(self):
-        db = Mock()
+        db = get_db(Path(":memory:"))
         progress = Mock()
         progress.add_task.return_value = "task-1"
         progress_context = Mock()
