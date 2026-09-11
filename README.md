@@ -103,6 +103,7 @@ bosshunter run
 | [完整上手指南](docs/QUICKSTART.md) | 安装、Chrome 连接、首次配置和安全边界 |
 | [CLI 命令](docs/CLI.md) | 一键流程、分步命令、监听与状态查看 |
 | [配置指南](docs/CONFIGURATION.md) | 平台、AI、简历和风险控制配置 |
+| [可选面试准备](docs/interview-integration.md) | 导出岗位 JD、联通同机面试工作台与隐私边界 |
 | [常见问题](docs/FAQ.md) | 封号风险、平台边界、简历格式和连接排错 |
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、开发与维护者申请 |
 | [项目治理](GOVERNANCE.md) | 模块责任、权限、晋升与统计口径 |
