@@ -579,17 +579,23 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
-  const startCollection = async (options: Record<string, unknown>) => {
+  const startCollection = async (options: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
     const mode = collectDialogMode
     setModePending(mode)
     setNotice(mode === 'full' ? '全流程启动前预检中...' : '岗位采集启动前预检中...')
     try {
-      if (!(await runPreflight(mode, options))) return
+      if (!(await runPreflight(mode, options))) {
+        setNotice('启动前预检未通过：请按下方检查提示修复后，再重新启动。')
+        return { ok: false, error: '启动前预检未通过：请关闭弹窗后按检查提示修复，再重新启动。' }
+      }
+      setNotice('启动前预检通过，正在启动任务...')
       await startTask(mode, options)
-      setCollectDialogOpen(false)
       setNotice(mode === 'full' ? '全流程已启动，进度会在下方更新。' : '岗位采集已启动，进度会在下方更新。')
+      return { ok: true }
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : '岗位采集启动失败')
+      const message = err instanceof Error ? err.message : '岗位采集启动失败'
+      setNotice(message)
+      return { ok: false, error: message }
     } finally {
       setModePending(null)
     }
@@ -1195,7 +1201,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         mode={collectDialogMode}
         activeTask={activeTask && (activeTask.mode === 'collect' || activeTask.mode === 'full') ? activeTask : null}
         onClose={() => setCollectDialogOpen(false)}
-        onStart={options => void startCollection(options)}
+        onStart={startCollection}
       />
     </div>
   )
