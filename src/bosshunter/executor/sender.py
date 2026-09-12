@@ -357,11 +357,29 @@ def _submit_startchat_greeting(target_id: str, greeting: str) -> dict:
     return {"success": True, "action": "first_contact_submitted"}
 
 
+def _add_friend_in_page(target_id: str, data_url: str) -> None:
+    """在页面上下文里 POST friend/add 建立好友关系（带登录态），避免跳聊天页时'不在好友序列'。"""
+    friend_js = (
+        "(async () => {"
+        "  try {"
+        f"    const resp = await fetch({json.dumps(data_url)}, {{ method: 'POST', credentials: 'include', headers: {{'Content-Type': 'application/json'}} }});"
+        "    return JSON.stringify({ok: resp.ok, status: resp.status});"
+        "  } catch (e) {"
+        "    return JSON.stringify({ok: false, error: String(e)});"
+        "  }"
+        "})()"
+    )
+    evaluate(target_id, friend_js)
+
+
 def _navigate_to_chat_redirect(target_id: str, click_result: dict) -> bool:
-    """Reuse BOSS's own chat destination without foregrounding the job tab."""
+    """先请求 friend/add 建立好友关系，再跳转聊天页，避免'不在好友序列'。"""
     redirect_url = str(click_result.get("redirectUrl") or "").strip()
     if not redirect_url.startswith("/web/geek/chat"):
         return False
+    data_url = str(click_result.get("dataUrl") or "").strip()
+    if data_url and "/friend/add" in data_url:
+        _add_friend_in_page(target_id, data_url)
     return navigate(target_id, urljoin("https://www.zhipin.com", redirect_url))
 
 
@@ -385,6 +403,9 @@ def _handle_greet_popup(target_id: str, greeting: str, click_result: dict | None
             "history_detail": "首次沟通弹窗缺少可验证的聊天地址，已停止发送且未切换前台",
             "skip_backoff": True,
         }
+    # 后台 tab 里 window.open/自然跳转会被拦截，无弹窗时也用 redirectUrl 直接导航到聊天页
+    if click_result and _navigate_to_chat_redirect(target_id, click_result):
+        return {"success": True, "action": "startchat_redirected"}
     return {"success": True, "action": "no_popup"}
 
 
@@ -937,6 +958,11 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             "history_detail": "首次招呼语已提交，但会话中未确认对应消息；为避免重复发送，请人工检查",
             "skip_backoff": True,
         }, target_id
+
+    if contact_action == "preset_confirmed":
+        # BOSS 预设招呼语已由平台自动发送，无需再发自定义招呼语，避免重复
+        close_tab(target_id)
+        return {"success": True, "verified": True, "preset_confirmed": True}, None
 
     existing_state = _message_delivery_state(target_id, greeting)
     if existing_state == "delivered":
