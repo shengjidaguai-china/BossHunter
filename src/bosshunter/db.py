@@ -503,6 +503,75 @@ def persist_job_score_and_trace(
         )
 
 
+def persist_agent_evaluations(conn: sqlite3.Connection, evaluations: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Persist validated Agent scores without allowing a delivery-state overwrite."""
+    job_ids = [str(evaluation["job_id"]) for evaluation in evaluations]
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = {
+        str(row["id"]): dict(row)
+        for row in conn.execute(
+            f"SELECT id, status, deleted_at FROM jobs WHERE id IN ({placeholders})", job_ids
+        ).fetchall()
+    }
+    missing = [job_id for job_id in job_ids if job_id not in rows]
+    blocked = [
+        job_id for job_id in job_ids
+        if job_id in rows and (rows[job_id]["deleted_at"] is not None or rows[job_id]["status"] != "pending")
+    ]
+    if missing:
+        raise ValueError("存在不存在的岗位，未保存 Agent 评估：" + "、".join(missing))
+    if blocked:
+        raise ValueError("只能评估未评分的待处理岗位：" + "、".join(blocked))
+
+    ready: list[str] = []
+    filtered: list[str] = []
+    with conn:
+        for evaluation in evaluations:
+            job_id = str(evaluation["job_id"])
+            passed = bool(evaluation["passed"])
+            status = "ready" if passed else "filtered"
+            cursor = conn.execute(
+                "UPDATE jobs SET score = ?, score_reason = ?, greeting = ?, status = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending' AND deleted_at IS NULL",
+                (
+                    int(evaluation["score"]),
+                    str(evaluation["reason"]),
+                    str(evaluation["greeting"]) if passed else None,
+                    status,
+                    job_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("岗位状态已变化，未保存 Agent 评估")
+            trace = evaluation["trace"]
+            conn.execute(
+                """
+                INSERT INTO score_traces (job_id, schema_version, trace_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    schema_version = excluded.schema_version,
+                    trace_json = excluded.trace_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    job_id,
+                    int(trace.get("schema_version", 1)),
+                    json.dumps(trace, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            detail = json.dumps(
+                {"source": "local_agent", "score": int(evaluation["score"]), "status": status},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            conn.execute(
+                "INSERT INTO history (job_id, action, detail) VALUES (?, 'agent_evaluated', ?)",
+                (job_id, detail),
+            )
+            (ready if passed else filtered).append(job_id)
+    return {"ready": ready, "filtered": filtered}
+
+
 def get_score_trace(conn: sqlite3.Connection, job_id: str) -> tuple[bool, dict[str, Any] | None]:
     """Return whether a trace row exists and its parsed object, if it is valid JSON."""
     row = conn.execute("SELECT trace_json FROM score_traces WHERE job_id = ?", (job_id,)).fetchone()

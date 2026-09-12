@@ -18,6 +18,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from bosshunter.db import (
     add_history,
     get_db,
+    get_score_trace,
     get_unresolved_resume_failures,
     insert_job,
     update_job_greeting,
@@ -48,6 +49,21 @@ def _job(job_id: str) -> dict:
         "company_size": "",
         "company_industry": "",
         "url": "https://example.com/job",
+    }
+
+
+def _agent_score() -> dict:
+    return {
+        "role_summary": "面向企业用户的 AI 产品岗位",
+        "core_duties": {"evidence": "有 AI 产品功能设计和交付经验", "score": 34},
+        "transferable_evidence": {"evidence": "负责过用户调研、方案设计和上线复盘", "score": 21},
+        "hard_requirements": {"evidence": "JD 的产品经验要求已有对应项目事实", "score": 14},
+        "tools_industry": {"evidence": "熟悉 AI 产品与企业服务场景", "score": 8},
+        "practical_fit": {"evidence": "城市和薪资范围可接受", "score": 10},
+        "caps": [],
+        "hard_gaps": [],
+        "reason": "岗位职责与已有 AI 产品交付经历高度相关",
+        "missing": "",
     }
 
 
@@ -167,6 +183,188 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual(json.loads(body), {"error": "Not found"})
         self.assertNotIn("<!doctype html", body.lower())
+
+    def test_agent_state_redacts_credentials_and_advertises_tool_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({"ai": {"api_key": "private-agent-key"}}, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/agent/state")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["api_version"], "v1")
+        self.assertTrue(payload["capabilities"]["collect_without_ai"])
+
+        tools_status, _, tools_body = self._request("/api/agent/tools")
+        self.assertTrue(tools_status.startswith("200"), tools_body)
+        self.assertEqual(
+            [tool["name"] for tool in json.loads(tools_body)["tools"]],
+            [
+                "bosshunter_get_onboarding",
+                "bosshunter_get_state",
+                "bosshunter_preview_preferences",
+                "bosshunter_apply_preferences",
+                "bosshunter_start_workflow",
+                "bosshunter_get_pending_evaluations",
+                "bosshunter_submit_evaluations",
+            ],
+        )
+        self.assertNotIn("private-agent-key", body)
+        self.assertNotIn("api_key", str(payload["preferences"]))
+
+    def test_agent_config_preview_does_not_write_and_apply_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            config_path = base_dir / "config.yaml"
+            config_path.write_text(yaml.safe_dump({"ai": {"api_key": "private-agent-key"}}), encoding="utf-8")
+            server.set_base_dir(base_dir)
+            request = {
+                "preferences": {
+                    "keywords": ["AI 应用工程师"],
+                    "cities": ["杭州"],
+                    "salary": {"min": 20, "max": 35},
+                    "platform_order": ["boss"],
+                    "max_pages": 2,
+                }
+            }
+
+            preview_status, _, preview_body = self._request("/api/agent/config/preview", "POST", request)
+            preview = json.loads(preview_body)
+            self.assertTrue(preview_status.startswith("200"), preview_body)
+            self.assertTrue(preview["requires_confirmation"])
+            self.assertEqual(yaml.safe_load(config_path.read_text(encoding="utf-8")), {"ai": {"api_key": "private-agent-key"}})
+
+            apply_status, _, apply_body = self._request("/api/agent/config/apply", "POST", request)
+            self.assertTrue(apply_status.startswith("400"), apply_body)
+            self.assertTrue(json.loads(apply_body)["requires_confirmation"])
+
+            apply_status, _, apply_body = self._request(
+                "/api/agent/config/apply", "POST", {**request, "confirm": True}
+            )
+
+        payload = json.loads(apply_body)
+        self.assertTrue(apply_status.startswith("200"), apply_body)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["preferences"]["cities"], ["杭州"])
+        self.assertNotIn("private-agent-key", apply_body)
+
+    def test_agent_onboarding_uses_local_preferences_not_platform_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/agent/onboarding")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertTrue(payload["does_not_use_platform_history"])
+        self.assertEqual(payload["profile_source"], "local_configuration")
+        self.assertEqual({item["key"] for item in payload["missing"]}, {"resume", "keywords", "cities"})
+        self.assertFalse(payload["ready_for_collection"])
+        self.assertFalse(payload["ready_for_agent_workflow"])
+
+    def test_agent_can_evaluate_collected_jobs_without_bosshunter_ai_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume\nBuilt AI product features.", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "profile": {"resume_path": str(resume_path)},
+                    "scoring": {"threshold": 71},
+                }, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("agent-evaluation"))
+            finally:
+                db.close()
+
+            context_status, _, context_body = self._request(
+                "/api/agent/evaluations/pending?include_resume=true"
+            )
+            context = json.loads(context_body)
+            self.assertTrue(context_status.startswith("200"), context_body)
+            self.assertEqual(context["resume"]["content"], "# Resume\nBuilt AI product features.")
+            self.assertEqual(context["items"][0]["id"], "agent-evaluation")
+
+            submit_status, _, submit_body = self._request(
+                "/api/agent/evaluations",
+                "POST",
+                {
+                    "evaluations": [{
+                        "job_id": "agent-evaluation",
+                        "score": _agent_score(),
+                        "greeting": "我做过 AI 产品从需求拆解到上线复盘的工作，看到贵司这个岗位很关注实际落地，想和您具体聊聊。",
+                    }],
+                },
+            )
+
+            self.assertTrue(submit_status.startswith("200"), submit_body)
+            self.assertEqual(json.loads(submit_body)["result"]["ready"], ["agent-evaluation"])
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = dict(db.execute("SELECT score, greeting, status FROM jobs WHERE id = ?", ("agent-evaluation",)).fetchone())
+                has_trace, trace = get_score_trace(db, "agent-evaluation")
+                entry = db.execute(
+                    "SELECT action FROM history WHERE job_id = ? ORDER BY id DESC LIMIT 1", ("agent-evaluation",)
+                ).fetchone()
+            finally:
+                db.close()
+
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["score"], 87)
+        self.assertTrue(row["greeting"])
+        self.assertTrue(has_trace)
+        self.assertEqual(trace["final_score"], 87)
+        self.assertEqual(entry["action"], "agent_evaluated")
+
+    def test_agent_task_rejects_unsupported_mode_and_requires_confirmation(self):
+        status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "collect"})
+        self.assertTrue(status.startswith("400"), body)
+        self.assertTrue(json.loads(body)["requires_confirmation"])
+
+        status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "send", "confirm": True})
+        self.assertTrue(status.startswith("403"), body)
+        self.assertIn("不能单独跳过确认发送", json.loads(body)["error"])
+
+    def test_agent_task_starts_full_workflow_with_existing_confirmation_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "profile": {"resume_path": str(resume_path)},
+                    "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]},
+                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]}}},
+                    "ai": {"api_key": "private-agent-key"},
+                }, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            task = {"id": "agent-full-task", "mode": "full", "status": "running"}
+            with (
+                patch.object(server, "collect_preflight_checks", return_value=[]),
+                patch.object(server, "_preflight_messages", return_value=[]),
+                patch.object(server.task_runner, "start", return_value=task) as start,
+            ):
+                status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "full", "confirm": True})
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["task"], task)
+        self.assertIn("人工确认", payload["policy"]["delivery"])
+        self.assertEqual(start.call_args.args[0], "full")
+        self.assertTrue(start.call_args.args[1]["_collection_options"]["auto_score"])
 
     def test_web_assets_serve_javascript_with_windows_safe_mime_type(self):
         with tempfile.TemporaryDirectory() as tmp:
