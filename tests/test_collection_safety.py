@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 
 from bosshunter.config import DEFAULTS, load_config
 from bosshunter.db import (
@@ -118,12 +118,12 @@ platforms:
             reopened.close()
 
     def test_collection_risk_stops_and_records_safe_reason(self):
-        db = Mock()
-        progress = Mock()
+        db = MagicMock()
+        progress = MagicMock()
         progress.add_task.return_value = "task"
-        context = Mock()
-        context.__enter__ = Mock(return_value=progress)
-        context.__exit__ = Mock(return_value=False)
+        context = MagicMock()
+        context.__enter__ = MagicMock(return_value=progress)
+        context.__exit__ = MagicMock(return_value=False)
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 1},
@@ -148,12 +148,12 @@ platforms:
         self.assertLessEqual(lock_call.kwargs["minutes"], 10)
 
     def test_transient_collection_risk_is_ignored_without_locking(self):
-        db = Mock()
-        progress = Mock()
+        db = MagicMock()
+        progress = MagicMock()
         progress.add_task.return_value = "task"
-        context = Mock()
-        context.__enter__ = Mock(return_value=progress)
-        context.__exit__ = Mock(return_value=False)
+        context = MagicMock()
+        context.__enter__ = MagicMock(return_value=progress)
+        context.__exit__ = MagicMock(return_value=False)
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 1},
@@ -183,12 +183,12 @@ platforms:
         guard_cls.return_value.lock.assert_not_called()
 
     def test_consecutive_page_failures_end_collection_without_risk_lock(self):
-        db = Mock()
-        progress = Mock()
+        db = MagicMock()
+        progress = MagicMock()
         progress.add_task.return_value = "task"
-        context = Mock()
-        context.__enter__ = Mock(return_value=progress)
-        context.__exit__ = Mock(return_value=False)
+        context = MagicMock()
+        context.__enter__ = MagicMock(return_value=progress)
+        context.__exit__ = MagicMock(return_value=False)
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 3},
