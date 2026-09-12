@@ -12,7 +12,14 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from bosshunter.ai.credentials import AIRequestError, call_anthropic_text
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
-from bosshunter.db import add_history, get_db, get_jobs_by_status, update_job_greeting, update_job_status
+from bosshunter.db import (
+    add_history,
+    get_db,
+    get_jobs_by_status,
+    save_generated_greeting_preview,
+    GREETING_ALLOWED_STATUSES,
+    mark_existing_greeting_ready,
+)
 
 console = Console()
 
@@ -617,31 +624,83 @@ def _review_with_token_retry(greeting: str, job: dict, config: dict) -> dict | N
         raise
 
 
-def generate_greetings(config: dict) -> int:
-    """Generate greetings for approved jobs with optional self-review. Returns count generated."""
-    db = get_db()
-    jobs = get_jobs_by_status(db, "approved")
+def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=None) -> int:
+    """Generate greetings for approved jobs (or specific job_ids) with optional self-review.
+
+    Returns count generated. When ``job_ids`` is provided, only those jobs are
+    processed regardless of their current status, which lets the dashboard
+    generate greetings for pending-confirmation jobs without sending them.
+    ``db_path`` lets web callers pin the runtime database; without it the
+    module-level default (CWD-relative) is used for CLI compatibility.
+    """
+    db = get_db(db_path)
+    if job_ids is None:
+        jobs = get_jobs_by_status(db, "approved")
+    elif job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        rows = db.execute(
+            f"SELECT * FROM jobs WHERE deleted_at IS NULL AND id IN ({placeholders}) ORDER BY score DESC",
+            [str(job_id) for job_id in job_ids],
+        ).fetchall()
+        jobs = [dict(row) for row in rows]
+    else:
+        # 显式传入空列表 = 不处理任何岗位，而不是退回"全部 approved"。
+        jobs = []
     _workbench_job_ids = {str(job_id) for job_id in config.get("_workbench_job_ids", [])}
     if _workbench_job_ids:
         jobs = [job for job in jobs if str(job["id"]) in _workbench_job_ids]
+    allowed_jobs = [
+        job
+        for job in jobs
+        if str(job.get("status") or "approved") in GREETING_ALLOWED_STATUSES
+    ]
+    conflict_ids = [
+        str(job["id"])
+        for job in jobs
+        if str(job.get("status") or "approved") not in GREETING_ALLOWED_STATUSES
+    ]
+    jobs = allowed_jobs
 
     requested_count = len(jobs)
-    existing_jobs = [job for job in jobs if str(job.get("greeting") or "").strip()]
-    jobs = [job for job in jobs if not str(job.get("greeting") or "").strip()]
+    force_regenerate = bool(config.get("_workbench_regenerate"))
+    existing_jobs = (
+        []
+        if force_regenerate
+        else [job for job in jobs if str(job.get("greeting") or "").strip()]
+    )
+    if not force_regenerate:
+        jobs = [job for job in jobs if not str(job.get("greeting") or "").strip()]
     config["_workbench_greeting_report"] = {
         "requested_count": requested_count,
         "generated_count": 0,
         "skipped_existing": len(existing_jobs),
         "failed_count": 0,
+        "conflict_ids": conflict_ids,
     }
+    preserved_existing = 0
     for job in existing_jobs:
         # Keep manually edited text intact while making the job eligible for delivery.
-        update_job_status(db, job["id"], "ready")
-    if existing_jobs:
-        _notify(config, f"已保留 {len(existing_jobs)} 个岗位现有的招呼语，不会用 AI 覆盖。")
+        # The expected text makes a concurrent manual edit win over this stale snapshot.
+        if mark_existing_greeting_ready(
+            db,
+            job["id"],
+            expected_greeting=str(job.get("greeting") or ""),
+            expected_status=str(job.get("status") or "approved"),
+        ):
+            preserved_existing += 1
+        else:
+            # CAS 失败必须上报为冲突：岗位状态或招呼语在读取后已变更，不能静默丢失。
+            config["_workbench_greeting_report"].setdefault("conflict_ids", []).append(str(job["id"]))
+            _notify(
+                config,
+                f"{job['company']}｜{job['title']} 的状态或招呼语已变更，保留操作未执行。",
+            )
+    config["_workbench_greeting_report"]["skipped_existing"] = preserved_existing
+    if preserved_existing:
+        _notify(config, f"已保留 {preserved_existing} 个岗位现有的招呼语，不会用 AI 覆盖。")
 
     if not jobs:
-        if not existing_jobs:
+        if not preserved_existing:
             console.print("[yellow]没有已确认的岗位可生成招呼语。请先运行 `bosshunter confirm`，或使用 `bosshunter run` 执行完整流程。[/yellow]")
         db.close()
         return 0
@@ -649,6 +708,9 @@ def generate_greetings(config: dict) -> int:
     resume_summary = _get_resume_summary(config)
     if not resume_summary:
         console.print("[red]无法读取简历[/red]")
+        # 缺简历属于服务级阻断：写入 pause_reason 让后台任务按零产出失败语义上报，
+        # 而不是伪装成"完成，产出 0"。
+        config["_workbench_greeting_report"]["pause_reason"] = "无法读取简历：请先在配置面板上传简历后重试"
         db.close()
         return 0
     graduation_context = _parse_graduation_context(resume_summary)
@@ -657,10 +719,14 @@ def generate_greetings(config: dict) -> int:
 
     ai_cfg = config.get("ai", {})
     review_threshold = ai_cfg.get("greeting_review_threshold", 7.0)
+    style_suggestions_enabled = ai_cfg.get("greeting_style_suggestions", True) is not False
+    auto_apply_style = style_suggestions_enabled and ai_cfg.get("greeting_auto_apply_style") is True
     try:
         max_iterations = max(0, int(ai_cfg.get("greeting_max_iterations", 2) or 0))
     except (TypeError, ValueError):
         max_iterations = 2
+    if not style_suggestions_enabled:
+        max_iterations = 0
 
     recent_rows = db.execute(
         """
@@ -682,6 +748,15 @@ def generate_greetings(config: dict) -> int:
     pause_reason = ""
     stop_event = config.get("_workbench_stop_event")
     cancelled = False
+    workbench_log = config.get("_workbench_log")
+
+    def _report_job_progress(current_job: dict, current_index: int) -> None:
+        # Background-task progress only: the CLI already renders a progress bar,
+        # so per-job lines are surfaced solely through the workbench log channel.
+        if callable(workbench_log):
+            workbench_log(
+                f"生成招呼语 ({current_index}/{len(jobs)})：{current_job['company']}｜{current_job['title']}"
+            )
 
     with Progress(
         SpinnerColumn(),
@@ -693,7 +768,16 @@ def generate_greetings(config: dict) -> int:
         for index, job in enumerate(jobs, start=1):
             if stop_event is not None and stop_event.is_set():
                 break
+            if job.get("greeting_reviewed_at") and str(job.get("greeting") or "").strip():
+                _notify(
+                    config,
+                    f"{job['company']}｜{job['title']} 的招呼语已人工确认，本轮不会覆盖。",
+                )
+                progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
+                continue
             best_greeting = None
+            original_greeting = None
+            original_issues: list[str] = []
             pause_after_current = ""
 
             for iteration in range(max_iterations + 1):
@@ -718,6 +802,10 @@ def generate_greetings(config: dict) -> int:
                         pause_after_current = str(exc)
                         break
                     style_issues = _greeting_style_issues(best_greeting, recent_openings)
+                    if best_greeting == original_greeting:
+                        original_issues = style_issues[:]
+                        if review and review.get("avg", 10) < review_threshold and review.get("critique"):
+                            original_issues.append(str(review["critique"]))
                     if review is None and not style_issues:
                         _notify(
                             config,
@@ -756,6 +844,8 @@ def generate_greetings(config: dict) -> int:
                     break
 
                 best_greeting = greeting
+                if original_greeting is None:
+                    original_greeting = greeting
                 if max_iterations == 0:
                     break
 
@@ -765,17 +855,54 @@ def generate_greetings(config: dict) -> int:
                 if not pause_reason and not (stop_event is not None and stop_event.is_set()):
                     add_history(db, job["id"], "greeting_failed", "AI 未返回完整招呼语，岗位保留为待生成")
                     _notify(config, f"已跳过 {job['company']}｜{job['title']}：AI 未返回完整招呼语，岗位保留为待生成。")
+                _report_job_progress(job, index)
                 progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
                 if pause_reason:
                     break
                 continue
 
-            update_job_greeting(db, job["id"], best_greeting)
-            update_job_status(db, job["id"], "ready")
-            opening = _opening_signature(best_greeting)
+            original_greeting = original_greeting or best_greeting
+            optimized_greeting = (
+                best_greeting
+                if style_suggestions_enabled and best_greeting != original_greeting
+                else None
+            )
+            if optimized_greeting and not original_issues:
+                original_issues = ["AI 质量复核建议优化表达"]
+            if optimized_greeting and auto_apply_style:
+                selected_greeting = optimized_greeting
+                selection = "auto_optimized"
+            elif optimized_greeting:
+                selected_greeting = original_greeting
+                selection = "pending"
+            else:
+                selected_greeting = original_greeting
+                selection = "generated"
+            saved = save_generated_greeting_preview(
+                db,
+                job["id"],
+                original=original_greeting,
+                optimized=optimized_greeting,
+                style_issues=original_issues,
+                selected_greeting=selected_greeting,
+                selection=selection,
+                expected_greeting=str(job.get("greeting") or ""),
+                expected_status=str(job.get("status") or "approved"),
+            )
+            if not saved:
+                config["_workbench_greeting_report"].setdefault("conflict_ids", []).append(str(job["id"]))
+                _report_job_progress(job, index)
+                _notify(
+                    config,
+                    f"{job['company']}｜{job['title']} 的状态或招呼语已变化，生成结果未覆盖现有招呼语。",
+                )
+                progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
+                continue
+            opening = _opening_signature(selected_greeting)
             if opening:
                 recent_openings.append(opening)
             count += 1
+            _report_job_progress(job, index)
             progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
 
             if pause_after_current:
@@ -796,4 +923,7 @@ def generate_greetings(config: dict) -> int:
         "generated_count": count,
         "failed_count": failed,
     })
+    if pause_reason:
+        # 服务级故障（鉴权/额度/限流等）必须显性上报，供后台任务据此区分 completed/failed。
+        config["_workbench_greeting_report"]["pause_reason"] = pause_reason
     return count
