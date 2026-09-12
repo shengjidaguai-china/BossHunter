@@ -1019,9 +1019,13 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     }, target_id
 
 
-def send_greetings(config: dict, force: bool = False) -> int:
-    """Send generated greetings. Returns count of successfully sent."""
-    db = get_db()
+def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
+    """Send generated greetings. Returns count of successfully sent.
+
+    ``db_path`` lets web callers pin the runtime database; without it the
+    module-level default (CWD-relative) is used for CLI compatibility.
+    """
+    db = get_db(db_path)
     throttle_config = dict(config.get("throttle", {}))
     stop_event = config.get("_workbench_stop_event")
     workbench_job_ids = {str(job_id) for job_id in config.get("_workbench_job_ids", [])}
