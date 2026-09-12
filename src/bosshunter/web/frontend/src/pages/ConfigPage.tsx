@@ -8,8 +8,8 @@ import { TagsInput } from '@/components/ui/tags-input'
 import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiSelect'
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { Save, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { Save, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
 import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
 const AI_SERVICES = {
@@ -63,12 +63,46 @@ export default function ConfigPage() {
     ...(requestedSection ? { [requestedSection]: true } : {}),
   }))
   const [aiTest, setAiTest] = useState<{ testing: boolean; ok?: boolean; message?: string }>({ testing: false })
+  const [modelList, setModelList] = useState<{ loading: boolean; models: string[]; message?: string; error?: boolean }>({ loading: false, models: [] })
+  const modelRequest = useRef<AbortController | null>(null)
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
   const [zhilianCityOptions, setZhilianCityOptions] = useState<CityOption[]>([])
   const [job51CityOptions, setJob51CityOptions] = useState<CityOption[]>([])
   const [liepinCityOptions, setLiepinCityOptions] = useState<CityOption[]>([])
   const [cityRefreshing, setCityRefreshing] = useState(false)
   const [cityMessage, setCityMessage] = useState('')
+
+  useEffect(() => {
+    setModelList({ loading: false, models: [] })
+    return () => modelRequest.current?.abort()
+  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials])
+
+  const handleFetchModels = async () => {
+    modelRequest.current?.abort()
+    const controller = new AbortController()
+    modelRequest.current = controller
+    setModelList({ loading: true, models: [] })
+    try {
+      const res = await fetch('/api/config/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ai: config?.ai || {} }),
+        signal: controller.signal,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '获取模型列表失败')
+      if (!Array.isArray(data.models) || !data.models.every((model: unknown) => typeof model === 'string')) {
+        throw new Error('模型列表格式不正确，可手动填写模型 ID')
+      }
+      if (!controller.signal.aborted) setModelList({
+        loading: false,
+        models: data.models,
+        message: data.models.length ? `已获取 ${data.models.length} 个模型，请选择或继续手动填写。` : '服务商未返回可用模型，可手动填写模型 ID。',
+      })
+    } catch (error) {
+      if (!controller.signal.aborted) setModelList({ loading: false, models: [], error: true, message: error instanceof Error ? error.message : '获取模型列表失败，请重试' })
+    }
+  }
 
   useEffect(() => {
     fetch('/api/cities', { cache: 'no-store' })
@@ -510,10 +544,28 @@ export default function ConfigPage() {
               </p>
             </Field>
             <Field label="模型名称">
-              <Input value={config.ai?.model || ''} onChange={e => {
-                updateConfig('ai.model', e.target.value)
-                setAiTest({ testing: false })
-              }} placeholder="填写服务商当前支持的模型 ID" />
+              <div className="flex flex-wrap gap-2">
+                <Input aria-label="模型名称" className="min-w-0 flex-1 basis-40" value={config.ai?.model || ''} onChange={e => {
+                  updateConfig('ai.model', e.target.value)
+                  setAiTest({ testing: false })
+                }} placeholder="填写服务商当前支持的模型 ID" />
+                <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
+                  {modelList.loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                  {modelList.loading ? '获取中…' : '获取模型列表'}
+                </Button>
+              </div>
+              {modelList.models.length > 0 && (
+                <Select aria-label="可用模型" className="mt-2 pr-8 appearance-auto" value={modelList.models.includes(config.ai?.model) ? config.ai.model : ''} onChange={e => {
+                  updateConfig('ai.model', e.target.value)
+                  setAiTest({ testing: false })
+                }}>
+                  <option value="" disabled>请选择模型</option>
+                  {modelList.models.map(model => <option key={model} value={model}>{model}</option>)}
+                </Select>
+              )}
+              <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
+                {modelList.message || '按当前 Base URL 和 API Key 获取，无需先保存配置。'}
+              </p>
             </Field>
             <Field label="API Key">
               <Input type="password" value={config.ai?.api_key || ''} onChange={e => {
