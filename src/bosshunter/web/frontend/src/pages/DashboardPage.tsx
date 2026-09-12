@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,7 @@ import {
   type JobFilters,
 } from '@/lib/jobFilters'
 import { getActionLabel, getStatusLabel } from '@/lib/status'
+import { describeGreetTaskOutcome, greetPauseReasonLabel } from '@/lib/greetTask'
 import { cn } from '@/lib/utils'
 import {
   AlertTriangle,
@@ -31,10 +32,12 @@ import {
   ExternalLink,
   Eye,
   MessageCircle,
+  Pencil,
   Play,
   RefreshCw,
   ShieldCheck,
   Send,
+  Sparkles,
   Square,
   Trash2,
   XCircle,
@@ -69,7 +72,8 @@ function currentTaskStage(task: WorkbenchTask) {
     if (log.includes('招呼语进度')) return log
     if (log.includes('招呼语发送结果')) return log
     if (log.includes('发送招呼语')) return '发送招呼语'
-    if (log.includes('生成招呼语')) return '生成招呼语'
+    if (log.includes('招呼语生成结果')) return log
+    if (log.includes('生成招呼语')) return log
     if (log.includes('本轮监测完成')) return log
     const stage = TASK_STAGE_LABELS.find(label => log.includes(label))
     if (stage) return stage
@@ -199,7 +203,29 @@ const taskMetricItems = [
   { key: 'send_success', label: '发送成功' },
   { key: 'send_deferred', label: '待下次发送' },
   { key: 'send_remaining_quota', label: '今日剩余额度' },
+  { key: 'greet_generated', label: '新生成' },
+  { key: 'greet_preserved', label: '保留现有' },
+  { key: 'greet_failed', label: '生成失败' },
+  { key: 'greet_paused', label: '提前暂停' },
 ]
+
+const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'stopped']
+
+async function waitForGreetTask(taskId: string, timeoutMs = 300000): Promise<WorkbenchTask | null> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const res = await fetch('/api/workbench')
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}) as { task?: WorkbenchTask | null; last_task?: WorkbenchTask | null })
+      const task = data.task?.id === taskId
+        ? data.task
+        : data.last_task?.id === taskId ? data.last_task : null
+      if (task && TERMINAL_TASK_STATUSES.includes(task.status)) return task
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  }
+  return null
+}
 
 function jobSubtitle(job: Job) {
   return [job.score ? `匹配 ${job.score}` : '', job.salary, job.hr_active || '活跃度未知', getStatusLabel(job.status)].filter(Boolean).join(' · ')
@@ -346,6 +372,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     refreshing,
     lastRefreshedAt,
     refresh,
+    updateGreetingJob,
     startTask,
     stopTask,
   } = useDashboard(view)
@@ -361,12 +388,23 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [modePending, setModePending] = useState<WorkbenchMode | null>(null)
   const [sendingGreetingIds, setSendingGreetingIds] = useState<Set<string>>(new Set())
+  const [busyGreetingIds, setBusyGreetingIds] = useState<Set<string>>(new Set())
+  const onGreetingBusyChange = useCallback((id: string, busy: boolean) => {
+    setBusyGreetingIds(previous => {
+      const next = new Set(previous)
+      if (busy) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
   const [confirmedDeliveryIds, setConfirmedDeliveryIds] = useState<Set<string>>(new Set())
   const [todayFilters, setTodayFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
   const [statsScope, setStatsScope] = useState<StatsScope>('today')
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
   const [preflightRunning, setPreflightRunning] = useState(false)
+  const [generatingGreetings, setGeneratingGreetings] = useState(false)
+  const startedGreetTaskIdRef = useRef<string | null>(null)
 
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
@@ -425,9 +463,28 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }, [view])
 
   const pendingGreetingJobs = workbench.pending_greetings
+  const reviewedGreetingJobs = pendingGreetingJobs.filter(job => job.greeting_selection !== 'pending')
+  const pendingGreetingReviewCount = pendingGreetingJobs.length - reviewedGreetingJobs.length
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
+  const greetTaskRunning = activeTask != null && activeTask.mode === 'greet'
+    && (activeTask.status === 'running' || activeTask.status === 'stopping')
+
+  useEffect(() => {
+    const startedId = startedGreetTaskIdRef.current
+    if (!startedId) return
+    const greetTask = activeTask?.id === startedId
+      ? activeTask
+      : workbench.last_task?.id === startedId ? workbench.last_task : null
+    if (!greetTask || !TERMINAL_TASK_STATUSES.includes(greetTask.status)) return
+    startedGreetTaskIdRef.current = null
+    if (greetTask.status === 'completed') {
+      setNotice(describeGreetTaskOutcome(greetTask))
+    }
+    void refresh()
+  }, [activeTask, workbench.last_task, refresh])
+
   const taskSummary = visibleTask
     ? visibleTaskError?.title || taskStopReasonLabel(visibleTask.stop_reason) || currentTaskStage(visibleTask)
     : ''
@@ -594,9 +651,34 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
+  const generateGreetings = async (ids: string[]) => {
+    if (!ids.length) return
+    setGeneratingGreetings(true)
+    try {
+      const res = await fetch('/api/workbench/greetings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: ids }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || '生成招呼语失败')
+      }
+      startedGreetTaskIdRef.current = data.task?.id ?? null
+      await refresh()
+      setNotice(`已开始为 ${ids.length} 个岗位生成招呼语，可在任务面板查看进度并随时停止。`)
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '生成招呼语失败')
+    } finally {
+      setGeneratingGreetings(false)
+    }
+  }
+
   const sendReadyGreetings = async (ids: string[]) => {
-    if (!ids.length || ids.some(id => sendingGreetingIds.has(id))) return
+    if (!ids.length || ids.some(id => sendingGreetingIds.has(id) || busyGreetingIds.has(id))) return
     const count = ids.length
+    // 人工确认门控：直接发送前必须显式确认，防止误触批量联系招聘方。
+    if (!window.confirm(`确认向所选 ${count} 个岗位发送招呼语？\n发送将立即开始并受每日额度与发送时间窗口限制。`)) return
     setSendingGreetingIds(prev => new Set([...prev, ...ids]))
     setNotice(`正在将 ${count} 个岗位加入发送队列...`)
     try {
@@ -623,6 +705,29 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     } finally {
       setSendingGreetingIds(prev => new Set([...prev].filter(id => !ids.includes(id))))
     }
+  }
+
+  const selectGreeting = async (
+    job: Job,
+    selection: 'original' | 'optimized' | 'edited',
+    greeting = '',
+  ) => {
+    const res = await fetch(`/api/jobs/${job.id}/greeting-selection`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selection, greeting, confirmed: true }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || '保存招呼语选择失败')
+    updateGreetingJob(data)
+    await refresh()
+    setNotice(
+      selection === 'original'
+        ? '已保留原文，后续生成不会覆盖。'
+        : selection === 'optimized'
+          ? '已采用优化版，后续生成不会覆盖。'
+          : '已保存手动编辑版本，后续生成不会覆盖。'
+    )
   }
 
   const openJobDetail = async (job: Job) => {
@@ -744,17 +849,42 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         )}
         {error && <CompactNotice message={error} danger />}
         {visibleTask && (
-          <details key={visibleTask.id} className={`group mt-2 rounded-lg border px-2 text-xs ${taskStatusClass(visibleTask.status)}`} aria-label="任务运行状态">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
-              <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', visibleTask.status === 'failed' ? 'bg-danger' : 'bg-primary')} />
-              <span className="min-w-0 flex-1 truncate" title={taskSummary}>
-                {taskSummary}
+          <div className="mt-3 rounded-3xl border border-card-border bg-[#FFFCFA] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-black">任务运行状态</div>
+                <p className="mt-1 text-xs leading-5 text-muted">如果点击后浏览器没有反应，请先打开 BOSS 直聘并确认已登录；常见失败原因是 BOSS 未登录或 Chrome 调试连接不可用。</p>
+              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
+                {visibleTask.label}
               </span>
-              <span className="shrink-0 text-muted">{taskStatusText(visibleTask.status)}</span>
-              <span className="flex shrink-0 items-center gap-1 text-muted">详情<ChevronDown className="h-3 w-3 group-open:rotate-180" /></span>
-            </summary>
-            <div className="border-t border-current/10 pb-2 pt-1">
-              <p className="whitespace-pre-line leading-5">{taskStatusTitle(visibleTask.status)}：{currentTaskStage(visibleTask)}</p>
+              {activeTask && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={activeTask.status !== 'running'}
+                  onClick={() => {
+                    if (!window.confirm(`是否停止当前${activeTask.label}任务？已入库数据会保留。`)) return
+                    setNotice(`正在停止${activeTask.label}...`)
+                    void stopTask(activeTask.id)
+                      .then(() => setNotice(`${activeTask.label}已请求停止。`))
+                      .catch(err => setNotice(
+                        err instanceof Error
+                          ? `${activeTask.label}停止失败：${err.message}`
+                          : `${activeTask.label}停止失败，请稍后重试。`
+                      ))
+                  }}
+                >
+                  {activeTask.status === 'stopping' ? '正在停止...' : '停止任务'}
+                </Button>
+              )}
+            </div>
+            </div>
+            <div className={`mt-3 rounded-2xl border px-4 py-3 ${taskStatusClass(visibleTask.status)}`}>
+              <div className="text-xs font-black text-primary">{taskStatusTitle(visibleTask.status)}</div>
+              <div className="mt-1 whitespace-pre-line text-lg font-black leading-7 text-foreground">{currentTaskStage(visibleTask)}</div>
+              <div className="mt-1 text-xs font-bold text-muted">任务状态：{taskStatusText(visibleTask.status)}</div>
               {visibleTask.deadline_at && (
                 <p className="text-muted">自动截止：{new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</p>
               )}
@@ -768,35 +898,39 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   ))}
                 </div>
               )}
-              {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} />}
-              <p className="mt-2 text-[11px] leading-5 text-muted">浏览器没有反应时，请检查招聘平台登录状态和 Chrome 连接。</p>
-              {visibleTask.error && visibleTaskError && (
-                <div className="mt-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-danger">
-                  <div className="font-black">{visibleTaskError.title}</div>
-                  <p className="mt-1 text-xs leading-5">{visibleTaskError.detail}</p>
-                  <details className="mt-2 text-xs text-muted">
-                    <summary className="cursor-pointer font-bold">查看原始错误</summary>
-                    <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-white p-2">{visibleTask.error}</pre>
-                  </details>
-                </div>
-              )}
-              {visibleTask.stop_reason && (
-                <div className={`mt-2 rounded-lg px-3 py-2 text-xs leading-5 ${visibleTask.stop_reason === 'daily_limit' ? 'border border-amber-200 bg-amber-50 text-amber-800' : 'bg-[#FFF0E5] text-primary'}`}>
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <div className="font-black">{visibleTask.stop_reason === 'daily_limit' ? '本次未发送' : '任务说明'}</div>
-                      <div className="mt-1">{taskStopReasonLabel(visibleTask.stop_reason)}</div>
-                    </div>
-                    {visibleTask.stop_reason === 'daily_limit' && (
-                      <Button size="sm" variant="secondary" onClick={() => { window.location.href = '/config?section=throttle' }}>
-                        去设置发送额度
-                      </Button>
-                    )}
-                  </div>
+              {Boolean(visibleTask.metrics?.greet_paused) && (
+                <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">
+                  提前暂停原因：{greetPauseReasonLabel(visibleTask.metrics?.greet_pause_reason) || 'AI 服务异常'}。已生成内容已保存，剩余岗位下次运行会继续处理。
                 </div>
               )}
             </div>
-          </details>
+            {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} />}
+            {visibleTask.error && visibleTaskError && (
+              <div className="mt-3 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">
+                <div className="font-black">{visibleTaskError.title}</div>
+                <p className="mt-1 text-xs leading-5">{visibleTaskError.detail}</p>
+                <details className="mt-2 text-xs text-muted">
+                  <summary className="cursor-pointer font-bold">查看原始错误</summary>
+                  <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-white p-2">{visibleTask.error}</pre>
+                </details>
+              </div>
+            )}
+            {visibleTask.stop_reason && (
+              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-amber-200 bg-amber-50 text-amber-800' : 'bg-[#FFF0E5] text-primary'}`}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="font-black">{visibleTask.stop_reason === 'daily_limit' ? '本次未发送' : '任务说明'}</div>
+                    <div className="mt-1">{taskStopReasonLabel(visibleTask.stop_reason)}</div>
+                  </div>
+                  {visibleTask.stop_reason === 'daily_limit' && (
+                    <Button size="sm" variant="secondary" onClick={() => { window.location.href = '/config?section=throttle' }}>
+                      去设置发送额度
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </section>
 
@@ -958,31 +1092,36 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black">待发送招呼语</h3>
-              <p className="mt-1 text-xs text-muted">这些岗位已确认并生成招呼语，点击后会直接进入发送流程。</p>
+              <p className="mt-1 text-xs text-muted">先预览原文与优化建议。人工确认后的版本会锁定，不再被后台生成覆盖。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => sendReadyGreetings(pendingGreetingJobs.map(job => job.id))}>发送全部 {pendingGreetingJobs.length} 个</Button>
+              {pendingGreetingReviewCount > 0 && (
+                <span className="rounded-full bg-amber-100 px-3 py-2 text-xs font-black text-amber-700">
+                  {pendingGreetingReviewCount} 个待选择
+                </span>
+              )}
+              <Button
+                size="sm"
+                disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id))}
+                onClick={() => sendReadyGreetings(reviewedGreetingJobs.map(job => job.id))}
+              >
+                发送已确认 {reviewedGreetingJobs.length} 个
+              </Button>
               <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(pendingGreetingJobs.map(job => job.id))}>放弃全部</Button>
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {pendingGreetingJobs.map(job => (
-              <div key={job.id} className="rounded-2xl border border-primary/20 bg-white p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-black">{job.company}｜{job.title}</div>
-                    <div className="mt-1 text-xs text-primary">已生成招呼语，等待发送</div>
-                  </div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发送</span>
-                </div>
-                <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待发送。'}</p>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" onClick={() => sendReadyGreetings([job.id])}>发送招呼语</Button>
-                  <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs([job.id])}>放弃</Button>
-                  <Button variant="secondary" size="sm" onClick={() => openJobDetail(job)}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
-                  <Button variant="secondary" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />跳转岗位链接</Button>
-                </div>
-              </div>
+              <GreetingReviewCard
+                key={job.id}
+                job={job}
+                busy={sendingGreetingIds.has(job.id) || Boolean(activeTask && ['greet', 'deliver', 'full', 'monitor'].includes(activeTask.mode))}
+                onBusyChange={onGreetingBusyChange}
+                onSelect={(selection, greeting) => selectGreeting(job, selection, greeting)}
+                onSend={() => sendReadyGreetings([job.id])}
+                onReject={() => rejectSelectedJobs([job.id])}
+                onDetail={() => openJobDetail(job)}
+              />
             ))}
           </div>
         </section>
@@ -997,6 +1136,9 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" disabled={!filteredTodayJobs.length} onClick={() => setSelected(filteredTodayJobs.map(job => job.id))}>全选</Button>
             <Button variant="secondary" size="sm" disabled={!selected.length} onClick={() => setSelected([])}>清空</Button>
+            <Button variant="secondary" size="sm" disabled={generatingGreetings || greetTaskRunning || !actionableSelected.length} onClick={() => generateGreetings(actionableSelected)}>
+              {generatingGreetings || greetTaskRunning ? '生成中...' : `生成打招呼用语 ${actionableSelected.length} 个`}
+            </Button>
             <Button variant="secondary" size="sm" disabled={!actionableSelected.length} onClick={() => rejectSelectedJobs(actionableSelected)}>放弃已选 {actionableSelected.length} 个</Button>
             <Button size="sm" disabled={!actionableSelected.length} onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
           </div>
@@ -1047,7 +1189,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         )}
       </section>
 
-      {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} />}
+      {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} onChanged={() => void refresh()} />}
       <CollectJobsDialog
         open={collectDialogOpen}
         mode={collectDialogMode}
@@ -1085,6 +1227,146 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
   )
 }
 
+function GreetingReviewCard({
+  job,
+  busy = false,
+  onBusyChange,
+  onSelect,
+  onSend,
+  onReject,
+  onDetail,
+}: {
+  job: Job
+  busy?: boolean
+  onBusyChange?: (id: string, busy: boolean) => void
+  onSelect: (selection: 'original' | 'optimized' | 'edited', greeting?: string) => Promise<void>
+  onSend: () => void
+  onReject: () => void
+  onDetail: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(job.greeting || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    onBusyChange?.(job.id, editing || saving)
+    return () => onBusyChange?.(job.id, false)
+  }, [job.id, editing, saving, onBusyChange])
+  const original = job.greeting_original || job.greeting || ''
+  const optimized = job.greeting_optimized || ''
+  const hasPreview = Boolean(optimized && optimized !== original)
+  const needsSelection = job.greeting_selection === 'pending'
+  const issues = Array.isArray(job.greeting_style_issues) ? job.greeting_style_issues : []
+  const selectionLabel = needsSelection
+    ? '待选择'
+    : job.greeting_selection === 'auto_optimized'
+      ? '已自动采用，可调整'
+      : job.greeting_reviewed_at
+        ? '已人工确认'
+        : '待发送'
+
+  const saveSelection = async (selection: 'original' | 'optimized' | 'edited', greeting = '') => {
+    setSaving(true)
+    setError('')
+    try {
+      await onSelect(selection, greeting)
+      setEditing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className={`rounded-2xl border bg-white p-4 ${needsSelection ? 'border-amber-200' : 'border-primary/20'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-black">{job.company}｜{job.title}</div>
+          <div className="mt-1 text-xs text-muted">发送前确认最终使用的表达</div>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-[11px] font-black ${needsSelection ? 'bg-amber-100 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+          {selectionLabel}
+        </span>
+      </div>
+
+      {issues.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5" aria-label="招呼语优化原因">
+          {issues.map(issue => (
+            <span key={issue} className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">
+              {issue}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {hasPreview ? (
+        <div className="mt-3 grid gap-3 xl:grid-cols-2">
+          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'original' || needsSelection ? 'border-card-border bg-[#FFFCFA]' : 'border-card-border/70 bg-white'}`}>
+            <div className="text-[11px] font-black tracking-[0.12em] text-muted">原始版本</div>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{original}</p>
+            <Button className="mt-3" variant="secondary" size="sm" disabled={saving || busy} onClick={() => void saveSelection('original')}>
+              保留原文
+            </Button>
+          </div>
+          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'optimized' || job.greeting_selection === 'auto_optimized' ? 'border-primary/30 bg-[#FFF8F2]' : 'border-primary/20 bg-white'}`}>
+            <div className="flex items-center gap-1.5 text-[11px] font-black tracking-[0.12em] text-primary">
+              <Sparkles className="h-3.5 w-3.5" />优化预览
+            </div>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{optimized}</p>
+            <Button className="mt-3" size="sm" disabled={saving || busy} onClick={() => void saveSelection('optimized')}>
+              采用优化版
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+          <div className="text-[11px] font-black tracking-[0.12em] text-muted">当前版本</div>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting || '招呼语已生成，等待发送。'}</p>
+        </div>
+      )}
+
+      {hasPreview && !needsSelection && (
+        <div className="mt-3 rounded-xl border border-primary/30 bg-[#FFF8F2] p-3" aria-label="最终发送版本">
+          <div className="text-[11px] font-black tracking-[0.12em] text-primary">最终发送版本</div>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting}</p>
+        </div>
+      )}
+
+      {editing && (
+        <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+          <label className="text-xs font-black text-foreground" htmlFor={`greeting-edit-${job.id}`}>手动编辑最终版本</label>
+          <textarea
+            id={`greeting-edit-${job.id}`}
+            value={draft}
+            maxLength={300}
+            onChange={event => setDraft(event.target.value)}
+            className="mt-2 min-h-28 w-full resize-y rounded-xl border border-card-border bg-white p-3 text-sm leading-6 outline-none focus:border-primary"
+          />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <span className="text-xs text-muted">{draft.length}/300</span>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" disabled={saving} onClick={() => setEditing(false)}>取消</Button>
+              <Button size="sm" disabled={saving || busy || !draft.trim()} onClick={() => void saveSelection('edited', draft)}>保存编辑版</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-danger">{error}</p>}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" disabled={needsSelection || editing || saving || busy} onClick={onSend}>发送招呼语</Button>
+        <Button variant="secondary" size="sm" disabled={saving || busy} onClick={() => { setDraft(job.greeting || original); setEditing(true) }}>
+          <Pencil className="mr-2 h-4 w-4" />手动编辑
+        </Button>
+        <Button variant="secondary" size="sm" onClick={onDetail}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
+        <Button variant="secondary" size="sm" disabled={saving || busy} onClick={onReject}>放弃</Button>
+      </div>
+    </div>
+  )
+}
+
 function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: Job; selected: boolean; onToggle: () => void; onDetail: () => void; onReject: () => void }) {
   return (
     <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-[#FFFCFA]' : 'border-card-border bg-[#FFFCFA]'}`}>
@@ -1105,7 +1387,103 @@ function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: J
   )
 }
 
-function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
+function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => void; onChanged?: () => void }) {
+  const [greeting, setGreeting] = useState(job.greeting || '')
+  const [savedGreeting, setSavedGreeting] = useState(job.greeting || '')
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [reviewed, setReviewed] = useState(Boolean(job.greeting_reviewed_at))
+  const [selectionPending, setSelectionPending] = useState(job.greeting_selection === 'pending')
+
+  const saveGreeting = async () => {
+    const text = greeting.trim()
+    if (!text) {
+      setNotice('招呼语不能为空')
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/greeting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ greeting: text, confirmed: true }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '保存失败')
+      }
+      setEditing(false)
+      setSavedGreeting(text)
+      setReviewed(true)
+      setSelectionPending(false)
+      setNotice('最终发送版本已确认，后台生成不会覆盖。')
+      onChanged?.()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const regenerateGreeting = async () => {
+    setRegenerating(true)
+    setNotice('')
+    try {
+      const res = await fetch('/api/workbench/greetings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: [job.id], regenerate: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || '重新生成失败')
+      }
+      const taskId = data.task?.id
+      const finished = taskId ? await waitForGreetTask(taskId) : null
+      if (!finished) {
+        const detailRes = await fetch(`/api/jobs/${job.id}`)
+        if (detailRes.ok) {
+          const detail = await detailRes.json()
+          setGreeting(detail.greeting || '')
+          setSavedGreeting(detail.greeting || '')
+          setReviewed(Boolean(detail.greeting_reviewed_at))
+          setSelectionPending(detail.greeting_selection === 'pending')
+        }
+        onChanged?.()
+        setNotice('生成时间较长，任务仍在后台运行，稍后刷新查看结果。')
+        return
+      }
+      if (finished.status === 'stopped') {
+        throw new Error('重新生成已停止，岗位保留原有招呼语')
+      }
+      if (finished.status === 'failed') {
+        throw new Error(finished.error ? `重新生成失败：${finished.error}` : '重新生成失败')
+      }
+      if ((finished.progress?.conflict_ids ?? []).includes(job.id)) {
+        throw new Error('岗位状态已变更，招呼语未保存，请刷新后重试')
+      }
+      if (!finished.metrics?.greet_generated) {
+        throw new Error('AI 未返回完整招呼语，岗位保留为待生成，可稍后重试')
+      }
+      const detailRes = await fetch(`/api/jobs/${job.id}`)
+      if (detailRes.ok) {
+        const detail = await detailRes.json()
+        setGreeting(detail.greeting || '')
+        setSavedGreeting(detail.greeting || '')
+        setReviewed(Boolean(detail.greeting_reviewed_at))
+        setSelectionPending(detail.greeting_selection === 'pending')
+      }
+      setNotice('已重新生成招呼语')
+      onChanged?.()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '重新生成失败')
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
       <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-white p-6 shadow-2xl">
@@ -1130,8 +1508,38 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.score_reason || '-'}</p>
         </div>
         <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
-          <div className="text-sm font-black">招呼语</div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.greeting || '未生成'}</p>
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-black">招呼语</div>
+            <div className="flex gap-2">
+              {editing ? (
+                <>
+                  <Button size="sm" disabled={saving} onClick={saveGreeting}>{saving ? '保存中...' : '保存'}</Button>
+                  <Button size="sm" variant="secondary" disabled={saving} onClick={() => { setEditing(false); setGreeting(savedGreeting) }}>取消</Button>
+                </>
+              ) : (
+                <>
+                  <Button size="sm" variant="secondary" disabled={regenerating} onClick={() => { setEditing(true); setNotice('') }}>编辑</Button>
+                  <Button size="sm" variant="secondary" disabled={regenerating || reviewed} onClick={regenerateGreeting}>
+                    {regenerating ? '生成中...' : 'AI 重新生成'}
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+          {reviewed && <p className="mt-2 text-xs text-muted">最终发送版本已人工确认；如需调整，请手动编辑。</p>}
+          {selectionPending && <p className="mt-2 text-xs text-amber-700">已有优化预览，请返回待发送列表选择最终版本，或手动编辑并保存。</p>}
+          {editing ? (
+            <textarea
+              className="mt-2 w-full rounded-xl border border-card-border bg-white p-3 text-sm leading-6 text-foreground focus:border-primary focus:outline-none"
+              rows={4}
+              maxLength={300}
+              value={greeting}
+              onChange={e => setGreeting(e.target.value)}
+            />
+          ) : (
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{greeting || '未生成'}</p>
+          )}
+          {notice && <div className="mt-2 text-xs font-bold text-primary">{notice}</div>}
         </div>
         <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
           <div className="text-sm font-black">JD</div>
