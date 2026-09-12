@@ -21,7 +21,7 @@ import yaml
 from bottle import Bottle, HTTPResponse, request, response, static_file, abort
 
 from bosshunter import __version__
-from bosshunter.ai.credentials import get_ai_api_key
+from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_models
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
 from bosshunter.config import AI_SERVICE_PRESETS, load_config, remove_retired_collection_settings, save_config
@@ -2443,6 +2443,25 @@ def api_config_post():
 		return _json_response({"success": True, "message": "配置已保存"})
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/config/models", method="POST")
+def api_config_models():
+	"""Use draft AI settings and saved credentials without persisting the draft."""
+	try:
+		data = request.json
+		if not isinstance(data, dict) or not isinstance(data.get("ai"), dict):
+			return _json_response({"error": "请提供 AI 配置"}, 400)
+		ai = data["ai"]
+		for field in ("service", "provider", "base_url", "api_key", "auth_token"):
+			if field in ai and not isinstance(ai[field], str):
+				return _json_response({"error": "AI 配置字段必须是文本"}, 400)
+		config = _sanitize_config_for_write({"ai": ai})
+		return _json_response({"models": list_ai_models(config)})
+	except AIRequestError as exc:
+		return _json_response({"error": exc.user_message}, 400)
+	except Exception:
+		return _json_response({"error": "获取模型列表失败，请检查 AI 配置后重试"}, 500)
 
 
 @app.route("/api/config/schema")
