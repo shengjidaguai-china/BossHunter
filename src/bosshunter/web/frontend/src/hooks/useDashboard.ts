@@ -27,6 +27,11 @@ interface Job {
   score: number
   score_reason: string
   greeting: string
+  greeting_original?: string | null
+  greeting_optimized?: string | null
+  greeting_style_issues?: string[]
+  greeting_selection?: 'legacy' | 'generated' | 'pending' | 'auto_optimized' | 'original' | 'optimized' | 'edited' | string
+  greeting_reviewed_at?: string | null
   status: string
   hr_name: string
   hr_title: string
@@ -50,7 +55,7 @@ interface TopCompany {
 
 export interface WorkbenchTask {
   id: string
-  mode: 'full' | 'collect' | 'rescore' | 'monitor' | 'deliver'
+  mode: 'full' | 'collect' | 'rescore' | 'greet' | 'monitor' | 'deliver'
   label: string
   status: string
   logs: string[]
@@ -58,8 +63,8 @@ export interface WorkbenchTask {
   deadline_at?: string
   stop_reason?: string
   stop_requested: boolean
-  metrics?: Record<string, number>
-  progress?: CollectionProgress
+  metrics?: Record<string, number | string>
+  progress?: CollectionProgress & { conflict_ids?: string[] }
 }
 
 export interface CollectionPlatformProgress {
@@ -156,10 +161,22 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
   const refreshingRef = useRef(false)
+  const greetingRevisionRef = useRef(0)
+
+  const updateGreetingJob = useCallback((updated: Job) => {
+    greetingRevisionRef.current += 1
+    setWorkbench(previous => ({
+      ...previous,
+      pending_confirmation: previous.pending_confirmation.map(job => job.id === updated.id ? updated : job),
+      pending_greetings: previous.pending_greetings.map(job => job.id === updated.id ? updated : job),
+      send_errors: previous.send_errors.map(job => job.id === updated.id ? updated : job),
+    }))
+  }, [])
 
   const fetchAll = useCallback(async () => {
     if (refreshingRef.current) return
     refreshingRef.current = true
+    const greetingRevision = greetingRevisionRef.current
     setRefreshing(true)
     try {
       const needsWorkbench = scope === 'all' || scope === 'workbench'
@@ -169,12 +186,16 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         needsWorkbench ? fetch('/api/workbench', fetchOptions) : Promise.resolve(null),
         needsHistory ? fetch('/api/history?limit=50&include_unresolved=1&include_monitor_conversations=1', fetchOptions) : Promise.resolve(null),
       ])
+      if ((workbenchRes && !workbenchRes.ok) || (historyRes && !historyRes.ok)) {
+        throw new Error('读取控制台数据失败')
+      }
       const [workbenchData, historyData] = await Promise.all([
         workbenchRes ? workbenchRes.json() : Promise.resolve(undefined),
         historyRes ? historyRes.json() : Promise.resolve(undefined),
       ])
 
-      if (workbenchData !== undefined) setWorkbench(workbenchData)
+      // An older poll must not replace the greeting returned by a successful save.
+      if (workbenchData !== undefined && greetingRevision === greetingRevisionRef.current) setWorkbench(workbenchData)
       if (historyData !== undefined) setHistory(historyData)
       setLastRefreshedAt(new Date())
       setError('')
@@ -188,7 +209,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     }
   }, [scope])
 
-  const startTask = async (mode: 'full' | 'collect' | 'rescore' | 'monitor' | 'deliver', options?: Record<string, unknown>) => {
+  const startTask = async (mode: 'full' | 'collect' | 'rescore' | 'greet' | 'monitor' | 'deliver', options?: Record<string, unknown>) => {
     const res = await fetch('/api/workbench/task', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -241,6 +262,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     refreshing,
     lastRefreshedAt,
     refresh: fetchAll,
+    updateGreetingJob,
     startTask,
     stopTask,
   }

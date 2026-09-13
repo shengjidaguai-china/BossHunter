@@ -8,8 +8,8 @@ import { TagsInput } from '@/components/ui/tags-input'
 import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiSelect'
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { Save, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { Save, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
 import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
 const AI_SERVICES = {
@@ -63,12 +63,46 @@ export default function ConfigPage() {
     ...(requestedSection ? { [requestedSection]: true } : {}),
   }))
   const [aiTest, setAiTest] = useState<{ testing: boolean; ok?: boolean; message?: string }>({ testing: false })
+  const [modelList, setModelList] = useState<{ loading: boolean; models: string[]; message?: string; error?: boolean }>({ loading: false, models: [] })
+  const modelRequest = useRef<AbortController | null>(null)
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
   const [zhilianCityOptions, setZhilianCityOptions] = useState<CityOption[]>([])
   const [job51CityOptions, setJob51CityOptions] = useState<CityOption[]>([])
   const [liepinCityOptions, setLiepinCityOptions] = useState<CityOption[]>([])
   const [cityRefreshing, setCityRefreshing] = useState(false)
   const [cityMessage, setCityMessage] = useState('')
+
+  useEffect(() => {
+    setModelList({ loading: false, models: [] })
+    return () => modelRequest.current?.abort()
+  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials])
+
+  const handleFetchModels = async () => {
+    modelRequest.current?.abort()
+    const controller = new AbortController()
+    modelRequest.current = controller
+    setModelList({ loading: true, models: [] })
+    try {
+      const res = await fetch('/api/config/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ai: config?.ai || {} }),
+        signal: controller.signal,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '获取模型列表失败')
+      if (!Array.isArray(data.models) || !data.models.every((model: unknown) => typeof model === 'string')) {
+        throw new Error('模型列表格式不正确，可手动填写模型 ID')
+      }
+      if (!controller.signal.aborted) setModelList({
+        loading: false,
+        models: data.models,
+        message: data.models.length ? `已获取 ${data.models.length} 个模型，请选择或继续手动填写。` : '服务商未返回可用模型，可手动填写模型 ID。',
+      })
+    } catch (error) {
+      if (!controller.signal.aborted) setModelList({ loading: false, models: [], error: true, message: error instanceof Error ? error.message : '获取模型列表失败，请重试' })
+    }
+  }
 
   useEffect(() => {
     fetch('/api/cities', { cache: 'no-store' })
@@ -510,10 +544,28 @@ export default function ConfigPage() {
               </p>
             </Field>
             <Field label="模型名称">
-              <Input value={config.ai?.model || ''} onChange={e => {
-                updateConfig('ai.model', e.target.value)
-                setAiTest({ testing: false })
-              }} placeholder="填写服务商当前支持的模型 ID" />
+              <div className="flex flex-wrap gap-2">
+                <Input aria-label="模型名称" className="min-w-0 flex-1 basis-40" value={config.ai?.model || ''} onChange={e => {
+                  updateConfig('ai.model', e.target.value)
+                  setAiTest({ testing: false })
+                }} placeholder="填写服务商当前支持的模型 ID" />
+                <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
+                  {modelList.loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                  {modelList.loading ? '获取中…' : '获取模型列表'}
+                </Button>
+              </div>
+              {modelList.models.length > 0 && (
+                <Select aria-label="可用模型" className="mt-2 pr-8 appearance-auto" value={modelList.models.includes(config.ai?.model) ? config.ai.model : ''} onChange={e => {
+                  updateConfig('ai.model', e.target.value)
+                  setAiTest({ testing: false })
+                }}>
+                  <option value="" disabled>请选择模型</option>
+                  {modelList.models.map(model => <option key={model} value={model}>{model}</option>)}
+                </Select>
+              )}
+              <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
+                {modelList.message || '按当前 Base URL 和 API Key 获取，无需先保存配置。'}
+              </p>
             </Field>
             <Field label="API Key">
               <Input type="password" value={config.ai?.api_key || ''} onChange={e => {
@@ -577,6 +629,29 @@ export default function ConfigPage() {
                 <p className="mt-1 text-xs text-muted">默认关闭；开启后会增加 AI 调用次数。</p>
               </div>
               <Switch checked={config.ai?.scoring_second_review ?? false} onChange={v => updateConfig('ai.scoring_second_review', v)} />
+            </div>
+            <div className="rounded-2xl border border-primary/20 bg-[#FFF8F2] p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label className="text-sm font-black text-foreground">生成招呼语优化建议</label>
+                  <p className="mt-1 text-xs leading-5 text-muted">保留首次生成原文，同时生成可对比的优化预览和触发原因；关闭后只生成一版。</p>
+                </div>
+                <Switch
+                  checked={config.ai?.greeting_style_suggestions ?? true}
+                  onChange={value => updateConfig('ai.greeting_style_suggestions', value)}
+                />
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-4 border-t border-primary/10 pt-3">
+                <div>
+                  <label className="text-sm font-black text-foreground">自动采用优化版</label>
+                  <p className="mt-1 text-xs leading-5 text-muted">默认关闭。关闭时，发送前必须选择保留原文或采用优化版。</p>
+                </div>
+                <Switch
+                  checked={config.ai?.greeting_auto_apply_style ?? false}
+                  disabled={(config.ai?.greeting_style_suggestions ?? true) === false}
+                  onChange={value => updateConfig('ai.greeting_auto_apply_style', value)}
+                />
+              </div>
             </div>
             <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">

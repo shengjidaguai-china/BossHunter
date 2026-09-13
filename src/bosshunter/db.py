@@ -10,6 +10,8 @@ from typing import Any
 DB_PATH = Path("./data/bosshunter.db")
 MAX_JOB_IDS = 1000
 DELETION_PROTECTED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
+GREETING_ALLOWED_STATUSES = {"ready", "approved", "error"}
+REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}
 DELETION_PROTECTED_HISTORY_ACTIONS = {
     "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
@@ -532,12 +534,15 @@ def persist_agent_evaluations(conn: sqlite3.Connection, evaluations: list[dict[s
             status = "ready" if passed else "filtered"
             cursor = conn.execute(
                 "UPDATE jobs SET score = ?, score_reason = ?, greeting = ?, status = ?, "
+                "greeting_original = ?, greeting_optimized = NULL, greeting_style_issues = '[]', "
+                "greeting_selection = 'generated', greeting_reviewed_at = NULL, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending' AND deleted_at IS NULL",
                 (
                     int(evaluation["score"]),
                     str(evaluation["reason"]),
                     str(evaluation["greeting"]) if passed else None,
                     status,
+                    str(evaluation["greeting"]) if passed else None,
                     job_id,
                 ),
             )
@@ -593,6 +598,252 @@ def update_job_greeting(conn: sqlite3.Connection, job_id: str, greeting: str) ->
     conn.commit()
 
 
+def save_generated_greeting_preview(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    original: str,
+    optimized: str | None,
+    style_issues: list[str],
+    selected_greeting: str,
+    selection: str,
+    expected_greeting: str = "",
+    expected_status: str = "",
+) -> bool:
+    """Save variants and ready status atomically, only for the unreviewed snapshot."""
+    status_sql, status_params = _status_placeholders(GREETING_ALLOWED_STATUSES)
+    conditions = [
+        "id = ?", "deleted_at IS NULL", "greeting_reviewed_at IS NULL",
+        f"status IN ({status_sql})", "COALESCE(greeting, '') = ?",
+    ]
+    params: list[Any] = [
+        selected_greeting, original, optimized,
+        json.dumps(style_issues, ensure_ascii=False), selection,
+        job_id, *status_params, expected_greeting,
+    ]
+    if expected_status:
+        conditions.append("status = ?")
+        params.append(expected_status)
+    cursor = conn.execute(
+        f"""
+        UPDATE jobs
+        SET greeting = ?, greeting_original = ?, greeting_optimized = ?,
+            greeting_style_issues = ?, greeting_selection = ?,
+            status = 'ready', updated_at = CURRENT_TIMESTAMP
+        WHERE {' AND '.join(conditions)}
+        """,
+        params,
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def select_job_greeting(
+    conn: sqlite3.Connection,
+    job_id: str,
+    selection: str,
+    *,
+    edited_greeting: str = "",
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    """Apply an explicit greeting choice and lock it against later generation."""
+    if confirmed is not True:
+        raise ValueError("选择招呼语需要 confirmed=true")
+    if selection not in {"original", "optimized", "edited"}:
+        raise ValueError("招呼语选择无效")
+
+    row = conn.execute(
+        """
+        SELECT * FROM jobs
+        WHERE id = ? AND deleted_at IS NULL
+        """,
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(job_id)
+    record = dict(row)
+    status = str(record.get("status") or "")
+    if status in DELETION_PROTECTED_STATUSES:
+        raise ValueError("已发送或已回复岗位不能修改招呼语")
+    if status not in {"ready", "approved", "error"}:
+        raise ValueError("当前岗位状态不能修改招呼语")
+
+    if selection == "original":
+        greeting = str(record.get("greeting_original") or record.get("greeting") or "").strip()
+    elif selection == "optimized":
+        greeting = str(record.get("greeting_optimized") or "").strip()
+    else:
+        greeting = str(edited_greeting or "").strip()
+    if not greeting:
+        raise ValueError("所选招呼语为空")
+    if len(greeting) > 300:
+        raise ValueError("招呼语不能超过300字")
+
+    action_labels = {
+        "original": "保留原始招呼语",
+        "optimized": "采用优化招呼语",
+        "edited": "采用手动编辑招呼语",
+    }
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET greeting = ?,
+                greeting_selection = ?,
+                greeting_reviewed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND deleted_at IS NULL AND status = ?
+              AND greeting IS ? AND greeting_original IS ? AND greeting_optimized IS ?
+              AND greeting_reviewed_at IS ?
+            """,
+            (greeting, selection, job_id, status, record.get("greeting"),
+             record.get("greeting_original"), record.get("greeting_optimized"),
+             record.get("greeting_reviewed_at")),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("岗位或招呼语已变化，请刷新后重新确认")
+        conn.execute(
+            "INSERT INTO history (job_id, action, detail) VALUES (?, 'greeting_selected', ?)",
+            (job_id, action_labels[selection]),
+        )
+    updated = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict(updated) if updated is not None else {}
+
+
+def _status_placeholders(statuses: set[str]) -> tuple[str, list[str]]:
+    ordered = sorted(statuses)
+    return ",".join("?" for _ in ordered), ordered
+
+
+def save_generated_greeting(
+    conn: sqlite3.Connection,
+    job_id: str,
+    greeting: str,
+    *,
+    expected_greeting: str = "",
+    expected_status: str = "",
+) -> bool:
+    """Save a single generated variant with the same snapshot/review protections."""
+    return save_generated_greeting_preview(
+        conn, job_id, original=greeting, optimized=None, style_issues=[],
+        selected_greeting=greeting, selection="generated",
+        expected_greeting=expected_greeting, expected_status=expected_status,
+    )
+
+
+def mark_existing_greeting_ready(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    expected_greeting: str,
+    expected_status: str = "",
+) -> bool:
+    """Preserve existing text and make it ready only while the snapshot still matches.
+
+    ``expected_status`` pins the status observed when the job was read, so an
+    allowed-status transition (e.g. approved -> error) between read and write is
+    rejected instead of silently reviving the job to ready.
+    """
+    status_sql, status_params = _status_placeholders(GREETING_ALLOWED_STATUSES)
+    conditions = [
+        "id = ?",
+        "deleted_at IS NULL",
+        f"status IN ({status_sql})",
+        "COALESCE(greeting, '') = ?",
+    ]
+    params: list[Any] = [job_id, *status_params, expected_greeting]
+    if expected_status:
+        conditions.append("status = ?")
+        params.append(expected_status)
+    cursor = conn.execute(
+        f"""
+        UPDATE jobs SET status = 'ready', updated_at = CURRENT_TIMESTAMP
+        WHERE {' AND '.join(conditions)}
+        """,
+        params,
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def edit_job_greeting(
+    conn: sqlite3.Connection,
+    job_id: str,
+    greeting: str,
+    *,
+    expected_status: str | None = None,
+) -> bool:
+    """Atomically edit a greeting and append history while the job remains editable."""
+    status_sql, status_params = _status_placeholders(GREETING_ALLOWED_STATUSES)
+    conditions = ["id = ?", "deleted_at IS NULL", f"status IN ({status_sql})"]
+    params: list[Any] = [greeting, job_id, *status_params]
+    if expected_status is not None:
+        conditions.append("status = ?")
+        params.append(expected_status)
+    with conn:
+        cursor = conn.execute(
+            f"UPDATE jobs SET greeting = ?, greeting_selection = 'edited', greeting_reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE {' AND '.join(conditions)}",
+            params,
+        )
+        if cursor.rowcount != 1:
+            return False
+        conn.execute(
+            "INSERT INTO history (job_id, action, detail) VALUES (?, 'greeting_edited', ?)",
+            (job_id, "Web Dashboard 编辑招呼语"),
+        )
+    return True
+
+
+def reject_jobs(
+    conn: sqlite3.Connection,
+    job_ids: Any,
+    *,
+    expected_statuses: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Reject a batch atomically; any missing, deleted, or stale job aborts the whole batch."""
+    ids = _normalize_job_ids(job_ids, required=True)
+    conn.execute("BEGIN IMMEDIATE")
+    rows = _job_rows_by_ids(conn, ids)
+    by_id = {str(row["id"]): row for row in rows}
+    invalid_ids = [
+        job_id
+        for job_id in ids
+        if job_id not in by_id
+        or by_id[job_id].get("deleted_at") is not None
+        or str(by_id[job_id].get("status") or "") not in REJECT_ALLOWED_STATUSES
+        or (
+            expected_statuses is not None
+            and str(by_id[job_id].get("status") or "") != str(expected_statuses.get(job_id) or "")
+        )
+    ]
+    if invalid_ids:
+        conn.rollback()
+        return {"affected_count": 0, "invalid_ids": invalid_ids}
+
+    status_sql, status_params = _status_placeholders(REJECT_ALLOWED_STATUSES)
+    placeholders = ",".join("?" for _ in ids)
+    try:
+        with conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE jobs SET status = 'rejected', updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                  AND deleted_at IS NULL
+                  AND status IN ({status_sql})
+                """,
+                [*ids, *status_params],
+            )
+            if cursor.rowcount != len(ids):
+                raise sqlite3.IntegrityError("岗位状态已变化，放弃操作已回滚")
+            conn.executemany(
+                "INSERT INTO history (job_id, action, detail) VALUES (?, 'rejected', ?)",
+                [(job_id, "Web Dashboard 放弃投递") for job_id in ids],
+            )
+    except sqlite3.IntegrityError:
+        return {"affected_count": 0, "invalid_ids": ids}
+    return {"affected_count": len(ids), "invalid_ids": []}
+
+
 def update_job_status(conn: sqlite3.Connection, job_id: str, status: str) -> None:
     """Update job status."""
     conn.execute(
@@ -640,20 +891,44 @@ def get_jobs_pending_confirmation(conn: sqlite3.Connection) -> list[dict]:
         SELECT * FROM jobs
         WHERE status IN ('ready', 'approved')
           AND deleted_at IS NULL
-          AND (greeting IS NULL OR TRIM(greeting) = '')
+          AND (greeting IS NULL OR TRIM(greeting) = ''
+               OR (status = 'ready' AND EXISTS (
+                   SELECT 1 FROM history AS evaluation
+                   WHERE evaluation.job_id = jobs.id AND evaluation.action = 'agent_evaluated'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM history AS approval
+                         WHERE approval.job_id = jobs.id AND approval.action = 'approved'
+                           AND approval.id > evaluation.id
+                     )
+               )))
         ORDER BY score DESC
     """).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_jobs_ready_to_send(conn: sqlite3.Connection) -> list[dict]:
+def get_jobs_ready_to_send(
+    conn: sqlite3.Connection,
+    *,
+    include_pending_review: bool = False,
+) -> list[dict]:
     """Get jobs that have generated greetings and are ready to send."""
-    rows = conn.execute("""
+    review_filter = "" if include_pending_review else "AND greeting_selection != 'pending'"
+    rows = conn.execute(f"""
         SELECT * FROM jobs
         WHERE status IN ('ready', 'approved')
           AND deleted_at IS NULL
           AND greeting IS NOT NULL
           AND TRIM(greeting) != ''
+          {review_filter}
+          AND (status = 'approved' OR NOT EXISTS (
+              SELECT 1 FROM history AS evaluation
+                   WHERE evaluation.job_id = jobs.id AND evaluation.action = 'agent_evaluated'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM history AS approval
+                         WHERE approval.job_id = jobs.id AND approval.action = 'approved'
+                           AND approval.id > evaluation.id
+                     )
+          ))
         ORDER BY score DESC
     """).fetchall()
     return [dict(row) for row in rows]
@@ -767,7 +1042,7 @@ def _migrate_v1_4(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v1_5(conn: sqlite3.Connection) -> None:
-    """Add last_error columns and editable-resume PNG review metadata."""
+    """Add failure-reason, resume review, and greeting preview/selection metadata columns (non-destructive)."""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     additions = {
         "last_error": "TEXT",
@@ -778,6 +1053,11 @@ def _migrate_v1_5(conn: sqlite3.Connection) -> None:
         "resume_generation_source": "TEXT NULL",
         "resume_failure_reason": "TEXT NULL",
         "resume_reviewed_at": "TIMESTAMP NULL",
+        "greeting_original": "TEXT NULL",
+        "greeting_optimized": "TEXT NULL",
+        "greeting_style_issues": "TEXT NOT NULL DEFAULT '[]'",
+        "greeting_selection": "TEXT NOT NULL DEFAULT 'legacy'",
+        "greeting_reviewed_at": "TIMESTAMP NULL",
     }
     for name, definition in additions.items():
         if name not in cols:
@@ -1184,11 +1464,9 @@ def get_jobs_needing_resume(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-# =====================================================================
-# 51job 断点续采（词级 collect_progress + 页级 collect_progress_page）
+# ==============================================================# 51job 断点续采（词级 collect_progress + 页级 collect_progress_page）
 # 由 51job API-fetch 采集器使用，随该采集器一并引入
-# =====================================================================
-
+# ==============================================================
 
 def _init_collect_progress(conn: sqlite3.Connection) -> None:
     """采集断点续采进度表：记录已完成的 (source, city, keyword) 组合。

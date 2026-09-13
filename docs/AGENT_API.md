@@ -11,8 +11,10 @@ Start the local server without opening a browser:
 bosshunter web --no-open
 ```
 
-The API is bound to `127.0.0.1:8686`. It is intended for the same machine and
-must not be exposed through a reverse proxy or public network.
+The workbench defaults to `127.0.0.1:8686`. Agent routes additionally require
+a loopback transport peer and a localhost/loopback Host, even if the workbench
+is bound to LAN. Browser requests must use the same Origin. Forwarded peer
+headers do not grant access. Do not expose these routes through a reverse proxy.
 
 ## Tool boundary
 
@@ -107,7 +109,10 @@ curl -sS -X POST http://127.0.0.1:8686/api/agent/tasks \
 ```
 
 `collect` always disables automatic scoring, so it does not call an AI service.
-`monitor` and `full` follow the same safety configuration as the Web workflow.
+Agent `monitor` disables automatic replies and follow-ups in its task snapshot.
+Agent `full` does not resume previously prepared deliveries before confirmation;
+after explicit confirmation its monitoring stage keeps the same restrictions.
+Saved settings, time windows, quotas, and platform safety limits are preserved.
 The Agent must never treat a successful task start as permission to send; the
 existing confirmation step remains mandatory.
 
@@ -156,8 +161,11 @@ threshold:
 ```
 
 `POST /api/agent/evaluations` validates every score dimension, applies the
-existing caps, records a score trace, and writes passing jobs to `ready` with
-their greeting. It writes other jobs to `filtered`. A passing greeting must be
+existing caps and hard prefilters, records a score trace, and writes passing jobs to `ready` with
+their greeting. Agent greetings remain pending confirmation and are excluded
+from shared Web/CLI sender selection until a later human approval. Existing
+approval survives greeting preparation but does not authorize a later Agent
+re-evaluation. It writes other jobs to `filtered`. A passing greeting must be
 20-150 characters and contain no URL; BossHunter does not accept one for a
 filtered job. The batch is rejected if a job is missing, deleted, or no longer
 `pending`, so an Agent cannot overwrite a user-reviewed or already-sent job.
