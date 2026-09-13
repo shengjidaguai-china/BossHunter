@@ -19,6 +19,7 @@ from bosshunter.db import (
     add_history,
     edit_job_greeting,
     get_db,
+    get_score_trace,
     get_jobs_ready_to_send,
     get_unresolved_resume_failures,
     insert_job,
@@ -57,6 +58,21 @@ def _job(job_id: str) -> dict:
     }
 
 
+def _agent_score() -> dict:
+    return {
+        "role_summary": "面向企业用户的 AI 产品岗位",
+        "core_duties": {"evidence": "有 AI 产品功能设计和交付经验", "score": 34},
+        "transferable_evidence": {"evidence": "负责过用户调研、方案设计和上线复盘", "score": 21},
+        "hard_requirements": {"evidence": "JD 的产品经验要求已有对应项目事实", "score": 14},
+        "tools_industry": {"evidence": "熟悉 AI 产品与企业服务场景", "score": 8},
+        "practical_fit": {"evidence": "城市和薪资范围可接受", "score": 10},
+        "caps": [],
+        "hard_gaps": [],
+        "reason": "岗位职责与已有 AI 产品交付经历高度相关",
+        "missing": "",
+    }
+
+
 class WebApiRouteTests(unittest.TestCase):
     def setUp(self):
         # Arrange
@@ -66,7 +82,7 @@ class WebApiRouteTests(unittest.TestCase):
         # Cleanup
         server.set_base_dir(self.original_base_dir)
 
-    def _request(self, path: str, method: str = "GET", json_body: dict | None = None):
+    def _request(self, path: str, method: str = "GET", json_body: dict | None = None, environ_overrides=None):
         if "?" in path:
             path_info, query_string = path.split("?", 1)
         else:
@@ -80,6 +96,7 @@ class WebApiRouteTests(unittest.TestCase):
 
         request_body = json.dumps(json_body).encode("utf-8") if json_body is not None else b""
         environ = {
+            "REMOTE_ADDR": "127.0.0.1",
             "REQUEST_METHOD": method,
             "PATH_INFO": path_info,
             "QUERY_STRING": query_string,
@@ -97,6 +114,7 @@ class WebApiRouteTests(unittest.TestCase):
             environ["CONTENT_LENGTH"] = str(len(request_body))
             environ["CONTENT_TYPE"] = "application/json"
 
+        environ.update(environ_overrides or {})
         response_iter = server.app(environ, start_response)
         try:
             body = b"".join(
@@ -203,6 +221,320 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual(json.loads(body), {"error": "Not found"})
         self.assertNotIn("<!doctype html", body.lower())
+
+    def test_agent_state_redacts_credentials_and_advertises_tool_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({"ai": {"api_key": "private-agent-key"}}, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/agent/state")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["api_version"], "v1")
+        self.assertTrue(payload["capabilities"]["collect_without_ai"])
+
+        tools_status, _, tools_body = self._request("/api/agent/tools")
+        self.assertTrue(tools_status.startswith("200"), tools_body)
+        self.assertEqual(
+            [tool["name"] for tool in json.loads(tools_body)["tools"]],
+            [
+                "bosshunter_get_onboarding",
+                "bosshunter_get_state",
+                "bosshunter_preview_preferences",
+                "bosshunter_apply_preferences",
+                "bosshunter_start_workflow",
+                "bosshunter_get_pending_evaluations",
+                "bosshunter_submit_evaluations",
+            ],
+        )
+        self.assertNotIn("private-agent-key", body)
+        self.assertNotIn("api_key", str(payload["preferences"]))
+
+    def test_agent_config_preview_does_not_write_and_apply_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            config_path = base_dir / "config.yaml"
+            config_path.write_text(yaml.safe_dump({"ai": {"api_key": "private-agent-key"}}), encoding="utf-8")
+            server.set_base_dir(base_dir)
+            request = {
+                "preferences": {
+                    "keywords": ["AI 应用工程师"],
+                    "cities": ["杭州"],
+                    "salary": {"min": 20, "max": 35},
+                    "platform_order": ["boss"],
+                    "max_pages": 2,
+                }
+            }
+
+            preview_status, _, preview_body = self._request("/api/agent/config/preview", "POST", request)
+            preview = json.loads(preview_body)
+            self.assertTrue(preview_status.startswith("200"), preview_body)
+            self.assertTrue(preview["requires_confirmation"])
+            self.assertEqual(yaml.safe_load(config_path.read_text(encoding="utf-8")), {"ai": {"api_key": "private-agent-key"}})
+
+            apply_status, _, apply_body = self._request("/api/agent/config/apply", "POST", request)
+            self.assertTrue(apply_status.startswith("400"), apply_body)
+            self.assertTrue(json.loads(apply_body)["requires_confirmation"])
+
+            apply_status, _, apply_body = self._request(
+                "/api/agent/config/apply", "POST", {**request, "confirm": True}
+            )
+
+        payload = json.loads(apply_body)
+        self.assertTrue(apply_status.startswith("200"), apply_body)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["preferences"]["cities"], ["杭州"])
+        self.assertNotIn("private-agent-key", apply_body)
+
+    def test_agent_onboarding_uses_local_preferences_not_platform_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/agent/onboarding")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertTrue(payload["does_not_use_platform_history"])
+        self.assertEqual(payload["profile_source"], "local_configuration")
+        self.assertEqual({item["key"] for item in payload["missing"]}, {"resume", "keywords", "cities"})
+        self.assertFalse(payload["ready_for_collection"])
+        self.assertFalse(payload["ready_for_agent_workflow"])
+
+    def test_agent_can_evaluate_collected_jobs_without_bosshunter_ai_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume\nBuilt AI product features.", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "profile": {"resume_path": str(resume_path)},
+                    "scoring": {"threshold": 71},
+                }, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("agent-evaluation"))
+            finally:
+                db.close()
+
+            context_status, _, context_body = self._request(
+                "/api/agent/evaluations/pending?include_resume=true"
+            )
+            context = json.loads(context_body)
+            self.assertTrue(context_status.startswith("200"), context_body)
+            self.assertEqual(context["resume"]["content"], "# Resume\nBuilt AI product features.")
+            self.assertEqual(context["items"][0]["id"], "agent-evaluation")
+
+            submit_status, _, submit_body = self._request(
+                "/api/agent/evaluations",
+                "POST",
+                {
+                    "evaluations": [{
+                        "job_id": "agent-evaluation",
+                        "score": _agent_score(),
+                        "greeting": "我做过 AI 产品从需求拆解到上线复盘的工作，看到贵司这个岗位很关注实际落地，想和您具体聊聊。",
+                    }],
+                },
+            )
+
+            self.assertTrue(submit_status.startswith("200"), submit_body)
+            self.assertEqual(json.loads(submit_body)["result"]["ready"], ["agent-evaluation"])
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = dict(db.execute("SELECT score, greeting, status FROM jobs WHERE id = ?", ("agent-evaluation",)).fetchone())
+                has_trace, trace = get_score_trace(db, "agent-evaluation")
+                entry = db.execute(
+                    "SELECT action FROM history WHERE job_id = ? ORDER BY id DESC LIMIT 1", ("agent-evaluation",)
+                ).fetchone()
+            finally:
+                db.close()
+
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["score"], 87)
+        self.assertTrue(row["greeting"])
+        self.assertTrue(has_trace)
+        self.assertEqual(trace["final_score"], 87)
+        self.assertEqual(entry["action"], "agent_evaluated")
+
+    def test_agent_task_rejects_unsupported_mode_and_requires_confirmation(self):
+        status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "collect"})
+        self.assertTrue(status.startswith("400"), body)
+        self.assertTrue(json.loads(body)["requires_confirmation"])
+
+        status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "send", "confirm": True})
+        self.assertTrue(status.startswith("403"), body)
+        self.assertIn("不能单独跳过确认发送", json.loads(body)["error"])
+
+    def test_agent_task_starts_full_workflow_with_existing_confirmation_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "profile": {"resume_path": str(resume_path)},
+                    "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]},
+                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]}}},
+                    "ai": {"api_key": "private-agent-key"},
+                }, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            task = {"id": "agent-full-task", "mode": "full", "status": "running"}
+            with (
+                patch.object(server, "collect_preflight_checks", return_value=[]),
+                patch.object(server, "_preflight_messages", return_value=[]),
+                patch.object(server.task_runner, "start", return_value=task) as start,
+            ):
+                status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "full", "confirm": True})
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["task"], task)
+        self.assertIn("人工确认", payload["policy"]["delivery"])
+        self.assertEqual(start.call_args.args[0], "full")
+        self.assertTrue(start.call_args.args[1]["_collection_options"]["auto_score"])
+        self.assertTrue(start.call_args.args[1]["_agent_workflow"])
+
+    def test_agent_local_guard_rejects_remote_rebinding_and_cross_origin(self):
+        denied = [
+            {"REMOTE_ADDR": "192.168.1.5"},
+            {"REMOTE_ADDR": "192.168.1.5", "HTTP_X_FORWARDED_FOR": "127.0.0.1"},
+            {"REMOTE_ADDR": ""},
+            {"HTTP_HOST": "attacker.example:8686"},
+            {"HTTP_HOST": "127.0.0.1:8686", "HTTP_ORIGIN": "https://attacker.example"},
+            {"HTTP_HOST": "127.0.0.1:8686", "HTTP_ORIGIN": "null"},
+            {"HTTP_HOST": "127.0.0.1:invalid"},
+        ]
+        with patch.object(server, "_write_config") as write, patch.object(server, "load_config") as load:
+            for environ in denied:
+                for path, method, payload in [
+                    ("/api/agent/evaluations/pending?include_resume=true", "GET", None),
+                    ("/api/agent/config/apply", "POST", {"preferences": {"score_threshold": 0}, "confirm": True}),
+                ]:
+                    with self.subTest(environ=environ, path=path):
+                        status, _, body = self._request(path, method, payload, environ)
+                        self.assertTrue(status.startswith("403"), body)
+            write.assert_not_called()
+            load.assert_not_called()
+        for peer, host in [("127.0.0.1", "127.0.0.1:8686"), ("::1", "[::1]:8686"), ("::ffff:127.0.0.1", "localhost:8686")]:
+            status, _, body = self._request("/api/agent/tools", environ_overrides={
+                "REMOTE_ADDR": peer, "HTTP_HOST": host, "HTTP_ORIGIN": "http://" + host,
+            })
+            self.assertTrue(status.startswith("200"), body)
+
+    def test_agent_config_apply_rejects_active_task_without_writing(self):
+        with patch.object(server.task_runner, "status", return_value={"active": {"id": "busy"}}), patch.object(server, "_write_config") as write:
+            status, _, body = self._request("/api/agent/config/apply", "POST", {
+                "preferences": {"score_threshold": 0}, "confirm": True,
+            })
+        self.assertTrue(status.startswith("409"), body)
+        write.assert_not_called()
+
+    def test_agent_hard_filters_reject_whole_evaluation_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            server.set_base_dir(base_dir)
+            (base_dir / "config.yaml").write_text(yaml.safe_dump({"profile": {"blocked_companies": ["Blocked"]}}))
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            insert_job(db, _job("allowed"))
+            insert_job(db, {**_job("blocked"), "company": "Blocked"})
+            status, _, body = self._request("/api/agent/evaluations", "POST", {
+                "evaluations": [{"job_id": name, "score": _agent_score(), "greeting": "您好，我有相关产品经验，希望与您进一步交流这个岗位的职责和要求。"} for name in ("allowed", "blocked")],
+            })
+            self.assertTrue(status.startswith("409"), body)
+            self.assertIn("预筛不通过", body)
+            self.assertEqual([row[0] for row in db.execute("SELECT status FROM jobs")], ["pending", "pending"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM score_traces").fetchone()[0], 0)
+            db.close()
+
+    def test_agent_greeting_requires_approval_before_shared_sender_selection(self):
+        from bosshunter.agent_api import validate_agent_evaluations
+        from bosshunter.db import persist_agent_evaluations, get_jobs_ready_to_send, get_jobs_pending_confirmation
+        from bosshunter.ai.greeter import generate_greetings
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "synthetic.db"
+            db = get_db(db_path)
+            insert_job(db, _job("agent-greeting"))
+            evaluations = validate_agent_evaluations([{
+                "job_id": "agent-greeting", "score": _agent_score(),
+                "greeting": "您好，我有相关产品经验，希望与您进一步交流这个岗位的职责和要求。",
+            }], 71)
+            persist_agent_evaluations(db, evaluations)
+            self.assertEqual(get_jobs_ready_to_send(db), [])
+            from bosshunter.executor import sender
+            send_config = {"throttle": {"day_off_probability": 0, "send_windows": []}}
+            with patch.object(sender, "get_db", side_effect=lambda *args, **kwargs: get_db(db_path)), patch.object(sender, "should_take_day_off", return_value=False), patch.object(sender.SendWindowChecker, "is_active", return_value=True), patch.object(sender, "_send_greeting_once") as outbound:
+                self.assertEqual(sender.send_greetings(send_config), 0)
+            self.assertEqual(send_config["_workbench_send_report"]["stop_reason"], "no_ready_jobs")
+            outbound.assert_not_called()
+            self.assertEqual([row["id"] for row in get_jobs_pending_confirmation(db)], ["agent-greeting"])
+            update_job_status(db, "agent-greeting", "approved")
+            add_history(db, "agent-greeting", "approved", "synthetic human confirmation")
+            with patch("bosshunter.ai.greeter.get_db", side_effect=lambda *args, **kwargs: get_db(db_path)):
+                self.assertEqual(generate_greetings({}), 0)
+            # Greeter returns approved jobs to ready; persistent approval must survive.
+            self.assertEqual([row["id"] for row in get_jobs_ready_to_send(db)], ["agent-greeting"])
+            self.assertEqual(get_jobs_pending_confirmation(db), [])
+            # A later evaluation after reset must not reuse old approval.
+            update_job_status(db, "agent-greeting", "pending")
+            db.execute("UPDATE jobs SET greeting_original = 'stale original', greeting_optimized = 'stale optimized', greeting_reviewed_at = CURRENT_TIMESTAMP WHERE id = 'agent-greeting'")
+            db.commit()
+            persist_agent_evaluations(db, evaluations)
+            self.assertEqual(get_jobs_ready_to_send(db), [])
+            refreshed = dict(db.execute("SELECT * FROM jobs WHERE id = 'agent-greeting'").fetchone())
+            self.assertEqual(refreshed["greeting_original"], refreshed["greeting"])
+            self.assertIsNone(refreshed["greeting_optimized"])
+            self.assertIsNone(refreshed["greeting_reviewed_at"])
+            self.assertEqual(refreshed["greeting_selection"], "generated")
+            db.close()
+
+    def test_agent_monitor_disables_automatic_outbound_with_enabled_user_settings(self):
+        task = WorkbenchTask(id="safe-monitor", mode="monitor", label="test")
+        config = {"_agent_workflow": True, "monitor": {"auto_reply_hr_questions": True}, "follow_up": {"enabled": True}}
+        def monitor(safe_config):
+            self.assertFalse(safe_config["monitor"]["auto_reply_hr_questions"])
+            self.assertFalse(safe_config["follow_up"]["enabled"])
+            task.stop_requested.set()
+            return {}
+        with patch.object(server, "_stop_for_active_platform_lock", return_value=False), patch("bosshunter.executor.monitor.monitor_and_send_resumes", side_effect=monitor) as run, patch("bosshunter.executor.monitor.close_monitor_chat_target"), patch.object(server, "_execute_deliver") as deliver:
+            server._execute_monitor(task, config)
+        run.assert_called_once()
+        deliver.assert_not_called()
+        self.assertTrue(config["monitor"]["auto_reply_hr_questions"])
+        self.assertTrue(config["follow_up"]["enabled"])
+
+    def test_agent_full_waits_before_send_and_preserves_monitor_restrictions(self):
+        for confirmed in (False, True):
+            with self.subTest(confirmed=confirmed):
+                task = WorkbenchTask(id="safe-full", mode="full", label="test")
+                config = {"_agent_workflow": True, "scoring": {"threshold": 71}, "_collection_options": {"platform_order": ["boss"]}}
+                def log(current, message):
+                    if message == "等待前端确认投递":
+                        deliver.assert_not_called()
+                        if confirmed:
+                            current.context["confirmed_job_ids"] = ["new-job"]
+                            current.context["confirmation_event"].set()
+                        else:
+                            current.stop_requested.set()
+                with patch.object(server, "_get_web_db", return_value=MagicMock()), patch.object(server, "get_jobs_ready_to_send", return_value=[{"id": "old-approved"}]), patch.object(server, "get_jobs_pending_confirmation", return_value=[{"id": "new-job", "score": 87}]), patch.object(server, "_execute_collect"), patch.object(server, "_execute_deliver") as deliver, patch.object(server, "_execute_monitor") as monitor, patch.object(server, "_wait_for_collection_delivery_cooldown", return_value=False), patch.object(server, "load_config", return_value={"monitor": {"auto_reply_hr_questions": True}}), patch.object(server, "_log", side_effect=log):
+                    server._execute_full(task, config)
+                if confirmed:
+                    deliver.assert_called_once()
+                    self.assertEqual(deliver.call_args.args[1]["_workbench_job_ids"], ["new-job"])
+                    self.assertTrue(monitor.call_args.args[1]["_agent_workflow"])
+                else:
+                    deliver.assert_not_called()
+                    monitor.assert_not_called()
 
     def test_web_assets_serve_javascript_with_windows_safe_mime_type(self):
         with tempfile.TemporaryDirectory() as tmp:
