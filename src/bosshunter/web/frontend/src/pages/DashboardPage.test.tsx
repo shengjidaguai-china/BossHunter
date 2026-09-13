@@ -75,6 +75,25 @@ describe('DashboardPage workbench task panel', () => {
     expect(await screen.findByText('生成招呼语 (2/3)：字节跳动｜后端工程师')).toBeTruthy()
   })
 
+  it('shows the latest greeting queue progress directly and preserves line breaks', async () => {
+    const latestProgress = '招呼语进度：2/3\n成功 1，失败 1，待处理 1'
+    workbenchPayload = baseWorkbench({
+      task: buildTask({
+        mode: 'full',
+        label: '全流程',
+        logs: ['招呼语进度：1/3', latestProgress, '正在等待下一次发送窗口'],
+      }),
+    })
+    render(<DashboardPage view="workbench" />)
+    const progress = await screen.findByText(latestProgress, { normalizer: text => text })
+    expect(screen.getByText('任务运行状态')).toBeTruthy()
+    expect(progress.textContent).toBe(latestProgress)
+    expect(progress.classList.contains('whitespace-pre-line')).toBe(true)
+    expect(progress.closest('details:not([open]), [hidden], [aria-hidden="true"]')).toBeNull()
+    expect(screen.queryByText('招呼语进度：1/3')).toBeNull()
+    expect(screen.getByRole('button', { name: '停止任务' })).toBeTruthy()
+  })
+
   it('shows the pause reason when a greet task completed with partial success', async () => {
     workbenchPayload = baseWorkbench({
       last_task: buildTask({
