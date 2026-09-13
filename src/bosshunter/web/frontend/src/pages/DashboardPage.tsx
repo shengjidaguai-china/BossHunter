@@ -12,6 +12,7 @@ import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
 import { RecentActivity } from '@/components/dashboard/RecentActivity'
 import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
+import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
 import { PLATFORM_LABELS } from '@/lib/platforms'
 import {
@@ -1495,6 +1496,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
         </div>
+        <InterviewPreparation key={job.id} job={job} />
         <div className="grid gap-3 text-sm lg:grid-cols-2">
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
           <InfoBlock label="招聘者活跃" value={job.hr_active || '活跃度未知'} />
