@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 from socketserver import ThreadingMixIn
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 from unittest.mock import MagicMock, patch
@@ -37,6 +37,14 @@ from threading import Event, Lock
 from bosshunter.scoring_run_store import create_scoring_run, get_scoring_run, update_scoring_run
 from bosshunter.collection_run_store import create_collection_run, update_collection_run
 from bosshunter.web.tasks import TaskAlreadyRunningError, WorkbenchTask, WorkbenchTaskRunner
+
+# datetime.UTC 自 Python 3.11 才提供，而 pyproject.toml 声明支持 >=3.10
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone as _timezone
+
+    UTC = _timezone.utc
 
 
 def _job(job_id: str) -> dict:
