@@ -855,16 +855,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         )}
         {error && <CompactNotice message={error} danger />}
         {visibleTask && (
-          <div className="mt-3 rounded-3xl border border-card-border bg-[#FFFCFA] p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-black">任务运行状态</div>
-                <p className="mt-1 text-xs leading-5 text-muted">如果点击后浏览器没有反应，请先打开 BOSS 直聘并确认已登录；常见失败原因是 BOSS 未登录或 Chrome 调试连接不可用。</p>
-              </div>
+          <div className="mt-3 border-t border-card-border pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold">{visibleTask.label}</div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
-                {visibleTask.label}
-              </span>
               {activeTask && (
                 <Button
                   size="sm"
@@ -887,23 +881,35 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               )}
             </div>
             </div>
-            <div className={`mt-3 rounded-2xl border px-4 py-3 ${taskStatusClass(visibleTask.status)}`}>
-              <div className="text-xs font-black text-primary">{taskStatusTitle(visibleTask.status)}</div>
-              <div className="mt-1 whitespace-pre-line text-lg font-black leading-7 text-foreground">{currentTaskStage(visibleTask)}</div>
-              <div className="mt-1 text-xs font-bold text-muted">任务状态：{taskStatusText(visibleTask.status)}</div>
-              {visibleTask.deadline_at && (
-                <p className="text-muted">自动截止：{new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</p>
-              )}
-              {visibleTask.metrics && taskMetricItems.some(item => item.key in visibleTask.metrics!) && (
-                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                  {taskMetricItems.filter(item => item.key in visibleTask.metrics!).map(item => (
-                    <div key={item.key} className="rounded-lg border border-card-border bg-white px-2 py-1.5">
-                      <div className="text-[10px] font-bold text-muted">{item.label}</div>
-                      <div className="text-sm font-bold text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</div>
-                    </div>
+            <div className={`mt-3 rounded-xl border px-3 py-2.5 ${taskStatusClass(visibleTask.status)}`}>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <span className="font-semibold text-foreground">{taskStatusTitle(visibleTask.status)}</span>
+                <span className="text-muted">{taskStatusText(visibleTask.status)}</span>
+                {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
+              </div>
+              <p className="mt-1 line-clamp-2 text-sm leading-5 text-foreground">{currentTaskStage(visibleTask).split('\n')[0].slice(0, 100)}{currentTaskStage(visibleTask).split('\n')[0].length > 100 ? '…' : ''}</p>
+              {visibleTask.metrics && (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs" aria-label="任务关键统计">
+                  {taskMetricItems.filter(item => ['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
+                    <span key={item.key} className="text-muted">{item.label} <strong className="font-semibold tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
+                  ))}
+                  {taskMetricItems.filter(item => item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
+                    <span key={item.key} className="text-danger">{item.label} {visibleTask.metrics?.[item.key]}</span>
                   ))}
                 </div>
               )}
+              <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
+                <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
+                </summary>
+                {(currentTaskStage(visibleTask).includes('\n') || currentTaskStage(visibleTask).length > 100) && <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{currentTaskStage(visibleTask)}</p>}
+                <p className="mt-2 leading-5 text-muted">浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。</p>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
+                  {taskMetricItems.filter(item => item.key in (visibleTask.metrics || {})).map(item => (
+                    <span key={item.key} className="text-muted">{item.label} <strong className="font-medium tabular-nums text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</strong></span>
+                  ))}
+                </div>
+              </details>
               {Boolean(visibleTask.metrics?.greet_paused) && (
                 <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">
                   提前暂停原因：{greetPauseReasonLabel(visibleTask.metrics?.greet_pause_reason) || 'AI 服务异常'}。已生成内容已保存，剩余岗位下次运行会继续处理。
@@ -1027,31 +1033,28 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <PipelineFlow />
         </section>
       )}
-      <section className="rounded-2xl border border-card-border bg-white px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-bold">HR 简历待办 <span className="ml-1 text-xs font-normal text-muted">{workbench.needs_resume.length ? `${workbench.needs_resume.length} 项待处理` : '暂无待办'}</span></h3>
-            {workbench.needs_resume.length > 0 && <p className="mt-0.5 text-xs text-muted">下载定制简历后，手动发给 HR。</p>}
+      <section className="rounded-xl border border-card-border bg-white px-3 py-2">
+        <details className="group">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-1 text-sm [&::-webkit-details-marker]:hidden">
+            <span className="font-semibold">HR 简历待办 <span className="ml-2 text-xs font-normal text-muted">{workbench.needs_resume.length ? `${workbench.needs_resume.length} 项待处理` : '暂无待办'}</span></span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="mt-2 flex items-center justify-between gap-2 border-t border-card-border pt-2">
+            <p className="text-xs text-muted">下载后手动发给 HR，再标记已发送。</p>
+            <Button variant="ghost" size="sm" onClick={() => { window.location.href = '/monitor' }}>查看全部</Button>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => { window.location.href = "/monitor" }}>查看全部</Button>
-        </div>
-        {workbench.needs_resume.length ? (
-          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="divide-y divide-card-border">
             {workbench.needs_resume.slice(0, 4).map(job => (
-              <div key={job.id} className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="font-black">{job.company}｜{job.title}</div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发简历</span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-muted">HR 已请求简历，系统已准备定制化简历下载入口。</p>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" onClick={() => downloadResume(job)}><Download className="mr-2 h-4 w-4" />下载定制简历</Button>
+              <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span className="min-w-0 break-words text-sm">{job.company}｜{job.title}</span>
+                <div className="flex shrink-0 gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => downloadResume(job)}><Download className="mr-1 h-3.5 w-3.5" />下载简历</Button>
                   <Button variant="secondary" size="sm" onClick={() => markResumeSent(job)}>标记已发送</Button>
                 </div>
               </div>
             ))}
           </div>
-        ) : null}
+        </details>
       </section>
 
       {workbench.send_errors.length > 0 && (
@@ -1094,15 +1097,15 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       )}
 
       {pendingGreetingJobs.length > 0 && (
-        <section className="rounded-3xl border border-primary/20 bg-[#FFF0E5] p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+        <section className="rounded-xl border border-card-border bg-white p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="text-lg font-black">待发送招呼语</h3>
-              <p className="mt-1 text-xs text-muted">先预览原文与优化建议。人工确认后的版本会锁定，不再被后台生成覆盖。</p>
+              <h3 className="text-sm font-semibold">待发送招呼语 <span className="ml-1 text-xs font-normal text-muted">{pendingGreetingJobs.length} 条</span></h3>
+              <p className="mt-1 text-xs text-muted">展开预览并确认，已确认内容不会被覆盖。</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {pendingGreetingReviewCount > 0 && (
-                <span className="rounded-full bg-amber-100 px-3 py-2 text-xs font-black text-amber-700">
+                <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
                   {pendingGreetingReviewCount} 个待选择
                 </span>
               )}
@@ -1116,7 +1119,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(pendingGreetingJobs.map(job => job.id))}>放弃全部</Button>
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="divide-y divide-card-border border-t border-card-border">
             {pendingGreetingJobs.map(job => (
               <GreetingReviewCard
                 key={job.id}
@@ -1207,29 +1210,40 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   )
 }
 
+function collectionReasonLabel(reason = '') {
+  if (reason.includes('daily_detail_page_limit')) return '今日详情页次数已用完'
+  if (reason.includes('daily_platform_page_limit')) return '今日页面访问次数已用完'
+  if (reason.includes('daily_search_page_limit')) return '今日搜索页次数已用完'
+  return ''
+}
+
 function CollectionProgressPanel({ progress }: { progress: CollectionProgress }) {
+  const outcome = ({ running: '采集中', scoring: '正在评分', completed: '已完成', completed_with_shortage: '采集已结束，数量不足', completed_with_errors: '采集结束，有异常', failed: '采集失败', stopped: '已停止', cancelled: '已取消' } as Record<string, string>)[progress.outcome || ''] || '状态待确认'
+  const platforms = Object.entries(progress.platforms || {})
   return (
-    <div className="mt-3 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-black text-primary">多平台采集进度</div>
-        <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '采集中' : progress.outcome === 'scoring' ? '正在自动评分' : progress.outcome || '已结束'}</div>
-      </div>
-      <div className="mt-3 grid gap-2 md:grid-cols-2">
-        {Object.entries(progress.platforms || {}).map(([platform, state]) => (
-          <div key={platform} className="rounded-xl border border-card-border bg-white p-3">
-            <div className="flex items-center justify-between text-sm font-black">
-              <span>{PLATFORM_LABELS[platform] || platform}</span>
-              <span>新增 {state.new}</span>
+    <details className="group mt-2 rounded-xl border border-card-border bg-white px-3 py-2 text-xs">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 [&::-webkit-details-marker]:hidden">
+        <span className="flex items-center gap-1.5 font-semibold"><ChevronDown className="h-3.5 w-3.5 text-muted transition-transform group-open:rotate-180" />采集详情</span>
+        <span className="text-muted">{outcome}</span>
+        {platforms.map(([platform, state]) => (
+          <span key={platform} className="text-muted">{PLATFORM_LABELS[platform] || platform} · 新增 {state.new}
+            {collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`) && <span className="ml-2 text-amber-700">{collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`)}</span>}
+          </span>
+        ))}
+      </summary>
+      <div className="mt-2 divide-y divide-card-border border-t border-card-border">
+        {platforms.map(([platform, state]) => (
+          <div key={platform} className="py-2 leading-5">
+            <div className="flex flex-wrap justify-between gap-x-3">
+              <span className="font-medium">{PLATFORM_LABELS[platform] || platform}</span>
+              <span className="text-muted">{state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}</span>
             </div>
-            <div className="mt-1 text-xs text-muted">
-              {state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}
-            </div>
-            <div className="mt-1 text-xs text-muted">扫描 {state.seen || 0} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</div>
-            {(state.message || state.reason_code) && <div className="mt-1 text-xs font-bold text-primary">{state.message || state.reason_code}</div>}
+            <p className="text-muted">扫描 {state.seen || 0} · 新增 {state.new} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</p>
+            {(state.message || state.reason_code) && <p className="mt-1 break-words text-muted">{state.message || state.reason_code}</p>}
           </div>
         ))}
       </div>
-    </div>
+    </details>
   )
 }
 
@@ -1250,6 +1264,7 @@ function GreetingReviewCard({
   onReject: () => void
   onDetail: () => void
 }) {
+  const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(job.greeting || '')
   const [saving, setSaving] = useState(false)
@@ -1285,90 +1300,99 @@ function GreetingReviewCard({
   }
 
   return (
-    <div className={`rounded-2xl border bg-white p-4 ${needsSelection ? 'border-amber-200' : 'border-primary/20'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="font-black">{job.company}｜{job.title}</div>
-          <div className="mt-1 text-xs text-muted">发送前确认最终使用的表达</div>
-        </div>
-        <span className={`rounded-full px-2 py-1 text-[11px] font-black ${needsSelection ? 'bg-amber-100 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
-          {selectionLabel}
+    <div className="py-2.5">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={`greeting-review-${job.id}`}
+        aria-label={`${expanded ? '收起' : '展开'}招呼语：${job.company}｜${job.title}`}
+        disabled={editing || saving}
+        onClick={() => setExpanded(value => !value)}
+        className="w-full rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`min-w-0 flex-1 text-sm font-medium ${expanded ? 'break-words' : 'truncate'}`}>{job.company}｜{job.title}</span>
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${needsSelection ? 'bg-amber-50 text-amber-700' : 'text-muted'}`}>{selectionLabel}</span>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-muted transition-transform ${expanded ? 'rotate-180' : ''}`} />
         </span>
-      </div>
+        {!expanded && <span className="mt-1 block truncate text-xs leading-5 text-muted">{job.greeting || original || '展开查看招呼语'}</span>}
+      </button>
+      {expanded && <div id={`greeting-review-${job.id}`}>
 
-      {issues.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5" aria-label="招呼语优化原因">
-          {issues.map(issue => (
-            <span key={issue} className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">
-              {issue}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {hasPreview ? (
-        <div className="mt-3 grid gap-3 xl:grid-cols-2">
-          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'original' || needsSelection ? 'border-card-border bg-[#FFFCFA]' : 'border-card-border/70 bg-white'}`}>
-            <div className="text-[11px] font-black tracking-[0.12em] text-muted">原始版本</div>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{original}</p>
-            <Button className="mt-3" variant="secondary" size="sm" disabled={saving || busy} onClick={() => void saveSelection('original')}>
-              保留原文
-            </Button>
+        {issues.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted" aria-label="招呼语优化原因">
+            {issues.map(issue => (
+              <span key={issue} className="leading-5">
+                {issue}
+              </span>
+            ))}
           </div>
-          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'optimized' || job.greeting_selection === 'auto_optimized' ? 'border-primary/30 bg-[#FFF8F2]' : 'border-primary/20 bg-white'}`}>
-            <div className="flex items-center gap-1.5 text-[11px] font-black tracking-[0.12em] text-primary">
-              <Sparkles className="h-3.5 w-3.5" />优化预览
+        )}
+
+        {hasPreview ? (
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <div className={`rounded-xl border p-3 ${job.greeting_selection === 'original' || needsSelection ? 'border-card-border bg-[#FFFCFA]' : 'border-card-border/70 bg-white'}`}>
+              <div className="text-[11px] font-semibold text-muted">原始版本</div>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{original}</p>
+              <Button className="mt-3" variant="secondary" size="sm" disabled={saving || busy} onClick={() => void saveSelection('original')}>
+                保留原文
+              </Button>
             </div>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{optimized}</p>
-            <Button className="mt-3" size="sm" disabled={saving || busy} onClick={() => void saveSelection('optimized')}>
-              采用优化版
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
-          <div className="text-[11px] font-black tracking-[0.12em] text-muted">当前版本</div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting || '招呼语已生成，等待发送。'}</p>
-        </div>
-      )}
-
-      {hasPreview && !needsSelection && (
-        <div className="mt-3 rounded-xl border border-primary/30 bg-[#FFF8F2] p-3" aria-label="最终发送版本">
-          <div className="text-[11px] font-black tracking-[0.12em] text-primary">最终发送版本</div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting}</p>
-        </div>
-      )}
-
-      {editing && (
-        <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
-          <label className="text-xs font-black text-foreground" htmlFor={`greeting-edit-${job.id}`}>手动编辑最终版本</label>
-          <textarea
-            id={`greeting-edit-${job.id}`}
-            value={draft}
-            maxLength={300}
-            onChange={event => setDraft(event.target.value)}
-            className="mt-2 min-h-28 w-full resize-y rounded-xl border border-card-border bg-white p-3 text-sm leading-6 outline-none focus:border-primary"
-          />
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <span className="text-xs text-muted">{draft.length}/300</span>
-            <div className="flex gap-2">
-              <Button variant="secondary" size="sm" disabled={saving} onClick={() => setEditing(false)}>取消</Button>
-              <Button size="sm" disabled={saving || busy || !draft.trim()} onClick={() => void saveSelection('edited', draft)}>保存编辑版</Button>
+            <div className={`rounded-xl border p-3 ${job.greeting_selection === 'optimized' || job.greeting_selection === 'auto_optimized' ? 'border-primary/30 bg-[#FFF8F2]' : 'border-primary/20 bg-white'}`}>
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary">
+                <Sparkles className="h-3.5 w-3.5" />优化预览
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{optimized}</p>
+              <Button className="mt-3" size="sm" disabled={saving || busy} onClick={() => void saveSelection('optimized')}>
+                采用优化版
+              </Button>
             </div>
           </div>
+        ) : (
+          <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+            <div className="text-[11px] font-semibold text-muted">当前版本</div>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting || '招呼语已生成，等待发送。'}</p>
+          </div>
+        )}
+
+        {hasPreview && !needsSelection && (
+          <div className="mt-3 rounded-xl border border-primary/30 bg-[#FFF8F2] p-3" aria-label="最终发送版本">
+            <div className="text-[11px] font-semibold text-primary">最终发送版本</div>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting}</p>
+          </div>
+        )}
+
+        {editing && (
+          <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+            <label className="text-xs font-black text-foreground" htmlFor={`greeting-edit-${job.id}`}>手动编辑最终版本</label>
+            <textarea
+              id={`greeting-edit-${job.id}`}
+              value={draft}
+              maxLength={300}
+              onChange={event => setDraft(event.target.value)}
+              className="mt-2 min-h-28 w-full resize-y rounded-xl border border-card-border bg-white p-3 text-sm leading-6 outline-none focus:border-primary"
+            />
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-xs text-muted">{draft.length}/300</span>
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" disabled={saving} onClick={() => setEditing(false)}>取消</Button>
+                <Button size="sm" disabled={saving || busy || !draft.trim()} onClick={() => void saveSelection('edited', draft)}>保存编辑版</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-danger">{error}</p>}
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="sm" disabled={needsSelection || editing || saving || busy} onClick={onSend}>发送招呼语</Button>
+          <Button variant="secondary" size="sm" disabled={saving || busy} onClick={() => { setDraft(job.greeting || original); setEditing(true) }}>
+            <Pencil className="mr-2 h-4 w-4" />手动编辑
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onDetail}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
+          <Button variant="ghost" size="sm" disabled={saving || busy} onClick={onReject}>放弃</Button>
         </div>
-      )}
-
-      {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-danger">{error}</p>}
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="sm" disabled={needsSelection || editing || saving || busy} onClick={onSend}>发送招呼语</Button>
-        <Button variant="secondary" size="sm" disabled={saving || busy} onClick={() => { setDraft(job.greeting || original); setEditing(true) }}>
-          <Pencil className="mr-2 h-4 w-4" />手动编辑
-        </Button>
-        <Button variant="secondary" size="sm" onClick={onDetail}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
-        <Button variant="secondary" size="sm" disabled={saving || busy} onClick={onReject}>放弃</Button>
-      </div>
+      </div>}
     </div>
   )
 }

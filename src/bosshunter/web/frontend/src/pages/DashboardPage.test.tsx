@@ -161,6 +161,7 @@ describe('DashboardPage workbench task panel', () => {
       greeting_reviewed_at: '2026-09-09 12:00:00',
     }] })
     render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
     const finalVersion = await screen.findByLabelText('最终发送版本')
     expect(within(finalVersion).getByText('手动修改后最终发送的文字')).toBeTruthy()
     expect(screen.getByText('AI 原始候选')).toBeTruthy()
@@ -175,6 +176,7 @@ describe('DashboardPage workbench task panel', () => {
     }
     workbenchPayload = baseWorkbench({ pending_greetings: [job] })
     render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
     fireEvent.click(await screen.findByRole('button', { name: '手动编辑' }))
     const send = screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement
     const batchSend = screen.getByRole('button', { name: '发送已确认 1 个' }) as HTMLButtonElement
@@ -192,6 +194,46 @@ describe('DashboardPage workbench task panel', () => {
     await waitFor(() => expect(send.disabled).toBe(false))
     expect(batchSend.disabled).toBe(false)
     expect(within(screen.getByLabelText('最终发送版本')).getByText(saved.greeting)).toBeTruthy()
+  })
+
+  it('keeps candidates collapsed and prevents sending before a version is chosen', async () => {
+    workbenchPayload = baseWorkbench({ pending_greetings: [{
+      id: 'pending-preview', company: '测试公司', title: '测试岗位', status: 'ready',
+      greeting: '待确认原文', greeting_original: '待确认原文',
+      greeting_optimized: '优化候选', greeting_selection: 'pending',
+    }] })
+    render(<DashboardPage view="workbench" />)
+    const toggle = await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('优化候选')).toBeNull()
+    expect(screen.queryByRole('button', { name: '发送招呼语' })).toBeNull()
+    expect((screen.getByRole('button', { name: '发送已确认 0 个' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(toggle)
+    expect(screen.getByText('优化候选')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: '保留原文' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '收起招呼语：测试公司｜测试岗位' }))
+    expect(screen.queryByText('优化候选')).toBeNull()
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('summarizes collection limits while keeping full diagnostics in closed details', async () => {
+    workbenchPayload = baseWorkbench({ task: buildTask({
+      mode: 'full', metrics: { collect_seen: 327, collect_new: 150, collect_parse_failed: 0, collect_save_failed: 2 },
+      progress: { outcome: 'completed_with_shortage', platforms: { boss: {
+        status: 'completed', new: 150, target: null, seen: 327,
+        reason_code: 'safety_limit', message: 'BOSS 采集已达安全上限：daily_detail_page_limit；读取 327 条',
+      } } },
+    }) })
+    render(<DashboardPage view="workbench" />)
+    const reason = await screen.findByText('今日详情页次数已用完')
+    expect(reason.closest('details')?.open).toBe(false)
+    expect(screen.getByText('采集已结束，数量不足')).toBeTruthy()
+    expect(screen.queryByText('completed_with_shortage')).toBeNull()
+    const metrics = screen.getByLabelText('任务关键统计')
+    expect(within(metrics).getByText('保存失败 2')).toBeTruthy()
+    expect(within(metrics).queryByText('解析失败')).toBeNull()
+    expect(screen.getByLabelText('任务详细统计').closest('details')?.open).toBe(false)
   })
 
 })
