@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowUp, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -38,7 +38,8 @@ interface CollectJobsDialogProps {
   mode?: 'collect' | 'full'
   activeTask: WorkbenchTask | null
   onClose: () => void
-  onStart: (options: Record<string, unknown>) => void
+  /** 返回启动结果：成功返回 ok:true（弹窗自动关闭），失败返回错误信息（弹窗保留并展示）。 */
+  onStart: (options: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
 }
 
 const initialDrafts: Record<PlatformId, PlatformDraft> = {
@@ -105,6 +106,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [order, setOrder] = useState<PlatformId[]>(['boss'])
   const [autoScore, setAutoScore] = useState(false)
   const [error, setError] = useState('')
+  const [starting, setStarting] = useState(false)
   const [resumableRuns, setResumableRuns] = useState<ResumableRun[]>([])
   const [resumeRunId, setResumeRunId] = useState('')
   const [zhilianCities, setZhilianCities] = useState<PlatformCityOption[]>([])
@@ -221,6 +223,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   }
 
   const start = () => {
+    if (starting) return
     if (!enabledOrder.length) {
       setError('至少勾选一个平台。')
       return
@@ -252,7 +255,25 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         sort: draft.sort,
       }
     }
-    onStart({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms })
+    void submit({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms })
+  }
+
+  const submit = async (options: Record<string, unknown>) => {
+    if (starting) return
+    setStarting(true)
+    setError('')
+    try {
+      const result = await onStart(options)
+      if (result.ok) {
+        onClose()
+        return
+      }
+      setError(result.error || '启动失败，请稍后重试。')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '启动失败，请稍后重试。')
+    } finally {
+      setStarting(false)
+    }
   }
 
   return (
@@ -264,7 +285,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
             <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '全流程采集设置' : '岗位采集'}</h2>
             <p className="mt-1 text-sm leading-6 text-muted">平台会按队列严格串行执行；每个平台只设置最大页数和排序。</p>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="关闭"><X className="h-5 w-5" /></Button>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={starting} aria-label="关闭"><X className="h-5 w-5" /></Button>
         </div>
 
         {mode === 'collect' && <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
@@ -277,7 +298,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                   {new Date(run.created_at.replace(' ', 'T') + 'Z').toLocaleString()} · {run.options.platforms.boss.cities.join('、')} · {run.options.platforms.boss.keywords.join('、')} · 每组 {run.options.platforms.boss.max_pages} 页
                 </option>)}
               </Select>
-              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId} onClick={() => onStart({ resume_run_id: resumeRunId })}>继续采集</Button>
+              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId || starting} onClick={() => void submit({ resume_run_id: resumeRunId })}>继续采集</Button>
             </div>
             <p className="mt-2 text-xs text-muted">{resumableRuns.find(run => run.id === resumeRunId)?.options.auto_score ? '原任务已开启采集后自动评分，继续采集后也会执行评分。' : '原任务未开启自动评分，继续采集后结束。'}</p>
           </> : <p className="mt-2 text-xs text-muted">暂无可恢复任务。新版本开始的 BOSS 单平台采集会保存进度；旧版本记录需重新采集。</p>}
@@ -342,7 +363,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
 
         <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-white p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程必须先评分；评分后进入人工确认，再按平台适配器执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
         {error && <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-danger">{error}</div>}
-        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={start} disabled={Boolean(activeTask)}>{mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
+        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />启动中…</span> : mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
       </div>
     </div>
   )
