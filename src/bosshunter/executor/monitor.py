@@ -2,6 +2,7 @@
 
 import time
 import json
+import re
 
 from rich.console import Console
 
@@ -519,39 +520,142 @@ def _is_short_resume_acknowledgement(text: str) -> bool:
     }
 
 
+def _is_resume_receipt_acknowledgement(text: str) -> bool:
+    """Return true when HR confirms an already-sent resume was received."""
+    normalized = "".join(str(text or "").split())
+    receipt_signals = (
+        "简历已转给",
+        "简历已经转给",
+        "简历已转交",
+        "简历已经转交",
+        "已收到你的简历",
+        "已收到您的简历",
+        "收到你的简历",
+        "收到您的简历",
+        "简历已收到",
+        "简历收到了",
+        "已查看你的简历",
+        "已查看您的简历",
+        "简历已查看",
+    )
+    return any(signal in normalized for signal in receipt_signals)
+
+
+def _looks_like_explicit_resume_request(text: str) -> bool:
+    """Detect a clear request without mistaking receipts or rejections for one."""
+    compact = "".join(_normalized_message_text(text).split())
+    if not compact or _is_resume_receipt_acknowledgement(compact):
+        return False
+
+    rejection_context = (
+        "不匹配",
+        "不合适",
+        "不太合适",
+        "不符合",
+        "不太符合",
+        "很遗憾",
+        "无法推进",
+        "已招满",
+        "岗位已关闭",
+        "暂不考虑",
+    )
+    if any(signal in compact for signal in rejection_context):
+        return False
+    if _looks_like_resume_request_card(compact):
+        return True
+
+    patterns = (
+        r"(?:请|麻烦|方便|可以|能否|能不能|烦请|辛苦).{0,12}(?:发|发送|投递|投送|提供|传).{0,12}(?:简历|附件)",
+        r"(?:简历|附件简历).{0,12}(?:发|发送|投递|投送|提供|传|给我|过来|看一下|看看|有吗)",
+        r"(?:想|希望|需要).{0,8}(?:看|要|获取|收到).{0,8}(?:简历|附件)",
+        r"(?:发|发送|投递|投送|提供|传).{0,8}(?:一份|一下|下|个|份|您的|你的)?(?:简历|附件)",
+    )
+    return any(re.search(pattern, compact) for pattern in patterns)
+
+
+def _looks_like_resume_request_cancellation(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    return any(
+        signal in compact
+        for signal in ("不用发简历", "无需发简历", "不需要发简历", "先不用发", "暂时不用发")
+    )
+
+
+def _is_resume_request_message(message: dict) -> bool:
+    """Return true only for an HR message that still requests a resume."""
+    if str(message.get("sender") or "") != "hr":
+        return False
+    text = str(message.get("text") or "")
+    if _is_resume_receipt_acknowledgement(text) or _looks_like_resume_request_cancellation(text):
+        return False
+    return (
+        message.get("kind") == "resume_request_card"
+        or _looks_like_resume_request_card(text)
+        or _looks_like_explicit_resume_request(text)
+    )
+
+
+def _looks_like_own_resume_delivery(message: dict) -> bool:
+    """Recognize clear conversation evidence that the user sent a resume."""
+    if str(message.get("sender") or "") != "me":
+        return False
+    if message.get("kind") in {"resume_attachment", "resume_sent"}:
+        return True
+    compact = "".join(str(message.get("text") or "").split())
+    delivery_signals = (
+        "简历已发送",
+        "简历已经发送",
+        "已经发送简历",
+        "已发送简历",
+        "附件简历已发",
+        "附件简历已经发",
+        "简历发您了",
+        "简历发给您了",
+    )
+    return any(signal in compact for signal in delivery_signals)
+
+
+def _get_unresolved_resume_request_messages(messages: list[dict]) -> list[dict]:
+    """Return the latest request unless delivery, receipt, or cancellation resolves it."""
+    latest_index = -1
+    for index, message in enumerate(messages):
+        if _is_resume_request_message(message):
+            latest_index = index
+    if latest_index < 0:
+        return []
+
+    for message in messages[latest_index + 1:]:
+        text = str(message.get("text") or "")
+        if _looks_like_own_resume_delivery(message):
+            return []
+        if str(message.get("sender") or "") == "hr" and (
+            _is_resume_receipt_acknowledgement(text)
+            or _looks_like_resume_request_cancellation(text)
+        ):
+            return []
+    return [messages[latest_index]]
+
+
 def _detect_resume_request(messages: list[dict]) -> bool:
     """Check if HR is asking for a resume in messages AFTER user's last reply.
 
     Excludes messages that are actually rejections containing the word '简历'.
     Also detects BOSS rich cards requesting the user's attachment resume.
     """
-    resume_keywords = ["简历", "简历发", "发一份简历", "看看简历", "发个简历", "发下简历",
-                       "附件", "发一下简历", "方便发", "看看你的简历"]
-    # Rejection context: if '简历' appears alongside rejection phrases, it's NOT a request
-    rejection_context = ["不匹配", "不合适", "不太合适", "不符合", "不太符合", "很遗憾",
-                         "无法推进", "祝", "已招满", "岗位已关闭"]
-    # Only check HR messages after my last reply
+    if _get_unresolved_resume_request_messages(messages):
+        return True
+
+    # Short positive acknowledgements still depend on the latest turn.
     hr_msgs_after = _get_hr_messages_after_last_reply(messages)
     for msg in hr_msgs_after:
-        text = msg["text"]
-        # Skip if this message contains rejection context
-        has_rejection = any(kw in text for kw in rejection_context)
-        if has_rejection:
-            continue
-        if msg.get("kind") == "resume_request_card" or _looks_like_resume_request_card(text):
+        if _is_short_resume_acknowledgement(msg["text"]):
             return True
-        if _is_short_resume_acknowledgement(text):
-            return True
-        for kw in resume_keywords:
-            if kw in text:
-                return True
     return False
 
 
 def _has_resume_request_card(messages: list[dict]) -> bool:
-    """Check for BOSS resume request cards in HR messages after the user's last reply."""
-    hr_msgs_after = _get_hr_messages_after_last_reply(messages)
-    for msg in hr_msgs_after:
+    """Check whether the unresolved request is a BOSS resume request card."""
+    for msg in _get_unresolved_resume_request_messages(messages):
         text = msg.get("text", "")
         if msg.get("kind") == "resume_request_card" or _looks_like_resume_request_card(text):
             return True
@@ -631,7 +735,7 @@ def _reconcile_conversation_messages(messages: list[dict], job: dict) -> list[di
         sender = str(message.get("sender") or "unknown")
         strong_resume_request = (
             message.get("kind") == "resume_request_card"
-            or _looks_like_resume_request_card(text)
+            or _looks_like_explicit_resume_request(text)
         )
         if _looks_like_system_message(text) and not strong_resume_request:
             sender = "system"
@@ -683,6 +787,10 @@ def _build_reply_detail(
 ) -> str:
     """Build structured history detail containing the HR question and AI reply."""
     hr_messages = _get_hr_messages_after_last_reply(messages)
+    if schema.startswith("needs_resume") or schema.startswith("resume_failed"):
+        unresolved_resume_requests = _get_unresolved_resume_request_messages(messages)
+        if unresolved_resume_requests:
+            hr_messages = unresolved_resume_requests
     hr_question = "\n".join(str(msg.get("text", "")) for msg in hr_messages[-3:]).strip()
     reply_fingerprint = _reply_fingerprint_from_hr_question(hr_question)
     payload = {
@@ -702,6 +810,21 @@ def _build_reply_detail(
         ],
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _build_confirmed_hr_reply_detail(messages: list[dict]) -> str:
+    """Build durable HR evidence even when the user replied afterwards."""
+    last_hr_index = -1
+    for index, message in enumerate(messages):
+        if str(message.get("sender") or "") == "hr":
+            last_hr_index = index
+    if last_hr_index < 0:
+        return ""
+    return _build_reply_detail(
+        messages[: last_hr_index + 1],
+        "",
+        "hr_replied.v1",
+    )
 
 
 def _build_external_reply_detail(
@@ -1935,6 +2058,64 @@ def _has_follow_up_history(db, job_id: str) -> bool:
     return row is not None
 
 
+def _has_confirmed_hr_reply_history(db, job_id: str) -> bool:
+    """Return true only for durable, non-system HR reply evidence."""
+    rows = db.execute(
+        """
+        SELECT action, detail
+        FROM history
+        WHERE job_id = ?
+          AND action IN (
+            'replied',
+            'reply_pending',
+            'reply_sending',
+            'reply_dismissed',
+            'auto_replied',
+            'needs_resume',
+            'resume_failed',
+            'rejected'
+          )
+        ORDER BY id DESC
+        """,
+        (job_id,),
+    ).fetchall()
+    for row in rows:
+        action = _row_text(row, "action")
+        detail = _row_text(row, "detail")
+        payload = _parse_reply_detail(detail)
+        question = payload.get("hr_question") or payload.get("pending_hr_question")
+        if isinstance(question, str) and question.strip():
+            if not _looks_like_system_message(question):
+                return True
+            continue
+        if action in {"auto_replied", "rejected"}:
+            return True
+        if action == "replied" and detail.startswith("HR回复:"):
+            legacy_question = detail.removeprefix("HR回复:").strip()
+            if legacy_question and not _looks_like_system_message(legacy_question):
+                return True
+    return False
+
+
+def _extract_loaded_conversation_messages(
+    target_id: str,
+    job: dict,
+    attempts: int = 5,
+) -> list[dict]:
+    """Read a loaded chat conservatively; empty is not proof of no reply."""
+    for attempt in range(max(1, attempts)):
+        raw = evaluate(target_id, JS_EXTRACT_CONVERSATION)
+        try:
+            messages = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            messages = []
+        if isinstance(messages, list) and messages:
+            return _reconcile_conversation_messages(messages, job)
+        if attempt + 1 < attempts:
+            time.sleep(1)
+    return []
+
+
 def _has_dismissed_pending_reply(db, job_id: str, messages: list[dict] | None = None) -> bool:
     """Return true when the latest manual reply decision was to dismiss it."""
     row = db.execute(
@@ -1994,6 +2175,10 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
         if replied_job_ids and job["id"] in replied_job_ids:
             console.print(f"[dim]  跟进跳过（本轮已有HR回复）: {job['company']}[/dim]")
             continue
+        if _has_confirmed_hr_reply_history(db, job["id"]):
+            console.print(f"[dim]  跟进跳过（历史已有HR回复）: {job['company']}[/dim]")
+            update_job_status(db, job["id"], "replied")
+            continue
         updated = job.get("updated_at", "")
         if not updated:
             continue
@@ -2018,15 +2203,6 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
             console.print(f"[dim]  跟进跳过（已记录过跟进）: {job['company']}[/dim]")
             continue
 
-        try:
-            follow_up_msg = _generate_follow_up(job, config)
-        except OperationCancelled:
-            break
-        if not follow_up_msg:
-            continue
-        if stop_event and stop_event.is_set():
-            break
-
         target_id = _open_conversation(job, config)
         if not target_id:
             if stop_event and stop_event.is_set():
@@ -2040,6 +2216,36 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
         if stop_event and stop_event.is_set():
             close_tab(target_id)
             break
+
+        messages = _extract_loaded_conversation_messages(target_id, job)
+        if not messages:
+            console.print(f"[yellow]  跟进跳过（无法确认对话内容）: {job['company']}[/yellow]")
+            close_tab(target_id)
+            continue
+        if any(message.get("sender") == "hr" for message in messages):
+            console.print(f"[dim]  跟进跳过（对话中已有HR回复）: {job['company']}[/dim]")
+            update_job_status(db, job["id"], "replied")
+            add_history(
+                db,
+                job["id"],
+                "replied",
+                _build_confirmed_hr_reply_detail(messages),
+            )
+            close_tab(target_id)
+            continue
+
+        try:
+            follow_up_msg = _generate_follow_up(job, config)
+        except OperationCancelled:
+            close_tab(target_id)
+            break
+        if not follow_up_msg:
+            close_tab(target_id)
+            continue
+        if stop_event and stop_event.is_set():
+            close_tab(target_id)
+            break
+
         if _send_message_in_chat(target_id, follow_up_msg):
             console.print(f"[green]  ✓ 跟进: {job['company']} - {job['title']}[/green]")
             update_job_status(db, job["id"], "follow_up_sent")

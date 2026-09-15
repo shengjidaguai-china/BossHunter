@@ -214,7 +214,7 @@ class ResumeArtifactTests(unittest.TestCase):
     @patch("bosshunter.ai.resume._render_pdf")
     @patch("bosshunter.ai.resume._call_claude")
     @patch("bosshunter.ai.resume.get_db")
-    def test_incomplete_resume_output_is_still_written_for_user_review(self, get_db, call_claude, render_pdf):
+    def test_incomplete_resume_output_is_blocked_and_handed_to_codex(self, get_db, call_claude, render_pdf):
         from bosshunter.ai.resume import generate_tailored_resume
 
         db = Mock()
@@ -248,11 +248,17 @@ class ResumeArtifactTests(unittest.TestCase):
                 },
             )
 
-            self.assertIsNotNone(result)
-            self.assertTrue(result.exists())
-            self.assertIn("周围神经疾病诊疗", result.read_text(encoding="utf-8"))
+            self.assertIsNone(result)
+            self.assertFalse(output_dir.exists())
+            self.assertTrue(
+                any(
+                    "needs_codex" in str(call.args[0])
+                    for call in db.execute.call_args_list
+                    if call.args
+                )
+            )
 
-        render_pdf.assert_called_once()
+        render_pdf.assert_not_called()
 
     @patch("bosshunter.ai.resume._render_pdf")
     @patch("bosshunter.ai.resume._call_claude")

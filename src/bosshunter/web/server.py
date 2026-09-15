@@ -2098,6 +2098,139 @@ def api_job_greeting_selection(job_id):
 		db.close()
 
 
+@app.route("/api/greetings/review", method="POST")
+def api_greetings_review():
+	"""Confirm the greetings currently visible in the review cards without sending."""
+	body = request.json or {}
+	if body.get("confirmed") is not True:
+		return _json_response({"error": "批量审核招呼语需要 confirmed=true"}, 400)
+	raw_job_ids = body.get("job_ids")
+	if not isinstance(raw_job_ids, list):
+		return _json_response({"error": "job_ids 必须是岗位 ID 列表"}, 400)
+	job_ids = list(dict.fromkeys(str(value).strip() for value in raw_job_ids if str(value).strip()))
+	if not job_ids:
+		return _json_response({"error": "没有可审核的岗位"}, 400)
+	if len(job_ids) > 500:
+		return _json_response({"error": "单次最多审核 500 个岗位"}, 400)
+
+	reviewed_ids: list[str] = []
+	skipped: list[dict[str, str]] = []
+	with job_mutation_lock:
+		conflict = _active_task_mutation_error()
+		if conflict is not None:
+			return conflict
+		db = _get_web_db()
+		try:
+			for job_id in job_ids:
+				row = db.execute(
+					"""
+					SELECT status, greeting, greeting_original, greeting_optimized,
+					       greeting_reviewed_at
+					FROM jobs WHERE id = ? AND deleted_at IS NULL
+					""",
+					(job_id,),
+				).fetchone()
+				if not row:
+					skipped.append({"job_id": job_id, "reason": "岗位不存在"})
+					continue
+				if str(row["status"] or "") not in GREETING_ALLOWED_STATUSES:
+					skipped.append({"job_id": job_id, "reason": "当前岗位状态不能审核"})
+					continue
+				greeting = str(row["greeting"] or "").strip()
+				if not greeting:
+					skipped.append({"job_id": job_id, "reason": "当前招呼语为空"})
+					continue
+				if row["greeting_reviewed_at"]:
+					skipped.append({"job_id": job_id, "reason": "招呼语已经审核"})
+					continue
+
+				original = str(row["greeting_original"] or "").strip()
+				optimized = str(row["greeting_optimized"] or "").strip()
+				if original and greeting == original:
+					selection = "original"
+					edited_greeting = ""
+				elif optimized and greeting == optimized:
+					selection = "optimized"
+					edited_greeting = ""
+				else:
+					selection = "edited"
+					edited_greeting = greeting
+				try:
+					select_job_greeting(
+						db,
+						job_id,
+						selection,
+						edited_greeting=edited_greeting,
+						confirmed=True,
+					)
+				except (KeyError, ValueError) as exc:
+					skipped.append({"job_id": job_id, "reason": str(exc) or "审核失败"})
+					continue
+				reviewed_ids.append(job_id)
+		finally:
+			db.close()
+
+	return _json_response({
+		"success": True,
+		"reviewed_ids": reviewed_ids,
+		"reviewed_count": len(reviewed_ids),
+		"skipped": skipped,
+		"message": f"已一键审核 {len(reviewed_ids)} 条当前招呼语；本操作未发送。",
+	})
+
+
+@app.route("/api/jobs/<job_id>/mark-manual-handled", method="POST")
+def api_job_mark_manual_handled(job_id):
+	"""Record an explicitly confirmed manual send, then resume reply monitoring."""
+	body = request.json or {}
+	if body.get("confirmed") is not True:
+		return _json_response({"error": "标记人工处理需要 confirmed=true"}, 400)
+
+	monitor_notice = "已进入待监测列表"
+	with job_mutation_lock:
+		conflict = _active_task_mutation_error()
+		if conflict is not None:
+			return conflict
+		db = _get_web_db()
+		try:
+			with db:
+				row = db.execute(
+					"SELECT id, status FROM jobs WHERE id = ? AND deleted_at IS NULL",
+					(job_id,),
+				).fetchone()
+				if not row:
+					return _json_response({"error": "岗位不存在或已进入回收站"}, 404)
+				if str(row["status"] or "") not in {"error", "manual_check"}:
+					return _json_response({"error": "只有发送失败或需人工检查的岗位可以标记为已处理"}, 409)
+				cursor = db.execute(
+					"""
+					UPDATE jobs
+					SET status = 'sent', last_error = NULL, last_error_code = '',
+					    updated_at = CURRENT_TIMESTAMP
+					WHERE id = ? AND deleted_at IS NULL AND status = ?
+					""",
+					(job_id, row["status"]),
+				)
+				if cursor.rowcount != 1:
+					return _json_response({"error": "岗位状态已变化，请刷新后重试"}, 409)
+				db.execute(
+					"INSERT INTO history (job_id, action, detail) VALUES (?, 'manual_send_confirmed', ?)",
+					(job_id, "用户确认已在招聘平台人工完成沟通，岗位转入后续回复监测"),
+				)
+		finally:
+			db.close()
+
+		try:
+			task_runner.start("monitor", _task_config())
+			monitor_notice = "已自动启动后续监测"
+		except TaskAlreadyRunningError:
+			monitor_notice = "已进入待监测列表，将由当前后台任务后续处理"
+		except Exception as exc:
+			monitor_notice = f"已进入待监测列表，但自动启动监测失败：{exc}"
+
+	return _json_response({"success": True, "status": "sent", "message": monitor_notice})
+
+
 @app.route("/api/jobs/<job_id>/score-trace")
 def api_job_score_trace(job_id):
 	"""Expose the latest validated score explanation without changing job-list payloads."""

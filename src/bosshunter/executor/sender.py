@@ -1219,9 +1219,48 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     break
                 send_report["failed_count"] += 1
                 history_detail = result_data.get("history_detail", f"发送失败: {error}")
-                update_job_status(db, job["id"], "error")
                 update_job_last_error(db, job["id"], history_detail, error)
                 add_history(db, job["id"], "error", history_detail)
+                repeated_error_count = db.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM history
+                    WHERE job_id = ? AND action = 'error'
+                    """,
+                    (job["id"],),
+                ).fetchone()["cnt"]
+                ambiguous_delivery_errors = {
+                    "first_contact_navigation_unverified",
+                    "first_contact_delivery_unverified",
+                    "first_contact_send_not_stable",
+                    "existing_message_pending",
+                    "existing_message_failed",
+                    "send_not_confirmed",
+                    "send_not_stable",
+                }
+                retry_exhausted_errors = {
+                    "no_chat_button",
+                    "chat_button_click_failed",
+                    "greet_confirm_click_failed",
+                    "no_chat_input",
+                    "no_response",
+                }
+                requires_manual_check = (
+                    error in ambiguous_delivery_errors
+                    or (error in retry_exhausted_errors and repeated_error_count >= 2)
+                )
+                update_job_status(
+                    db,
+                    job["id"],
+                    "manual_check" if requires_manual_check else "error",
+                )
+                if requires_manual_check:
+                    add_history(
+                        db,
+                        job["id"],
+                        "send_manual_check",
+                        f"相同发送错误已出现 {repeated_error_count} 次，已停止自动重试：{history_detail}",
+                    )
                 if result_data.get("skip_backoff"):
                     progress.update(task, advance=1)
                     continue

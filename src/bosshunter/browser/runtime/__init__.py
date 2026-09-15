@@ -281,10 +281,14 @@ def ensure_runtime(config: dict[str, Any] | None = None, wait_seconds: float = 1
 
     start_runtime(browser, str(node.get("executable") or "node"))
     deadline = time.time() + wait_seconds
-    while time.time() < deadline:
+    # Always probe once after starting. Very small validation windows can
+    # otherwise expire during process setup and falsely report a failed start.
+    while True:
         if runtime_targets(browser) is not None:
             set_browser_config(browser)
             return True
+        if time.time() >= deadline:
+            break
         time.sleep(0.5)
     return False
 
