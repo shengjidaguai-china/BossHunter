@@ -40,10 +40,10 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   }, [pendingRepliesProp])
 
   return (
-    <aside className="flex w-16 shrink-0 flex-col border-r border-card-border bg-white md:w-60">
+    <aside className="flex w-16 shrink-0 flex-col border-r border-card-border bg-card md:w-60">
       <div className="flex h-16 shrink-0 items-center justify-center border-b border-card-border md:justify-start md:px-5">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-primary text-white flex items-center justify-center shadow-lg shadow-primary/20">
+          <div className="w-10 h-10 rounded-2xl bg-primary text-primary-foreground flex items-center justify-center shadow-lg shadow-primary/20">
             <span className="font-black text-sm">BH</span>
           </div>
           <div className="hidden md:block">
@@ -61,8 +61,8 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
             className={({ isActive }) =>
               `relative flex items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] transition-colors md:justify-between md:px-3 md:text-sm ${
                 isActive
-                  ? 'bg-[#FFF0E5] text-primary font-black'
-                  : 'text-muted hover:text-foreground hover:bg-[#FFFCFA]'
+                  ? 'bg-secondary text-primary font-black'
+                  : 'text-muted hover:text-foreground hover:bg-surface'
               }`
             }
           >
@@ -83,11 +83,11 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           target="_blank"
           rel="noreferrer"
           aria-label="BossHunter GitHub"
-          className="relative flex items-center justify-center rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-3 text-xs font-black text-foreground transition-colors hover:border-primary/60 hover:text-primary md:rounded-2xl"
+          className="relative flex items-center justify-center rounded-xl border border-card-border bg-surface px-3 py-3 text-xs font-black text-foreground transition-colors hover:border-primary/60 hover:text-primary md:rounded-2xl"
         >
           <Github className="h-4 w-4 shrink-0 md:absolute md:left-3" />
           <span className="mx-auto hidden items-center justify-center gap-2 md:flex">
-            <span className="text-xl leading-none text-yellow-400">★</span>
+            <span className="text-xl leading-none text-star">★</span>
             BossHunter
           </span>
         </a>

@@ -261,12 +261,12 @@ export default function ConfigPage() {
   if (error || !config) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="max-w-md rounded-2xl border border-card-border bg-[#FFFCFA] p-6 text-center">
+        <div className="max-w-md rounded-2xl border border-card-border bg-surface p-6 text-center">
           <div className="text-sm font-black text-foreground">配置加载失败</div>
           <p className="mt-2 text-xs leading-6 text-muted">
             请确认后端服务已启动：在项目根目录运行 bosshunter web，或启动 127.0.0.1:8686 后刷新页面。
           </p>
-          {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-500">{error}</p>}
+          {error && <p className="mt-3 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{error}</p>}
           <Button className="mt-4" size="sm" onClick={resetConfig}>重试</Button>
         </div>
       </div>
@@ -288,9 +288,9 @@ export default function ConfigPage() {
         {/* Actions bar */}
         <div className="flex items-center justify-between sticky top-0 bg-background z-10 py-2">
           <div className="flex items-center gap-2">
-            {dirty && <span className="text-xs text-amber-400">有未保存的更改</span>}
+            {dirty && <span className="text-xs text-warning">有未保存的更改</span>}
             {message && (
-              <span className={`text-xs ${message.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`text-xs ${message.type === 'success' ? 'text-success' : 'text-danger'}`}>
                 {message.text}
               </span>
             )}
@@ -335,7 +335,7 @@ export default function ConfigPage() {
                 placeholder="例如：语气简洁；不要主动询问薪资；不要提能否出差"
                 rows={3}
                 maxLength={500}
-                className="w-full resize-y rounded-md border border-card-border bg-[#FFFCFA] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted focus:border-primary"
+                className="w-full resize-y rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted focus:border-primary"
               />
               <p className="mt-1 text-xs text-muted">仅补充语气和内容偏好，不能覆盖真实简历与安全规则。</p>
             </Field>
@@ -358,7 +358,7 @@ export default function ConfigPage() {
               />
               <p className="mt-1 text-xs text-muted">按岗位薪资区间下限判断；下限超过最高薪资 × 放宽倍数时会在 AI 评分前跳过。</p>
             </Field>
-            <div className="flex items-center justify-between rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2">
+            <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2">
               <div>
                 <label className="text-xs text-foreground">过滤面议/无法解析薪资</label>
                 <p className="mt-1 text-xs text-muted">关闭后这类岗位会保留给 AI 综合判断。</p>
@@ -386,7 +386,7 @@ export default function ConfigPage() {
         {/* Search Section */}
         <SectionCard title="搜索设置" sectionKey="search" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
-            <p className="rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2 text-xs leading-5 text-muted">
+            <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
               智联、前程无忧和猎聘只自动采集、评分和生成招呼语；岗位池会提供原平台链接，你完成投递后可手动标记“已发送”。BossHunter 不会替你在这些平台发送、回复或监听。
             </p>
             {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
@@ -400,7 +400,7 @@ export default function ConfigPage() {
               const cityInput = cities.join(', ')
               const bossFilters = search.filters && typeof search.filters === 'object' ? search.filters : {}
               return (
-                <div key={platform} className={`rounded-2xl border p-4 ${enabled ? 'border-primary/30 bg-[#FFFCFA]' : 'border-card-border bg-white opacity-70'}`}>
+                <div key={platform} className={`rounded-2xl border p-4 ${enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
                   <div className="flex items-center justify-between gap-3">
                     <label className="flex items-center gap-2 text-sm font-black text-foreground">
                       <input type="checkbox" checked={enabled} onChange={event => setPlatformEnabled(platform, event.target.checked)} className="h-4 w-4 accent-primary" />
@@ -426,7 +426,7 @@ export default function ConfigPage() {
                         <p className="mt-1 text-xs text-muted">{PLATFORM_SHORT_LABELS[platform]}只使用已验证的城市编码；当前内置 {platformCityOptions.length} 个城市。</p>
                         {!!cities.length && <div className="mt-2 flex flex-wrap gap-1">{cities.map((city: string) => {
                           const matched = platformCityOptions.find(option => option.name.replace(/市$/, '') === city.replace(/市$/, ''))
-                          return <span key={city} className={`rounded-full px-2 py-1 text-xs ${matched ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{city} · {matched ? '已自动识别' : '暂未收录'}</span>
+                          return <span key={city} className={`rounded-full px-2 py-1 text-xs ${matched ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>{city} · {matched ? '已自动识别' : '暂未收录'}</span>
                         })}</div>}
                       </>}
                     </Field>
@@ -434,7 +434,7 @@ export default function ConfigPage() {
                       <Field label="最大页数">
                         <Input type="number" value={search.max_pages || (platform === 'boss' ? 3 : 1)} onChange={event => updatePlatformSearch(platform, 'max_pages', Number(event.target.value))} min={1} max={10} />
                         {platform === 'boss' && bossTheoreticalPages > 0 && (
-                          <p className={`mt-1 rounded-lg px-3 py-2 text-xs ${bossTheoreticalExceedsLimit ? 'bg-amber-50 font-bold text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                          <p className={`mt-1 rounded-lg px-3 py-2 text-xs ${bossTheoreticalExceedsLimit ? 'bg-warning-soft font-bold text-warning' : 'bg-success-soft text-success'}`}>
                             理论最多 {bossTheoreticalPages} 页（{bossEstimateKeywords.length} 个关键词 × {bossEstimateCities.length} 个城市 × {bossEstimateMaxPages} 页）。
                             {bossTheoreticalExceedsLimit
                               ? ` 已超过每日 ${bossDailySearchLimit} 页上限，到达上限后会提示并停止 BOSS 当前轮。`
@@ -449,7 +449,7 @@ export default function ConfigPage() {
                         </Select>
                       </Field>
                     </div>
-                    {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-white p-3">
+                    {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-card p-3">
                       <p className="text-xs font-black text-foreground">BOSS 搜索筛选（可选）</p>
                       <div className="grid gap-3 md:grid-cols-2">
                         <Field label="职位类型">
@@ -474,7 +474,7 @@ export default function ConfigPage() {
                               key={option}
                               type="button"
                               onClick={() => updateBossFilter(search, key, option)}
-                              className={`rounded-full border px-2.5 py-1 text-xs font-bold ${selected.includes(option) ? 'border-primary bg-[#FFF0E5] text-primary' : 'border-card-border bg-white text-muted hover:border-primary/40'}`}
+                              className={`rounded-full border px-2.5 py-1 text-xs font-bold ${selected.includes(option) ? 'border-primary bg-secondary text-primary' : 'border-card-border bg-card text-muted hover:border-primary/40'}`}
                             >{option}</button>)}
                           </div>
                         </Field>
@@ -505,7 +505,7 @@ export default function ConfigPage() {
                   <option value="boss,zhilian,51job,liepin">BOSS → 智联 → 前程无忧 → 猎聘</option>
                 </Select>
               </Field>
-              <div className="flex items-center justify-between rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2 text-xs font-bold text-muted">
+              <div className="flex items-center justify-between rounded-xl border border-card-border bg-surface px-3 py-2 text-xs font-bold text-muted">
                 采集后自动评分
                 <Switch checked={config.collection?.auto_score_default ?? false} onChange={value => updateConfig('collection.auto_score_default', value)} />
               </div>
@@ -623,14 +623,14 @@ export default function ConfigPage() {
               </Select>
               <p className="mt-1 text-xs text-muted">默认 1；提高并发会增加 API 限流风险。</p>
             </Field>
-            <div className="flex items-center justify-between rounded-lg border border-card-border bg-[#FFFCFA] p-3">
+            <div className="flex items-center justify-between rounded-lg border border-card-border bg-surface p-3">
               <div>
                 <label className="text-xs font-bold text-foreground">临界评分二次复核</label>
                 <p className="mt-1 text-xs text-muted">默认关闭；开启后会增加 AI 调用次数。</p>
               </div>
               <Switch checked={config.ai?.scoring_second_review ?? false} onChange={v => updateConfig('ai.scoring_second_review', v)} />
             </div>
-            <div className="rounded-2xl border border-primary/20 bg-[#FFF8F2] p-4">
+            <div className="rounded-2xl border border-primary/20 bg-surface-muted p-4">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <label className="text-sm font-black text-foreground">生成招呼语优化建议</label>
@@ -653,7 +653,7 @@ export default function ConfigPage() {
                 />
               </div>
             </div>
-            <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-3">
+            <div className="rounded-2xl border border-card-border bg-surface p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-black text-foreground">AI 连接检测</div>
@@ -665,7 +665,7 @@ export default function ConfigPage() {
               </div>
               {aiTest.message && (
                 <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${
-                  aiTest.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-500'
+                  aiTest.ok ? 'bg-success-soft text-success' : 'bg-danger-soft text-danger'
                 }`}>
                   {aiTest.message}
                 </p>
@@ -681,7 +681,7 @@ export default function ConfigPage() {
               <Field label="BOSS 单日搜索页上限">
                 <Input type="number" value={config.collection?.daily_search_page_limit ?? 60} onChange={e => updateConfig('collection.daily_search_page_limit', Number(e.target.value))} min={1} max={200} />
                 {bossTheoreticalPages > 0 && (
-                  <p className={`mt-1 text-xs ${bossTheoreticalExceedsLimit ? 'font-bold text-amber-700' : 'text-muted'}`}>
+                  <p className={`mt-1 text-xs ${bossTheoreticalExceedsLimit ? 'font-bold text-warning' : 'text-muted'}`}>
                     当前搜索组合理论最多 {bossTheoreticalPages} 页；{bossTheoreticalExceedsLimit ? `超过本上限 ${bossDailySearchLimit} 页，会在设置处和执行时提示。` : '未超过本上限。'}
                   </p>
                 )}
@@ -735,7 +735,7 @@ export default function ConfigPage() {
               />
             </div>
             <div className="grid items-end gap-4 md:grid-cols-2">
-              <div className="flex h-9 items-center justify-between rounded-md border border-card-border bg-[#FFFCFA] px-3">
+              <div className="flex h-9 items-center justify-between rounded-md border border-card-border bg-surface px-3">
                 <label className="text-xs text-foreground">发送前模拟浏览</label>
                 <Switch checked={config.throttle?.browse_before_greet ?? true} onChange={v => updateConfig('throttle.browse_before_greet', v)} />
               </div>
@@ -785,7 +785,7 @@ export default function ConfigPage() {
             <Field label="每轮最多发简历数">
               <Input type="number" value={config.monitor?.max_resume_sends_per_cycle || 5} onChange={e => updateConfig('monitor.max_resume_sends_per_cycle', Number(e.target.value))} min={1} />
             </Field>
-            <div className="flex items-center justify-between rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+            <div className="flex items-center justify-between rounded-2xl border border-card-border bg-surface p-4">
               <div>
                 <label className="text-sm font-black text-foreground">检测到 HR 问题时自动回复</label>
                 <p className="mt-1 text-xs text-muted">默认关闭。关闭时只生成回复建议，需要你在“监测执行”中确认后发送。</p>
@@ -832,7 +832,7 @@ function SectionCard({ title, sectionKey, expanded, toggle, children }: {
   return (
     <Card>
       <button
-        className="w-full flex items-center justify-between p-4 transition-colors hover:bg-[#FFFCFA]"
+        className="w-full flex items-center justify-between p-4 transition-colors hover:bg-surface"
         onClick={() => toggle(sectionKey)}
       >
         <span className="text-sm font-black text-foreground">{title}</span>
@@ -880,7 +880,7 @@ function NumberRangeField({
 
   return (
     <Field label={label}>
-      <div className="flex h-9 items-center overflow-hidden rounded-md border border-card-border bg-white focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/30">
+      <div className="flex h-9 items-center overflow-hidden rounded-md border border-card-border bg-card focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/30">
         <span className="shrink-0 pl-3 text-[11px] text-muted">最少</span>
         <input
           aria-label={`${label}最少`}
@@ -893,7 +893,7 @@ function NumberRangeField({
           step={step}
           disabled={disabled}
         />
-        <span className="flex h-full shrink-0 items-center border-x border-card-border bg-[#FFFCFA] px-3 text-xs font-bold text-muted">至</span>
+        <span className="flex h-full shrink-0 items-center border-x border-card-border bg-surface px-3 text-xs font-bold text-muted">至</span>
         <span className="shrink-0 pl-3 text-[11px] text-muted">最多</span>
         <input
           aria-label={`${label}最多`}

@@ -5,6 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BossHunter Dashboard</title>
+    <script>
+      // 在 React 挂载前应用主题，避免首屏浅色闪烁；key 与 useTheme.ts 保持一致
+      (function () {
+        try {
+          var stored = localStorage.getItem('bosshunter-theme');
+          var isDark =
+            stored === 'dark' ||
+            ((!stored || stored === 'system') &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (isDark) document.documentElement.classList.add('dark');
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-background text-foreground antialiased">
     <div id="root"></div>
