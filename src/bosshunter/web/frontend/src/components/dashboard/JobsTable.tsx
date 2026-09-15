@@ -46,6 +46,7 @@ function safeJobUrl(job: Job): string | null {
 }
 
 function statusVariant(status: string) {
+  if (status === 'manual_check') return 'error'
   const variants = new Set([
     'pending',
     'scored',

@@ -404,6 +404,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
   const [preflightRunning, setPreflightRunning] = useState(false)
   const [generatingGreetings, setGeneratingGreetings] = useState(false)
+  const [reviewingAllGreetings, setReviewingAllGreetings] = useState(false)
+  const [manualHandledPendingId, setManualHandledPendingId] = useState<string | null>(null)
   const startedGreetTaskIdRef = useRef<string | null>(null)
 
   const todayJobs = useMemo(
@@ -463,8 +465,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }, [view])
 
   const pendingGreetingJobs = workbench.pending_greetings
-  const reviewedGreetingJobs = pendingGreetingJobs.filter(job => job.greeting_selection !== 'pending')
-  const pendingGreetingReviewCount = pendingGreetingJobs.length - reviewedGreetingJobs.length
+  const reviewedGreetingJobs = pendingGreetingJobs.filter(
+    job => Boolean(job.greeting_reviewed_at) && job.greeting_selection !== 'pending'
+  )
+  const reviewableGreetingJobs = pendingGreetingJobs.filter(
+    job => !job.greeting_reviewed_at && Boolean(job.greeting?.trim())
+  )
+  const pendingGreetingReviewCount = reviewableGreetingJobs.length
+  const retryableSendErrors = workbench.send_errors.filter(job => !job.requires_manual_check)
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
@@ -728,6 +736,57 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           ? '已采用优化版，后续生成不会覆盖。'
           : '已保存手动编辑版本，后续生成不会覆盖。'
     )
+  }
+
+  const reviewAllGreetings = async () => {
+    if (!reviewableGreetingJobs.length || reviewingAllGreetings) return
+    if (!window.confirm(
+      `确认一键审核当前 ${reviewableGreetingJobs.length} 条招呼语？\n\n系统会保留每张卡片当前显示的版本。本操作只审核，不会发送。`
+    )) return
+    setReviewingAllGreetings(true)
+    try {
+      const res = await fetch('/api/greetings/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          confirmed: true,
+          job_ids: reviewableGreetingJobs.map(job => job.id),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || '一键审核招呼语失败')
+      await refresh()
+      const skippedCount = Array.isArray(data.skipped) ? data.skipped.length : 0
+      setNotice(
+        `${data.message || `已一键审核 ${data.reviewed_count || 0} 条招呼语。`}${skippedCount ? ` 另有 ${skippedCount} 条被跳过。` : ''}`
+      )
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '一键审核招呼语失败')
+    } finally {
+      setReviewingAllGreetings(false)
+    }
+  }
+
+  const markManualHandled = async (job: Job) => {
+    if (!window.confirm(
+      `请确认你已经在招聘平台人工完成 ${job.company}｜${job.title} 的首次沟通。确认后会把岗位标记为已发送并进入回复监测。`
+    )) return
+    setManualHandledPendingId(job.id)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/mark-manual-handled`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || '标记人工处理失败')
+      await refresh()
+      setNotice(data.message || '已标记为人工处理，并进入后续监测。')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '标记人工处理失败')
+    } finally {
+      setManualHandledPendingId(null)
+    }
   }
 
   const openJobDetail = async (job: Job) => {
@@ -1056,9 +1115,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <p className="mt-1 text-xs text-danger/80">这些岗位已生成招呼语，但没有成功发送。你可以重试，或放弃已失效岗位。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" disabled={workbench.send_errors.some(job => sendingGreetingIds.has(job.id))} onClick={() => sendReadyGreetings(workbench.send_errors.map(job => job.id))}>
-                {workbench.send_errors.some(job => sendingGreetingIds.has(job.id)) ? '正在重新发送...' : `重新发送全部 ${workbench.send_errors.length} 个`}
-              </Button>
+              {retryableSendErrors.length > 0 && (
+                <Button size="sm" disabled={retryableSendErrors.some(job => sendingGreetingIds.has(job.id))} onClick={() => sendReadyGreetings(retryableSendErrors.map(job => job.id))}>
+                  {retryableSendErrors.some(job => sendingGreetingIds.has(job.id)) ? '正在重新发送...' : `重新发送可重试项 ${retryableSendErrors.length} 个`}
+                </Button>
+              )}
               <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(workbench.send_errors.map(job => job.id))}>放弃全部</Button>
             </div>
           </div>
@@ -1070,12 +1131,19 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                     <div className="font-black">{job.company}｜{job.title}</div>
                     <div className="mt-1 text-xs text-danger">最近失败原因：{job.last_error || '发送失败，等待重试'}</div>
                   </div>
-                  <span className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
+                  <span className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-black text-danger">
+                    {job.requires_manual_check ? '需人工检查' : '发送失败'}
+                  </span>
                 </div>
                 <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待重新发送。'}</p>
                 <div className="mt-3 flex gap-2">
-                  <Button size="sm" disabled={sendingGreetingIds.has(job.id)} onClick={() => sendReadyGreetings([job.id])}>
-                    {sendingGreetingIds.has(job.id) ? '正在重新发送...' : '重新发送'}
+                  {!job.requires_manual_check && (
+                    <Button size="sm" disabled={sendingGreetingIds.has(job.id)} onClick={() => sendReadyGreetings([job.id])}>
+                      {sendingGreetingIds.has(job.id) ? '正在重新发送...' : '重新发送'}
+                    </Button>
+                  )}
+                  <Button size="sm" disabled={manualHandledPendingId === job.id} onClick={() => markManualHandled(job)}>
+                    {manualHandledPendingId === job.id ? '处理中...' : '已处理，进入监测'}
                   </Button>
                   <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs([job.id])}>放弃</Button>
                   <Button variant="secondary" size="sm" onClick={() => openJobDetail(job)}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
@@ -1100,6 +1168,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   {pendingGreetingReviewCount} 个待选择
                 </span>
               )}
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={reviewingAllGreetings || reviewableGreetingJobs.length === 0 || Boolean(activeTask)}
+                onClick={() => void reviewAllGreetings()}
+              >
+                {reviewingAllGreetings ? '审核中...' : `一键审核全部 ${reviewableGreetingJobs.length} 条`}
+              </Button>
               <Button
                 size="sm"
                 disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id))}

@@ -147,7 +147,12 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         check_node.return_value = {"available": True, "version": "v22.1.0"}
         runtime_targets.side_effect = [None, [{"targetId": "abc"}]]
 
-        result = ensure_runtime({"browser": {"runtime": "builtin", "auto_start_proxy": True}}, wait_seconds=0.01)
+        with patch("bosshunter.browser.runtime.runtime_health", return_value=None), \
+             patch("bosshunter.browser.runtime._is_port_available", return_value=True):
+            result = ensure_runtime(
+                {"browser": {"runtime": "builtin", "auto_start_proxy": True}},
+                wait_seconds=0.01,
+            )
 
         self.assertTrue(result)
         start_runtime.assert_called_once()

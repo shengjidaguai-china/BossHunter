@@ -11,7 +11,7 @@ DB_PATH = Path("./data/bosshunter.db")
 MAX_JOB_IDS = 1000
 DELETION_PROTECTED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 GREETING_ALLOWED_STATUSES = {"ready", "approved", "error"}
-REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}
+REJECT_ALLOWED_STATUSES = {"ready", "approved", "error", "manual_check"}
 DELETION_PROTECTED_HISTORY_ACTIONS = {
     "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
@@ -845,10 +845,13 @@ def get_jobs_ready_to_send(
 
 
 def get_jobs_with_send_errors(conn: sqlite3.Connection) -> list[dict]:
-    """Get jobs where greeting sending failed and can be retried."""
+    """Get failed greetings, including rows that now require human resolution."""
     rows = conn.execute("""
-        SELECT * FROM jobs
-        WHERE status = 'error'
+        SELECT
+            jobs.*,
+            CASE WHEN status = 'manual_check' THEN 1 ELSE 0 END AS requires_manual_check
+        FROM jobs
+        WHERE status IN ('error', 'manual_check')
           AND deleted_at IS NULL
           AND greeting IS NOT NULL
           AND TRIM(greeting) != ''

@@ -117,6 +117,135 @@ class WebApiRouteTests(unittest.TestCase):
                 close()
         return status_headers["status"], status_headers["headers"], body
 
+    def test_greeting_batch_review_keeps_visible_versions_without_sending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id in ("review-original", "review-optimized", "review-empty"):
+                    insert_job(db, _job(job_id))
+                    update_job_status(db, job_id, "approved")
+                db.execute(
+                    """
+                    UPDATE jobs
+                    SET greeting = '当前原文', greeting_original = '当前原文',
+                        greeting_optimized = '未选择的优化版', greeting_selection = 'pending'
+                    WHERE id = 'review-original'
+                    """
+                )
+                db.execute(
+                    """
+                    UPDATE jobs
+                    SET greeting = '当前优化版', greeting_original = '原文',
+                        greeting_optimized = '当前优化版', greeting_selection = 'auto_optimized'
+                    WHERE id = 'review-optimized'
+                    """
+                )
+                db.execute(
+                    """
+                    UPDATE jobs
+                    SET greeting = '', greeting_original = '', greeting_selection = 'generated'
+                    WHERE id = 'review-empty'
+                    """
+                )
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            missing_confirm_status, _, _ = self._request(
+                "/api/greetings/review", method="POST",
+                json_body={"job_ids": ["review-original"]},
+            )
+            status, _, body = self._request(
+                "/api/greetings/review", method="POST",
+                json_body={
+                    "confirmed": True,
+                    "job_ids": [
+                        "review-original", "review-original", "review-optimized", "review-empty"
+                    ],
+                },
+            )
+            payload = json.loads(body)
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                reviewed = {
+                    row["id"]: dict(row)
+                    for row in db.execute(
+                        """
+                        SELECT id, greeting, greeting_selection, greeting_reviewed_at
+                        FROM jobs WHERE id IN ('review-original', 'review-optimized', 'review-empty')
+                        """
+                    ).fetchall()
+                }
+                sent_count = db.execute(
+                    "SELECT COUNT(*) AS cnt FROM history WHERE action = 'sent'"
+                ).fetchone()["cnt"]
+            finally:
+                db.close()
+
+        self.assertTrue(missing_confirm_status.startswith("400"))
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["reviewed_ids"], ["review-original", "review-optimized"])
+        self.assertEqual(payload["skipped"], [{"job_id": "review-empty", "reason": "当前招呼语为空"}])
+        self.assertEqual(reviewed["review-original"]["greeting"], "当前原文")
+        self.assertEqual(reviewed["review-original"]["greeting_selection"], "original")
+        self.assertIsNotNone(reviewed["review-original"]["greeting_reviewed_at"])
+        self.assertEqual(reviewed["review-optimized"]["greeting"], "当前优化版")
+        self.assertEqual(reviewed["review-optimized"]["greeting_selection"], "optimized")
+        self.assertIsNone(reviewed["review-empty"]["greeting_reviewed_at"])
+        self.assertEqual(sent_count, 0)
+
+    def test_manual_send_confirmation_marks_error_sent_and_starts_monitoring(self):
+        runner = WorkbenchTaskRunner()
+        monitor_started = Event()
+        runner._executors["monitor"] = lambda task, config: monitor_started.set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("manual-handled-job"))
+                update_job_status(db, "manual-handled-job", "manual_check")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            missing_confirm_status, _, _ = self._request(
+                "/api/jobs/manual-handled-job/mark-manual-handled",
+                method="POST", json_body={},
+            )
+            with patch.object(server, "task_runner", runner), \
+                 patch.object(server, "_task_config", return_value={}):
+                status, _, body = self._request(
+                    "/api/jobs/manual-handled-job/mark-manual-handled",
+                    method="POST", json_body={"confirmed": True},
+                )
+                runner.wait(timeout=1)
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = db.execute(
+                    "SELECT status FROM jobs WHERE id = ?", ("manual-handled-job",)
+                ).fetchone()
+                history_count = db.execute(
+                    """
+                    SELECT COUNT(*) AS cnt FROM history
+                    WHERE job_id = ? AND action = 'manual_send_confirmed'
+                    """,
+                    ("manual-handled-job",),
+                ).fetchone()["cnt"]
+            finally:
+                db.close()
+
+        self.assertTrue(missing_confirm_status.startswith("400"))
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(row["status"], "sent")
+        self.assertEqual(history_count, 1)
+        self.assertTrue(monitor_started.is_set())
+        self.assertIn("自动启动后续监测", json.loads(body)["message"])
+
     def test_model_list_uses_draft_settings_and_preserves_saved_config(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
             server.set_base_dir(Path(tmp))

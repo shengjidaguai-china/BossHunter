@@ -45,6 +45,7 @@ interface Job {
   deleted_reason?: string | null
   resume_path?: string
   last_error?: string
+  requires_manual_check?: number
 }
 
 interface TopCompany {

@@ -11,6 +11,7 @@ from bosshunter.db import (
     get_jobs_ready_to_send,
     get_jobs_with_send_errors,
     insert_job,
+    reject_jobs,
     reset_ai_filtered_jobs,
     update_job_greeting,
     update_job_score,
@@ -830,6 +831,40 @@ class JobSelectionTests(unittest.TestCase):
                 db.close()
 
         self.assertEqual([job["id"] for job in jobs], ["send-failed"])
+
+    def test_manual_check_send_error_is_visible_but_not_retryable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                insert_job(db, _job("manual-check"))
+                update_job_status(db, "manual-check", "manual_check")
+                update_job_greeting(db, "manual-check", "Hi, this role looks like a strong fit.")
+                jobs = get_jobs_with_send_errors(db)
+            finally:
+                db.close()
+
+        self.assertEqual([job["id"] for job in jobs], ["manual-check"])
+        self.assertEqual(jobs[0]["requires_manual_check"], 1)
+
+    def test_manual_check_job_can_be_rejected_after_human_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                insert_job(db, _job("manual-check-reject"))
+                update_job_status(db, "manual-check-reject", "manual_check")
+                result = reject_jobs(
+                    db,
+                    ["manual-check-reject"],
+                    expected_statuses={"manual-check-reject": "manual_check"},
+                )
+                status = db.execute(
+                    "SELECT status FROM jobs WHERE id = ?", ("manual-check-reject",)
+                ).fetchone()["status"]
+            finally:
+                db.close()
+
+        self.assertEqual(result["affected_count"], 1)
+        self.assertEqual(status, "rejected")
 
     def test_send_greetings_force_bypasses_send_window_restriction(self):
         # Arrange

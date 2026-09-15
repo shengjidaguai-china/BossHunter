@@ -1181,7 +1181,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch(
                 "bosshunter.ai.greeter._call_claude",
                 side_effect=[
-                    "这是一条可用的个性化招呼语。",
+                    "可以先验证知识命中率，我做过相关评测设计。",
                     "评分很好，但没有按 JSON 返回。",
                 ],
             ) as call_ai,
@@ -1196,7 +1196,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(call_ai.call_count, 2)
-        save_preview.assert_called_once_with(db, 'review-format', original='这是一条可用的个性化招呼语。', optimized=None, style_issues=[], selected_greeting='这是一条可用的个性化招呼语。', selection='generated', expected_greeting='', expected_status='approved')
+        save_preview.assert_called_once_with(db, 'review-format', original='可以先验证知识命中率，我做过相关评测设计。', optimized=None, style_issues=[], selected_greeting='可以先验证知识命中率，我做过相关评测设计。', selection='generated', expected_greeting='', expected_status='approved')
         self.assertTrue(any("质量检查返回格式无法识别" in message for message in logs))
 
     def test_existing_greeting_is_preserved_and_marked_ready(self):

@@ -12,6 +12,7 @@ export const STATUS_LABELS: Record<string, string> = {
   follow_up_sent: '已跟进',
   rejected: '已拒绝',
   error: '发送失败',
+  manual_check: '需人工检查',
 }
 
 export const ACTION_LABELS: Record<string, string> = {
@@ -35,6 +36,8 @@ export const ACTION_LABELS: Record<string, string> = {
   follow_up_sent: '已跟进',
   rejected: '拒绝',
   error: '错误',
+  send_manual_check: '停止自动重试',
+  manual_send_confirmed: '人工处理完成',
 }
 
 export function getStatusLabel(status: string | null | undefined): string {
