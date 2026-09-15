@@ -687,7 +687,8 @@ export default function ConfigPage() {
                 )}
               </Field>
               <Field label="BOSS 单日详情页尝试上限">
-                <Input type="number" value={config.collection?.daily_detail_page_limit ?? 150} onChange={e => updateConfig('collection.daily_detail_page_limit', Number(e.target.value))} min={1} max={500} />
+                <Input type="number" value={config.collection?.daily_detail_page_limit ?? 900} onChange={e => updateConfig('collection.daily_detail_page_limit', Number(e.target.value))} min={1} max={1000} />
+                <p className="mt-1 text-xs text-muted">只计算打开岗位详情的尝试；列表中跳过的重复、过滤岗位不占用详情额度。详情访问也计入下方总上限。</p>
               </Field>
               <Field label="BOSS 连续页面失败停止阈值">
                 <Input type="number" value={config.collection?.max_consecutive_page_failures ?? 3} onChange={e => updateConfig('collection.max_consecutive_page_failures', Number(e.target.value))} min={1} max={10} />
@@ -717,8 +718,8 @@ export default function ConfigPage() {
             </div>
             <p className="text-xs text-muted">完成 BOSS 采集后，每次会在设定区间内随机等待一次再投递；默认为 5–15 分钟，单独采集不受影响。</p>
             <Field label="BOSS 单日页面访问总上限">
-              <Input type="number" value={config.safety?.daily_platform_page_limit ?? 500} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={1} max={2000} />
-              <p className="mt-1 text-xs text-muted">只合计 BOSS 采集、自动投递和监测打开的页面；智联和 51job 不占用。</p>
+              <Input type="number" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={1} max={2000} />
+              <p className="mt-1 text-xs text-muted">合计 BOSS 搜索页、详情页、自动投递和监测打开的页面；默认 1100 次，可容纳 60 次搜索与 900 次详情，另余 140 次供其他操作使用。其他平台不占用。</p>
             </Field>
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="每日发送上限">

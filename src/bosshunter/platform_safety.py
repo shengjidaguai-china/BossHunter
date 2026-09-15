@@ -37,7 +37,7 @@ class PlatformAccessGuard:
         """Reserve one page-open attempt before navigation."""
         self.ensure_unlocked()
         safety_cfg = self.config.get("safety", {})
-        global_limit = _positive_int(safety_cfg.get("daily_platform_page_limit", 500), 500)
+        global_limit = _positive_int(safety_cfg.get("daily_platform_page_limit", 1100), 1100)
         if count_platform_access_today(self.conn, platform=self.platform) >= global_limit:
             raise PlatformSafetyStop("daily_platform_page_limit")
         if daily_limit is not None:
