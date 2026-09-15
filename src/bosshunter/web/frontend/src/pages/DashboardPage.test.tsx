@@ -195,3 +195,71 @@ describe('DashboardPage workbench task panel', () => {
   })
 
 })
+
+describe('DashboardPage scoring dialog confirm behaviour', () => {
+  const scoringPreview = {
+    eligible_jobs: 3,
+    skipped_jobs: 0,
+    first_attempt_requests: 3,
+    max_attempts_per_job: 2,
+    max_possible_requests: 6,
+    note: '',
+  }
+
+  function stubDashboardFetch(overrides: Record<string, () => Response | undefined> = {}) {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const override = overrides[url]
+      if (override) {
+        const response = override()
+        if (response) return response
+      }
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: [], total: 0, all_total: 0 })
+      if (url === '/api/scoring/preview' && init?.method === 'POST') return jsonResponse(scoringPreview)
+      if (url === '/api/scoring/runs') return jsonResponse([])
+      if (url === '/api/scoring/start' && init?.method === 'POST') {
+        return jsonResponse({ run: { remaining_job_ids: ['j1', 'j2', 'j3'] } })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  beforeEach(() => {
+    workbenchPayload = baseWorkbench()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  async function openScoringDialog() {
+    render(<DashboardPage view="jobs" />)
+    fireEvent.click(await screen.findByText('评分选项'))
+    expect(await screen.findByText('符合条件')).toBeTruthy()
+  }
+
+  it('closes the scoring dialog and shows the started notice after scoring starts', async () => {
+    stubDashboardFetch()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await openScoringDialog()
+    fireEvent.click(screen.getByText('确认开始评分'))
+    expect((await screen.findAllByText('独立评分已启动，共 3 个岗位。')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
+  })
+
+  it('keeps the scoring dialog open and shows the failure inside it when the scoring start fails', async () => {
+    stubDashboardFetch({
+      '/api/scoring/start': () => jsonResponse({ error: 'AI 额度不足' }, false),
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await openScoringDialog()
+    fireEvent.click(screen.getByText('确认开始评分'))
+    expect(await screen.findByText('AI 额度不足')).toBeTruthy()
+    expect(screen.getByText('确认开始评分')).toBeTruthy()
+  })
+})

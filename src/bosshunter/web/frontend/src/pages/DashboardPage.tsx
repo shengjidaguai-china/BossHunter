@@ -1795,7 +1795,7 @@ function JobsPoolView() {
     job_ids: string[]
     force_rescore: boolean
     force?: boolean
-  }) => {
+  }): Promise<{ ok: boolean; error?: string }> => {
     const res = await fetch('/api/scoring/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1808,21 +1808,22 @@ function JobsPoolView() {
           `已有等待恢复的评分任务：${data.error || ''}\n是否结束该任务并强制开始新评分任务？（已完成的评分结果会保留）`,
         )
         if (confirmed) {
-          await startScoring({ ...options, force: true })
-          return
+          return await startScoring({ ...options, force: true })
         }
       }
       const checks = Array.isArray(data.messages) ? data.messages.join('；') : ''
-      throw new Error([data.error || '启动评分失败', checks].filter(Boolean).join('：'))
+      return { ok: false, error: [data.error || '启动评分失败', checks].filter(Boolean).join('：') }
     }
     setNotice(`独立评分已启动，共 ${data.run?.remaining_job_ids?.length || 0} 个岗位。`)
+    return { ok: true }
   }
 
   const startQuickScoring = async () => {
     if (!window.confirm('将对岗位池中所有未评分或评分失败的岗位启动 AI 评分，可能产生模型费用，是否继续？')) return
     setQuickScoring(true)
     try {
-      await startScoring({ scope: 'pending', limit: null, job_ids: [], force_rescore: false })
+      const result = await startScoring({ scope: 'pending', limit: null, job_ids: [], force_rescore: false })
+      if (!result.ok) setNotice(result.error || '启动 AI 评分失败')
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '启动 AI 评分失败')
     } finally {
