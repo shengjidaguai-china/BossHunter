@@ -6,6 +6,7 @@ import { getStatusLabel } from '@/lib/status'
 import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 import type { Job } from '@/hooks/useDashboard'
 import type { JobSortKey, JobSortOrder } from '@/hooks/useJobSearch'
+import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 
 interface JobsTableProps {
   jobs: Job[]
@@ -228,6 +229,9 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                     {isExpanded && (
                       <tr className="border-b border-card-border bg-[#FFFCFA]">
                         <td colSpan={hasActions ? 11 : 10} className="px-6 py-4">
+                          <div className="max-w-2xl w-[calc(100vw-9rem)] md:w-[calc(100vw-22rem)]">
+                            <InterviewPreparation key={job.id} job={job} />
+                          </div>
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-white p-4">
                               <p className="mb-2 text-xs font-black text-primary">JD摘要</p>
