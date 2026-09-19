@@ -410,11 +410,21 @@ def _resume_sections(markdown_text: str) -> list[tuple[str, str]]:
 def _find_background_preservation_issues(markdown_text: str, base_resume: str) -> list[str]:
     """Protect identity, education and named employers without policing role wording."""
     issues: list[str] = []
-    source_name = re.search(r"(?m)^#[ \t]+([^\n]+)", base_resume)
-    if source_name:
-        name = re.split(r"[|｜·：:]", source_name.group(1), maxsplit=1)[0].strip().strip("*_ ")
-        if name and name not in markdown_text:
-            issues.append("基础信息保留校验失败：缺少原简历姓名")
+    # Uploads may start with a document title rather than the person's name.
+    explicit_name = re.search(r"(?m)^[ \t#>*_-]*姓名[ \t*_]*[:：][ \t*_]*([^\n|｜,，;；]+)", base_resume)
+    name = ""
+    if explicit_name:
+        name = re.split(r"\s{2,}|[ \t]+(?:年龄|电话|手机|邮箱|性别|籍贯)\s*[:：]", explicit_name.group(1))[0].strip().strip("*_ ")
+    else:
+        heading = re.search(r"(?m)^#[ \t]+([^\n]+)", base_resume)
+        if heading:
+            title = re.split(r"[|｜：:]|\s+[-–—]\s+", heading.group(1), maxsplit=1)[0].strip().strip("*_ ")
+            if not any(label in title for label in ("简历", "履历", "信息", "姓名")):
+                # Ambiguous titles are not reliable evidence of a missing identity.
+                if re.fullmatch(r"[\u4e00-\u9fff·]{2,6}|[A-Za-z]+(?:[ .'-]+[A-Za-z]+)*", title):
+                    name = title
+    if name and name not in markdown_text:
+        issues.append("基础信息保留校验失败：缺少原简历姓名")
 
     for label, aliases in BACKGROUND_SECTION_ALIASES.items():
         source_sections = [(title, body) for title, body in _resume_sections(base_resume) if any(a in title for a in aliases)]
@@ -435,7 +445,10 @@ def _find_background_preservation_issues(markdown_text: str, base_resume: str) -
             if identity not in candidate and not any(_project_identity_matches(entry, other) for other in candidate_entries):
                 issues.append(f"经历保留校验失败：{label}缺少 {identity}")
         if label == "教育经历":
-            schools = re.findall(r"[\u4e00-\u9fffA-Za-z]+(?:大学|学院|学校)", source)
+            schools = [
+                re.sub(r"^(?:毕业于|就读于|在读于|毕业院校|就读院校|所在院校)", "", school)
+                for school in re.findall(r"[\u4e00-\u9fffA-Za-z]+(?:大学|学院|学校)", source)
+            ]
             degrees = re.findall(r"博士|硕士|本科|学士|大专|专科", source)
             dates = _extract_validation_tokens(source, [FACT_TOKEN_PATTERNS[3]])
             candidate_dates = {_normalize_validation_token(t) for t in _extract_validation_tokens(candidate, [FACT_TOKEN_PATTERNS[3]])}

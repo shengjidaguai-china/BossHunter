@@ -106,6 +106,25 @@ def test_name_cannot_disappear():
     assert any("姓名" in issue for issue in issues)
 
 
+def test_document_titles_do_not_override_explicit_name():
+    for title in ("个人简历", "简历", "李晓的简历", "李晓 - 产品经理", "姓名：李晓"):
+        source = BASE.replace("# 李晓｜内容运营", f"# {title}\n姓名：李晓")
+        assert resume._find_blocking_integrity_issues(BASE, source) == []
+        assert any("姓名" in issue for issue in resume._find_blocking_integrity_issues(BASE.replace("李晓", "其他人"), source))
+
+
+def test_generic_title_without_explicit_name_is_not_a_person():
+    source = BASE.replace("# 李晓｜内容运营", "# 个人简历")
+    assert resume._find_blocking_integrity_issues(BASE, source) == []
+
+
+def test_school_prose_can_be_reformatted_without_losing_identity():
+    for prefix in ("毕业于", "就读于", "毕业院校：", "学校："):
+        source = BASE.replace("### 示例大学｜本科", f"{prefix}示例大学，本科。")
+        assert resume._find_blocking_integrity_issues(BASE, source) == []
+        assert any("示例大学" in issue for issue in resume._find_blocking_integrity_issues(BASE.replace("示例大学", "另一大学"), source))
+
+
 def test_section_aliases_and_reordering_preserve_background():
     candidate = BASE.replace("职业经历", "工作经验").replace("教育背景", "教育经历")
     assert resume._find_blocking_integrity_issues(candidate, BASE) == []

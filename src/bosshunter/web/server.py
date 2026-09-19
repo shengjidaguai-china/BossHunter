@@ -728,12 +728,12 @@ def _execute_full(task: WorkbenchTask, config: dict) -> None:
 		return
 	# The user may adjust the daily limit or other send settings while reviewing
 	# jobs. Reload immediately before delivery instead of using the task-start snapshot.
-	deliver_config = load_config(CONFIG_PATH)
+	deliver_config = _task_config()
 	deliver_config["_workbench_job_ids"] = job_ids
 	_execute_deliver(task, deliver_config)
 	if task.stop_requested.is_set():
 		return
-	monitor_config = load_config(CONFIG_PATH)
+	monitor_config = _task_config()
 	if config.get("_agent_workflow"):
 		monitor_config["_agent_workflow"] = True
 	_execute_monitor(task, monitor_config, initial_cooldown=True)
@@ -1809,7 +1809,7 @@ def api_workbench_deliver():
 			pending_review_ids = [
 				str(row["id"])
 				for row in platform_rows
-				if direct_send and str(row["greeting_selection"] or "") == "pending"
+				if str(row["greeting_selection"] or "") == "pending"
 			]
 			if pending_review_ids:
 				return _json_response({

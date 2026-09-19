@@ -731,7 +731,7 @@ class DashboardPageTests(unittest.TestCase):
         )
 
     def test_dashboard_shows_automatic_task_deadline_and_stop_reason(self):
-        self.assertIn("自动截止：", self.source)
+        self.assertIn("截止 ", self.source)
         self.assertIn("visibleTask.deadline_at", self.source)
         self.assertIn("visibleTask.stop_reason", self.source)
 

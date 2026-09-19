@@ -1537,6 +1537,32 @@ class WebApiRouteTests(unittest.TestCase):
                 method="POST",
                 json_body={"job_ids": ["preview-pending"], "direct_send": True},
             )
+            active_task = WorkbenchTask(id="pending-queue", mode="deliver", label="确认投递")
+            active_task.context.update({"delivering": True, "pending_deliveries": []})
+            runner = WorkbenchTaskRunner()
+            runner._tasks[active_task.id] = active_task
+            with patch.object(server, "task_runner", runner):
+                queued_status, _, queued_body = self._request(
+                    "/api/workbench/deliver", method="POST",
+                    json_body={"job_ids": ["preview-pending"], "direct_send": False},
+                )
+                self.assertTrue(queued_status.startswith("409"), queued_body)
+                self.assertEqual(json.loads(queued_body)["code"], "greeting_review_required")
+                self.assertEqual(active_task.context["pending_deliveries"], [])
+                choice_status, _, choice_body = self._request(
+                    "/api/jobs/preview-pending/greeting-selection", method="POST",
+                    json_body={"selection": "optimized", "confirmed": True},
+                )
+                self.assertTrue(choice_status.startswith("200"), choice_body)
+                self.assertEqual(active_task.context["pending_deliveries"], [])
+                confirmed_status, _, confirmed_body = self._request(
+                    "/api/workbench/deliver", method="POST",
+                    json_body={"job_ids": ["preview-pending"], "direct_send": False},
+                )
+                self.assertTrue(confirmed_status.startswith("200"), confirmed_body)
+                self.assertEqual(active_task.context["pending_deliveries"], [
+                    {"job_ids": ["preview-pending"], "direct_send": False},
+                ])
 
         self.assertTrue(workbench_status.startswith("200"), workbench_body)
         preview = json.loads(workbench_body)["pending_greetings"][0]
@@ -1918,6 +1944,7 @@ class WebApiRouteTests(unittest.TestCase):
             calls.append("collect")
 
         def fake_deliver(task, config):
+            self.assertTrue(config.get("_workbench_live_greeting_settings"))
             calls.append((
                 "deliver",
                 config.get("_workbench_job_ids"),
@@ -1925,6 +1952,12 @@ class WebApiRouteTests(unittest.TestCase):
             ))
 
         def fake_monitor(task, config, **kwargs):
+            with patch.object(server, "load_config", return_value={
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "新保存的固定招呼语"},
+            }):
+                refreshed = server._refresh_greeting_settings(config)
+            self.assertEqual(refreshed.get("profile", {}).get("fixed_greeting"), "新保存的固定招呼语")
+            self.assertIs(refreshed["profile"]["ai_greeting_enabled"], False)
             calls.append("monitor")
 
         runner = WorkbenchTaskRunner()
