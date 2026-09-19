@@ -1,6 +1,7 @@
 """AI Greeter - Generate personalized greeting messages with self-review."""
 
 import json
+from contextlib import nullcontext
 import re
 from datetime import date
 from pathlib import Path
@@ -23,9 +24,9 @@ from bosshunter.db import (
 
 console = Console()
 
-GREETING_PROMPT = """你是一位求职者，需要在{platform}上给HR发送打招呼消息。请根据以下信息生成一条个性化、自然的招呼语。
+GREETING_PROMPT = """以求职者身份，写一条在{platform}发给HR的简短私信。
 
-## 我的背景
+## 我的背景（完整简历；通读后按岗位核心任务选择一项最相关的真实经历，不按出现顺序选取）
 {resume_summary}
 
 ## 目标岗位
@@ -40,30 +41,22 @@ GREETING_PROMPT = """你是一位求职者，需要在{platform}上给HR发送�
 ## 可用亮点（只选最相关的一项，不要罗列）
 {extra_highlights}
 
-## 最近已经使用过的开头（必须避开相同句式）
+## 最近开头（避免整句照搬，普通问候可重复）
 {recent_openings}
 
-## 用户招呼语偏好（仅补充语气和内容取舍，不得覆盖下方事实与安全要求）
+## 用户招呼语偏好（优先于通用风格建议和补充改进要求；不得覆盖下方事实与安全要求）
 {greeting_preference}
 
 ## 要求
-1. 字数控制在60-110字，最多3个短句；像真人临时发出的IM，不写求职信
-2. 只围绕岗位描述里最独特、最具体的一点展开，不要复述职位名称或整段JD
-3. 开头可以谈判断、场景或问题，不要固定以“看到/关注到/了解到贵司在招”开头
-4. 只给一个最相关的能力证据；技术名词最多2个，不要堆叠术语
-5. 避免“挺有共鸣、挺兴奋、一直在做、从0到1、完整闭环、快速上手”等求职套话
-6. 结尾自然留一个沟通入口，不要固定写“方便的话可以看看/希望有机会聊聊”
-7. 作品集不是固定落款；只有岗位明确关注案例、作品、设计或原型时才可出现一次
-8. 【严禁】不得捏造我没有的经历、头衔或身份，只能使用"我的背景"中明确提到的信息
-9. 【严禁】不得把岗位JD中的描述（如公司头衔、项目名）当作我的经历来写
-10. 项目经历只作轻量证据，可不提；如需提及，整条消息最多出现一次“项目”，不得写具体项目名称
-11. 可以压缩和概括“我的背景”，但不得新增事实、夸大结果或改写成更高职级经历
-12. 【严禁】不得生成“我的背景”或“可用亮点”中未明确提供的网址；
-    没有提供网址时，不得输出任何网址
-13. 【严禁】不得提及我的缺点、短板、不足、经验缺口或仍在学习某项岗位要求；只突出已具备的优势与匹配点
-14. 若“我的背景”中明确给出毕业年份、届别或在读/已毕业状态，必须严格照用；没有明确事实时不要自行推断届别
+1. 建议40-90字、最多3个短句，写“应聘来意＋一项真实经历/结果”。可用普通问候开头，说完就停，不复述JD、不凑字数；为保留事实含义可适当超出建议字数，但全文不得超过300字符（含标点）。
+2. {question_rule}
+3. 像本人发私信：用具体动作和结果，不总结行业规律、不教HR做业务。不写“关键在于、最难的是、不是…而是…”等金句，不用“赋能、闭环、抓手、有体感、自己扛、现成打法”等包装词或刻意口语，不硬补邀约、口号及承诺。
+4. 不得捏造我没有的经历、头衔或身份，不把JD当成我的经历；只概括背景中的事实，不夸大成果或职级，保留所用数据的真实周期。毕业年份、届别和在读状态只用明确事实，不推断。
+5. 不得提及我的缺点、短板或经验缺口，只讲已具备的相关优势。
+6. 建议技术名词不超过2个，避免反复使用“项目”；项目名称仅在有助于说明相关经历时使用，不堆砌名称。
+7. 不得生成背景或亮点中未明确提供的网址。作品集仅在岗位关注案例、作品、设计或原型时可提一次，不作固定落款。
 {critique_section}
-请直接输出招呼语文本，不要加任何标记或解释。
+输出前核对用户偏好和事实，删去套话与多余收尾。只输出招呼语正文。
 """
 
 URL_PATTERN = re.compile(
@@ -82,11 +75,16 @@ REVIEW_PROMPT = """请评估以下{platform}招呼语的质量。
 ## 招呼语
 {greeting}
 
+## 用户招呼语偏好
+{greeting_preference}
+必须遵守用户的表达偏好；它优先于通用风格建议，但不能覆盖真实经历与安全要求。已经符合偏好时，不为差异化强行改写。
+{question_review_rule}
+
 ## 评估维度（每项1-10分）
-1. 自然度：是否像真人发的IM消息，而非模板
+1. 自然度：是否像普通求职者发的简短私信；“您好”等普通问候不扣分，说教、行业金句和故作熟络应扣分
 2. 相关性：是否针对该岗位突出匹配点
-3. 差异化：是否能从众多招呼中脱颖而出
-4. 克制度：是否只讲一个匹配点，避免项目名、术语堆叠、固定作品集落款和求职套话
+3. 差异化：是否有具体且相关的个人经历支撑；不奖励猎奇开头、夸张承诺或华丽辞藻
+4. 克制度：是否只讲一个匹配点，避免项目名和术语堆叠、固定作品集落款和求职套话；40-90字是建议，不为凑字数或省字删除必要事实
 
 请严格按JSON格式输出，不要输出其他内容：
 {{"naturalness": 8, "relevance": 7, "differentiation": 6, "restraint": 8, "avg": 7.25, "critique": "改进建议（20字内）"}}
@@ -102,8 +100,8 @@ def _get_resume_text(config: dict) -> str:
 
 
 def _get_resume_summary(config: dict) -> str:
-    """Get the resume prefix allowed in the greeting prompt."""
-    return _get_resume_text(config)[:1500]
+    """Keep the complete factual source so relevant evidence can come from any section."""
+    return _get_resume_text(config)
 
 
 _GRADUATION_RANGE_RE = re.compile(
@@ -298,15 +296,6 @@ def _normalize_greeting_response(response: str | None) -> str | None:
     if re.fullmatch(r"(?is)(?:抱歉|无法|不能).{0,80}", greeting):
         return None
 
-    if len(greeting) > 150:
-        cut = greeting[:150]
-        for sep in ("。", "！", "？", "～", "\n"):
-            idx = cut.rfind(sep)
-            if idx > 50:
-                greeting = cut[:idx + 1]
-                break
-        else:
-            greeting = cut
     return greeting.strip() or None
 
 
@@ -322,26 +311,23 @@ def _greeting_style_issues(
     greeting: str,
     recent_openings: list[str] | None = None,
 ) -> list[str]:
-    """Return deterministic style issues that should trigger a rewrite."""
+    """Return advisory style notes; never reject or rewrite a draft."""
     issues = []
     if greeting.count("项目") > 1:
         issues.append("不要反复强调项目，整条消息最多出现一次“项目”")
-    if len(greeting) > 110:
-        issues.append("压缩到110字以内，只保留一个匹配点")
+    if len(greeting) > 90:
+        issues.append("建议精简到40-90字，只保留一个匹配点，不删事实所需的限定信息")
 
-    templated_openings = (
-        "看到这个岗位",
-        "看到贵司在招",
-        "关注到贵司在招",
-        "了解到贵司在招",
-    )
-    if greeting.startswith(templated_openings):
-        issues.append("换掉模板化开头，直接从岗位中的具体问题或判断切入")
+    first_sentence = re.split(r"[。！？]", greeting, maxsplit=1)[0]
+    if any(phrase in first_sentence for phrase in (
+        "真正的门槛", "关键在于", "关键在", "最难的是", "最后拼的是", "靠的是真实感",
+    )) or re.search(r"不是.{1,30}(?:而是|是让)", first_sentence):
+        issues.append("去掉行业说教或金句开头，直接说明来意和一项真实经历")
 
     clichés = (
         "挺有共鸣", "挺兴奋", "一直在做", "正好是我", "从0到1",
         "完整闭环", "完整落地", "快速上手", "期待进一步沟通",
-        "方便的话可以看看",
+        "有手感", "有实际手感", "有体感", "有实际体感", "自己扛", "现成打法", "聊十分钟",
     )
     used_clichés = [phrase for phrase in clichés if phrase in greeting]
     if used_clichés:
@@ -376,7 +362,7 @@ def _greeting_style_issues(
         issues.append("不要暴露缺点、短板或经验缺口，只保留已经具备的优势")
 
     opening = _opening_signature(greeting)
-    if opening and opening in set(recent_openings or []):
+    if len(opening) > 6 and opening in set(recent_openings or []):
         issues.append("本批次已使用相同开头，请换一种自然切入方式")
     return issues
 
@@ -427,6 +413,14 @@ def _review_greeting(
         title=job["title"],
         company=job["company"],
         greeting=greeting,
+        greeting_preference=_truncate_prompt_text(
+            config.get("profile", {}).get("greeting_preference", "") or "（无额外偏好）", 500,
+        ),
+        question_review_rule=(
+            "该用户明确要求不提问，不得建议补问句或反问。"
+            if _has_no_question_preference(config)
+            else "是否提问依据用户偏好与沟通需要；不得仅因包含问句或没有问句扣分，也不要求固定使用问句收尾。"
+        ),
     )
     response = _call_claude(prompt, config, max_tokens, purpose="greeting_review")
     return _parse_review_response(response)
@@ -441,10 +435,10 @@ def _generate_greeting_once(
     compact: bool = False,
     max_tokens: int | None = None,
     recent_openings: list[str] | None = None,
+    failure_feedback: list[str] | None = None,
 ) -> str | None:
     """Generate a single greeting attempt."""
     jd_limit = 250 if compact else 500
-    resume_limit = 800 if compact else 1500
     jd_summary = _truncate_prompt_text(clean_job_description(job.get("jd", "")), jd_limit) or "无详细描述"
     critique_section = f"\n## 补充改进要求\n- {critique}\n" if critique else ""
 
@@ -464,7 +458,7 @@ def _generate_greeting_once(
 
     prompt = GREETING_PROMPT.format(
         platform=_platform_label(job),
-        resume_summary=_truncate_prompt_text(resume_summary, resume_limit),
+        resume_summary=resume_summary,
         title=job["title"],
         company=job["company"],
         salary=job["salary"] or "面议",
@@ -484,6 +478,13 @@ def _generate_greeting_once(
             profile_cfg.get("greeting_preference", "") or "（无额外偏好）",
             500,
         ),
+        question_rule=(
+            "【本次必须不提问】全文只用陈述句，不用问号、反问或以吗/呢收尾；"
+            "不询问是否、能否、可否沟通，也不使用‘方便聊聊’式试探邀约。"
+            "说完应聘来意和真实经历即可结束，无需追加互动问题。"
+            if _has_no_question_preference(config)
+            else "是否提问依据用户偏好与沟通需要；可以自然陈述，也可以提出简短且与岗位相关的问题，不强制使用或禁止问句。"
+        ),
     )
 
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
@@ -491,12 +492,30 @@ def _generate_greeting_once(
     response = _call_claude(prompt, config, token_limit)
     greeting = _normalize_greeting_response(response)
     if greeting and _has_untrusted_greeting_url(greeting, resume_summary, config):
+        if failure_feedback is not None:
+            failure_feedback.append("上一稿包含来源未提供的网址；重新生成时删除这些网址，只使用已提供的真实信息。")
         _notify(
             config,
             f"{job['company']}｜{job['title']} 的招呼语包含未提供的网址，已拒绝并重试。",
         )
         return None
     return greeting
+
+
+def _has_no_question_preference(config: dict) -> bool:
+    preference = str(config.get("profile", {}).get("greeting_preference", ""))
+    # Only a clear global prohibition; e.g. “不主动询问薪资” is not a ban on all questions.
+    return bool(re.search(
+        r"(?:^|[，,。；;\s])(?:请)?(?:不要问问题|不要提问|不提问|不问问题|不用问句|不要问句)(?=$|[，,。；;！!\s])",
+        preference,
+    ))
+
+
+def _violates_no_question_preference(greeting: str, config: dict) -> bool:
+    if not _has_no_question_preference(config):
+        return False
+    sentences = re.split(r"[。！!\n]", greeting)
+    return any(re.search(r"[?？]|(?:吗|么|呢)[…\s]*$|是否|能否|可否|方便.{0,8}(?:聊聊|沟通)", sentence) for sentence in sentences)
 
 
 def _generate_with_token_retry(
@@ -506,11 +525,17 @@ def _generate_with_token_retry(
     critique: str = "",
     recent_openings: list[str] | None = None,
 ) -> str | None:
-    """Retry only request-size/output-limit failures without changing batch size."""
+    """Retry incomplete or rejected drafts with feedback, and handle token limits."""
+
+    failure_feedback: list[str] = []
+
+    def _retry_critique() -> str:
+        return "\n- ".join(part for part in [critique, *failure_feedback] if part)
 
     def _once_or_none(*args, **kwargs):
+        failure_feedback.clear()
         try:
-            return _generate_greeting_once(*args, **kwargs)
+            return _generate_greeting_once(*args, **kwargs, failure_feedback=failure_feedback)
         except AIRequestError as exc:
             # 空响应用保持"空结果"语义：转成 None 走既有的按配置重试与岗位级失败记录，
             # 不中断整批（#101 回归：整批暂停仅留给鉴权/额度/限流/网络等服务级故障）。
@@ -534,15 +559,17 @@ def _generate_with_token_retry(
         except (TypeError, ValueError):
             max_attempts = 2
         for attempt in range(2, max_attempts + 1):
+            retry_critique = _retry_critique()
+            reason = "招呼语包含未提供的网址" if failure_feedback else "未返回完整招呼语"
             _notify(
                 config,
-                f"{job['company']}｜{job['title']} 未返回完整招呼语，正在重试（{attempt}/{max_attempts}）。",
+                f"{job['company']}｜{job['title']} {reason}，正在重试（{attempt}/{max_attempts}）。",
             )
             result = _once_or_none(
                 job,
                 resume_summary,
                 config,
-                critique,
+                retry_critique,
                 recent_openings=recent_openings,
             )
             if result:
@@ -566,7 +593,7 @@ def _generate_with_token_retry(
             compact = False
             retry_max_tokens = 160
         elif exc.kind == "context_limit":
-            _notify(config, f"{job['company']}｜{job['title']} 内容较长，正在压缩后重试招呼语。")
+            _notify(config, f"{job['company']}｜{job['title']} 内容较长，保留完整简历、缩减辅助上下文后重试招呼语。")
             compact = True
             retry_max_tokens = 160
         else:
@@ -577,7 +604,7 @@ def _generate_with_token_retry(
             job,
             resume_summary,
             config,
-            critique,
+            _retry_critique(),
             compact=compact,
             max_tokens=retry_max_tokens,
             recent_openings=recent_openings,
@@ -592,36 +619,19 @@ def _generate_with_token_retry(
         raise
 
 
-def _review_with_token_retry(greeting: str, job: dict, config: dict) -> dict | None:
-    """Keep greeting review from interrupting the usable generated draft."""
-    try:
-        return _review_greeting(greeting, job, config)
-    except AIRequestError as exc:
-        if exc.kind == "output_truncated":
-            _notify(config, f"{job['company']}｜{job['title']} 的质量检查回答被截断，正在增大输出 Token 上限后重试。")
-            ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
-            try:
-                configured_tokens = int(ai_cfg.get("greeting_review_max_tokens", 4096) or 4096)
-            except (TypeError, ValueError):
-                configured_tokens = 4096
-            retry_max_tokens = min(
-                max(configured_tokens * 2, 600),
-                65536,
-            )
-        elif exc.kind == "output_limit":
-            _notify(config, f"{job['company']}｜{job['title']} 正在降低单次输出 Token 上限后重试质量检查。")
-            retry_max_tokens = 128
-        elif exc.kind == "context_limit":
-            return None
-        else:
-            raise
-
-    try:
-        return _review_greeting(greeting, job, config, retry_max_tokens)
-    except AIRequestError as retry_exc:
-        if retry_exc.kind in {"output_truncated", "output_limit", "context_limit"}:
-            return None
-        raise
+def greeting_config_error(config: dict) -> str:
+    profile = config.get("profile", {})
+    enabled = profile.get("ai_greeting_enabled", True)
+    fixed = profile.get("fixed_greeting", "")
+    if not isinstance(enabled, bool):
+        return "AI 招呼语开关必须为开启或关闭"
+    if not isinstance(fixed, str):
+        return "固定招呼语必须是文本"
+    if len(fixed.strip()) > 300:
+        return "固定招呼语不能超过300字"
+    if not enabled and not fixed.strip():
+        return "关闭 AI 招呼语后，请先填写固定招呼语"
+    return ""
 
 
 def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=None) -> int:
@@ -633,6 +643,15 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
     ``db_path`` lets web callers pin the runtime database; without it the
     module-level default (CWD-relative) is used for CLI compatibility.
     """
+    error = greeting_config_error(config)
+    if error:
+        config["_workbench_greeting_report"] = {
+            "generated_count": 0, "skipped_existing": 0, "failed_count": 0, "pause_reason": error,
+        }
+        _notify(config, error, error=True)
+        return 0
+    ai_enabled = config.get("profile", {}).get("ai_greeting_enabled", True)
+    fixed_greeting = config.get("profile", {}).get("fixed_greeting", "").strip()
     db = get_db(db_path)
     if job_ids is None:
         jobs = get_jobs_by_status(db, "approved")
@@ -660,6 +679,9 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
         if str(job.get("status") or "approved") not in GREETING_ALLOWED_STATUSES
     ]
     jobs = allowed_jobs
+    # A version choice resolves review, but does not authorize this batch to send it.
+    pending_review_ids = {str(job["id"]) for job in jobs if job.get("greeting_selection") == "pending"}
+    config["_workbench_pending_review_ids"] = pending_review_ids
 
     requested_count = len(jobs)
     force_regenerate = bool(config.get("_workbench_regenerate"))
@@ -705,8 +727,8 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
         db.close()
         return 0
 
-    resume_summary = _get_resume_summary(config)
-    if not resume_summary:
+    resume_summary = _get_resume_summary(config) if ai_enabled else ""
+    if ai_enabled and not resume_summary:
         console.print("[red]无法读取简历[/red]")
         # 缺简历属于服务级阻断：写入 pause_reason 让后台任务按零产出失败语义上报，
         # 而不是伪装成"完成，产出 0"。
@@ -719,14 +741,7 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
 
     ai_cfg = config.get("ai", {})
     review_threshold = ai_cfg.get("greeting_review_threshold", 7.0)
-    style_suggestions_enabled = ai_cfg.get("greeting_style_suggestions", True) is not False
-    auto_apply_style = style_suggestions_enabled and ai_cfg.get("greeting_auto_apply_style") is True
-    try:
-        max_iterations = max(0, int(ai_cfg.get("greeting_max_iterations", 2) or 0))
-    except (TypeError, ValueError):
-        max_iterations = 2
-    if not style_suggestions_enabled:
-        max_iterations = 0
+    style_suggestions_enabled = ai_enabled and ai_cfg.get("greeting_style_suggestions", False) is not False
 
     recent_rows = db.execute(
         """
@@ -768,146 +783,100 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
         for index, job in enumerate(jobs, start=1):
             if stop_event is not None and stop_event.is_set():
                 break
-            if job.get("greeting_reviewed_at") and str(job.get("greeting") or "").strip():
-                _notify(
-                    config,
-                    f"{job['company']}｜{job['title']} 的招呼语已人工确认，本轮不会覆盖。",
-                )
-                progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
-                continue
-            best_greeting = None
-            original_greeting = None
-            original_issues: list[str] = []
-            pause_after_current = ""
-
-            for iteration in range(max_iterations + 1):
-                if stop_event is not None and stop_event.is_set():
-                    break
-                critique = ""
-                if iteration > 0 and best_greeting:
-                    try:
-                        review = _review_with_token_retry(best_greeting, job, config)
-                    except OperationCancelled:
-                        cancelled = True
-                        break
-                    except AIRequestError as exc:
-                        if exc.kind == "empty_response":
-                            # 质量复核不可用≠生成失败：保留已生成草稿并继续后续岗位（#101 回归）。
-                            _notify(
-                                config,
-                                f"{job['company']}｜{job['title']} 的质量检查未返回内容，已保留可用招呼语并继续。",
-                            )
-                            break
-                        # str(exc) 带 kind/status_code，暂停原因可区分鉴权/限流/额度等类别（issue #101）。
-                        pause_after_current = str(exc)
-                        break
-                    style_issues = _greeting_style_issues(best_greeting, recent_openings)
-                    if best_greeting == original_greeting:
-                        original_issues = style_issues[:]
-                        if review and review.get("avg", 10) < review_threshold and review.get("critique"):
-                            original_issues.append(str(review["critique"]))
-                    if review is None and not style_issues:
-                        _notify(
-                            config,
-                            f"{job['company']}｜{job['title']} 的质量检查返回格式无法识别，已保留可用招呼语并继续。",
-                        )
-                        break
-                    if review and review.get("avg", 10) >= review_threshold and not style_issues:
-                        break
-                    critique_parts = style_issues[:]
-                    if review and review.get("critique"):
-                        critique_parts.append(str(review["critique"]))
-                    critique = "；".join(critique_parts)
-
-                try:
-                    greeting = _generate_with_token_retry(
-                        job,
-                        resume_summary,
+            activity_guard = config.get("_workbench_greeting_activity")
+            with activity_guard(job["id"], "generating") if callable(activity_guard) else nullcontext(True) as acquired:
+                if not acquired:
+                    config["_workbench_greeting_report"].setdefault("conflict_ids", []).append(str(job["id"]))
+                    progress.update(task, advance=1)
+                    continue
+                if callable(activity_guard):
+                    row = db.execute("SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL", (job["id"],)).fetchone()
+                    if row is None or row["status"] not in GREETING_ALLOWED_STATUSES:
+                        progress.update(task, advance=1)
+                        continue
+                    job = dict(row)
+                if job.get("greeting_reviewed_at") and str(job.get("greeting") or "").strip():
+                    config["_workbench_greeting_report"]["skipped_existing"] += 1
+                    _notify(
                         config,
-                        critique,
-                        recent_openings,
+                        f"{job['company']}｜{job['title']} 的招呼语已人工确认，本轮不会覆盖。",
+                    )
+                    progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
+                    continue
+                try:
+                    greeting = (
+                        _generate_with_token_retry(job, resume_summary, config, "", recent_openings)
+                        if ai_enabled else fixed_greeting
                     )
                 except OperationCancelled:
                     cancelled = True
                     break
                 except AIRequestError as exc:
-                    # str(exc) 带 kind/status_code，暂停原因可区分鉴权/限流/额度等类别（issue #101）。
-                    if best_greeting:
-                        pause_after_current = str(exc)
-                    else:
-                        pause_reason = str(exc)
+                    pause_reason = str(exc)
                     break
+
+                original_issues = []
+                if greeting and ai_enabled:
+                    original_issues = _greeting_style_issues(greeting, recent_openings)
+                    if len(greeting) > 300:
+                        original_issues.append("超过300字符，建议发送前精简；草稿已完整保留")
+                    if _violates_no_question_preference(greeting, config):
+                        original_issues.append("可能不符合你的‘不提问’偏好，请确认或编辑；草稿已保留")
+                    if style_suggestions_enabled:
+                        try:
+                            # Review is optional advice: one call, no rewrite or review retry.
+                            review = _review_greeting(greeting, job, config)
+                            if review is None:
+                                _notify(config, f"{job['company']}｜{job['title']} 的质量检查返回格式无法识别，已保留招呼语。")
+                            elif review.get("avg", 10) < review_threshold and review.get("critique"):
+                                original_issues.append(str(review["critique"]))
+                        except OperationCancelled:
+                            # Save the completed draft before honoring cancellation.
+                            cancelled = True
+                        except AIRequestError:
+                            style_suggestions_enabled = False
+                            _notify(config, "质量检查暂不可用，本批跳过后续检查；已生成内容照常保留，继续生成其他岗位。")
 
                 if not greeting:
-                    if not best_greeting:
-                        failed += 1
-                    break
+                    failed += 1
+                    if not pause_reason and not (stop_event is not None and stop_event.is_set()):
+                        add_history(db, job["id"], "greeting_failed", "AI 未返回完整招呼语，岗位保留为待生成")
+                        _notify(config, f"已跳过 {job['company']}｜{job['title']}：AI 未返回完整招呼语，岗位保留为待生成。")
+                    _report_job_progress(job, index)
+                    progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
+                    if pause_reason:
+                        break
+                    continue
 
-                best_greeting = greeting
-                if original_greeting is None:
-                    original_greeting = greeting
-                if max_iterations == 0:
-                    break
-
-            if cancelled or (stop_event is not None and stop_event.is_set()):
-                break
-            if not best_greeting:
-                if not pause_reason and not (stop_event is not None and stop_event.is_set()):
-                    add_history(db, job["id"], "greeting_failed", "AI 未返回完整招呼语，岗位保留为待生成")
-                    _notify(config, f"已跳过 {job['company']}｜{job['title']}：AI 未返回完整招呼语，岗位保留为待生成。")
-                _report_job_progress(job, index)
-                progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
-                if pause_reason:
-                    break
-                continue
-
-            original_greeting = original_greeting or best_greeting
-            optimized_greeting = (
-                best_greeting
-                if style_suggestions_enabled and best_greeting != original_greeting
-                else None
-            )
-            if optimized_greeting and not original_issues:
-                original_issues = ["AI 质量复核建议优化表达"]
-            if optimized_greeting and auto_apply_style:
-                selected_greeting = optimized_greeting
-                selection = "auto_optimized"
-            elif optimized_greeting:
-                selected_greeting = original_greeting
-                selection = "pending"
-            else:
-                selected_greeting = original_greeting
-                selection = "generated"
-            saved = save_generated_greeting_preview(
-                db,
-                job["id"],
-                original=original_greeting,
-                optimized=optimized_greeting,
-                style_issues=original_issues,
-                selected_greeting=selected_greeting,
-                selection=selection,
-                expected_greeting=str(job.get("greeting") or ""),
-                expected_status=str(job.get("status") or "approved"),
-            )
-            if not saved:
-                config["_workbench_greeting_report"].setdefault("conflict_ids", []).append(str(job["id"]))
-                _report_job_progress(job, index)
-                _notify(
-                    config,
-                    f"{job['company']}｜{job['title']} 的状态或招呼语已变化，生成结果未覆盖现有招呼语。",
+                saved = save_generated_greeting_preview(
+                    db,
+                    job["id"],
+                    original=greeting,
+                    optimized=None,
+                    style_issues=original_issues,
+                    selected_greeting=greeting,
+                    selection="generated",
+                    expected_greeting=str(job.get("greeting") or ""),
+                    expected_status=str(job.get("status") or "approved"),
                 )
+                if not saved:
+                    config["_workbench_greeting_report"].setdefault("conflict_ids", []).append(str(job["id"]))
+                    _report_job_progress(job, index)
+                    _notify(
+                        config,
+                        f"{job['company']}｜{job['title']} 的状态或招呼语已变化，生成结果未覆盖现有招呼语。",
+                    )
+                    progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
+                    continue
+                opening = _opening_signature(greeting)
+                if opening:
+                    recent_openings.append(opening)
+                count += 1
+                _report_job_progress(job, index)
                 progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
-                continue
-            opening = _opening_signature(selected_greeting)
-            if opening:
-                recent_openings.append(opening)
-            count += 1
-            _report_job_progress(job, index)
-            progress.update(task, advance=1, description=f"生成招呼语 ({index}/{len(jobs)})")
 
-            if pause_after_current:
-                pause_reason = pause_after_current
-                break
+                if cancelled or (stop_event is not None and stop_event.is_set()):
+                    break
 
     db.close()
     if pause_reason:

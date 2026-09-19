@@ -89,6 +89,7 @@ from bosshunter.scoring_run_store import (
 	update_scoring_run,
 )
 from bosshunter.scoring_selection import preview_scoring, select_scoring_jobs, validate_options
+from bosshunter.web.greeting_activity import GreetingActivityRegistry
 from bosshunter.web.preflight import check_ai_connection, collect_preflight_checks, error_messages
 from bosshunter.web.resume_info import (
 	build_resume_info_payload,
@@ -120,6 +121,7 @@ mimetypes.add_type("text/css", ".css", strict=True)
 app = Bottle()
 task_runner = WorkbenchTaskRunner()
 job_mutation_lock = Lock()
+greeting_activity = GreetingActivityRegistry()
 
 
 def _is_loopback_address(value: str) -> bool:
@@ -229,6 +231,7 @@ def _serialize_history_items(items):
 def _serialize_job(item):
 	"""Expose greeting style issues as a list while retaining DB compatibility."""
 	record = dict(item)
+	record["greeting_activity"] = greeting_activity.get(str(record.get("id") or ""))
 	raw_issues = record.get("greeting_style_issues")
 	if isinstance(raw_issues, str):
 		try:
@@ -358,6 +361,10 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 			if not full_options.get("platform_order"):
 				messages.append("运行全流程至少需要选择一个采集平台。")
 
+	if mode == "full":
+		from bosshunter.ai.greeter import greeting_config_error
+		if error := greeting_config_error(config):
+			messages.append(error)
 	if mode in {"full", "rescore"} and not get_ai_api_key(config):
 		messages.append("请先在配置页填写当前 AI 服务的 API Key，或设置对应的标准环境变量。")
 
@@ -366,6 +373,7 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 
 def _task_config(extra: dict | None = None) -> dict:
 	config = load_config(CONFIG_PATH)
+	config["_workbench_live_greeting_settings"] = True
 	if extra:
 		config.update(extra)
 	return config
@@ -861,13 +869,30 @@ def _wait_for_collection_delivery_cooldown(task: WorkbenchTask, config: dict) ->
 	return False
 
 
+def _refresh_greeting_settings(config: dict) -> dict:
+	"""Apply saved greeting preferences at the next batch, even in a long-running monitor."""
+	config = dict(config)
+	if config.get("_workbench_live_greeting_settings"):
+		latest = load_config(CONFIG_PATH)
+		for section, fields in {
+			"profile": ("ai_greeting_enabled", "fixed_greeting", "greeting_preference"),
+			"ai": ("greeting_style_suggestions",),
+		}.items():
+			config[section] = {**config.get(section, {})}
+			for field in fields:
+				if field in latest.get(section, {}):
+					config[section][field] = latest[section][field]
+	return config
+
+
 def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.ai.greeter import generate_greetings
 	from bosshunter.executor.sender import send_greetings
 
-	config = dict(config)
+	config = _refresh_greeting_settings(config)
 	config["_workbench_stop_event"] = task.stop_requested
 	config["_workbench_log"] = lambda message: _log(task, message)
+	config["_workbench_greeting_activity"] = greeting_activity.claim
 	selected_job_ids = [str(job_id) for job_id in config.get("_workbench_job_ids", []) if str(job_id)]
 	if not config.get("_workbench_skip_greeting"):
 		_log(task, "生成招呼语")
@@ -937,15 +962,18 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 
 
 def _execute_greet(task: WorkbenchTask, config: dict) -> None:
-	from bosshunter.ai.greeter import _get_resume_summary, generate_greetings
+	from bosshunter.ai.greeter import _get_resume_summary, generate_greetings, greeting_config_error
 
-	config = dict(config)
+	config = _refresh_greeting_settings(config)
 	config["_workbench_stop_event"] = task.stop_requested
 	config["_workbench_log"] = lambda message: _log(task, message)
+	config["_workbench_greeting_activity"] = greeting_activity.claim
 	selected_job_ids = [str(job_id) for job_id in config.get("_workbench_job_ids", []) if str(job_id)]
 	# 启动前预检简历：缺简历属于配置阻断，直接让任务失败并携带原因，
 	# 而不是进入生成流程后静默返回 0、被误报为 completed。
-	if not _get_resume_summary(config):
+	if error := greeting_config_error(config):
+		raise ValueError(error)
+	if config.get("profile", {}).get("ai_greeting_enabled", True) and not _get_resume_summary(config):
 		_log(task, "无法读取简历，任务未启动：请先在配置面板上传简历后重试")
 		raise RuntimeError("无法读取简历：请先在配置面板上传简历后重试")
 	if not selected_job_ids:
@@ -1700,7 +1728,7 @@ def api_workbench_task_start():
 			base_config["platforms"] = platform_configs
 			before_start = lambda: _write_config(base_config)
 		with job_mutation_lock:
-			task = task_runner.start(mode, {**base_config, **extra}, before_start=before_start)
+			task = task_runner.start(mode, {**base_config, **extra, "_workbench_live_greeting_settings": True}, before_start=before_start)
 		return _json_response(task)
 	except TaskAlreadyRunningError as e:
 		return _json_response({"error": str(e)}, 409)
@@ -1743,6 +1771,10 @@ def api_workbench_deliver():
 		if not job_ids:
 			return _json_response({"error": "请选择要投递的岗位"}, 400)
 		direct_send = bool(body.get("direct_send"))
+		if not direct_send:
+			from bosshunter.ai.greeter import greeting_config_error
+			if error := greeting_config_error(load_config(CONFIG_PATH)):
+				return _json_response({"error": error}, 400)
 		with job_mutation_lock:
 			validation_db = _get_web_db()
 			try:
@@ -1961,6 +1993,9 @@ def api_workbench_generate_greetings():
 		job_ids = [str(job_id) for job_id in body.get("job_ids", []) if str(job_id)]
 		if not job_ids:
 			return _json_response({"error": "请选择要生成招呼语的岗位"}, 400)
+		from bosshunter.ai.greeter import greeting_config_error
+		if error := greeting_config_error(load_config(CONFIG_PATH)):
+			return _json_response({"error": error}, 400)
 
 		with job_mutation_lock:
 			db = _get_web_db()
@@ -2002,15 +2037,13 @@ def api_workbench_generate_greetings():
 		return _json_response({"error": str(e)}, 500)
 
 
-def _greeting_edit_blocked_response():
-	"""Called under job_mutation_lock, also held by every web task start."""
-	active = task_runner.status().get("active")
-	if active and active.get("mode") in {"greet", "deliver", "full", "monitor"}:
-		return _json_response({
-			"error": f"「{active.get('label') or active.get('mode')}」任务运行中，请等待结束后再编辑招呼语",
-			"code": "greeting_edit_busy",
-		}, 409)
-	return None
+def _greeting_edit_blocked_response(job_id):
+	activity = greeting_activity.get(job_id)
+	label = {"generating": "正在生成", "sending": "正在发送", "editing": "正在保存"}.get(activity, "正在处理")
+	return _json_response({
+		"error": f"这条招呼语{label}，请稍后重试；其他岗位仍可选择和编辑",
+		"code": "greeting_edit_busy",
+	}, 409)
 
 
 @app.route("/api/jobs/<job_id>/greeting", method="POST")
@@ -2027,14 +2060,10 @@ def api_job_update_greeting(job_id):
 		if body.get("confirmed") is not True:
 			return _json_response({"error": "保存招呼语需要 confirmed=true"}, 400)
 
-		# 投递/生成/监测任务运行期间禁止编辑：发送器与生成器持有岗位和招呼语快照，
-		# 期间改写会导致平台发出旧文本而库里保存新文本（状态 CAS 防不住这类竞争）。
-		# 检查必须在 job_mutation_lock 内进行：任务启动（task_runner.start）持同一把锁，
-		# 否则检查与编辑之间仍可能插入新的投递任务（Codex 审计指出的竞争窗口）。
-		with job_mutation_lock:
-			blocked = _greeting_edit_blocked_response()
-			if blocked is not None:
-				return blocked
+		# 编辑和后台读取文案共用单岗位占用，避免发送旧快照；不锁住其他岗位。
+		with job_mutation_lock, greeting_activity.claim(job_id, "editing") as acquired:
+			if not acquired:
+				return _greeting_edit_blocked_response(job_id)
 
 			db = _get_web_db()
 			try:
@@ -2078,10 +2107,9 @@ def api_job_greeting_selection(job_id):
 	body = request.json or {}
 	db = _get_web_db()
 	try:
-		with job_mutation_lock:
-			blocked = _greeting_edit_blocked_response()
-			if blocked is not None:
-				return blocked
+		with job_mutation_lock, greeting_activity.claim(job_id, "editing") as acquired:
+			if not acquired:
+				return _greeting_edit_blocked_response(job_id)
 			updated = select_job_greeting(
 				db,
 				job_id,
@@ -2485,6 +2513,10 @@ def api_config_post():
 		profile = data.get("profile", {})
 		if profile.get("salary_min", 0) > profile.get("salary_max", 0) and profile.get("salary_max", 0) > 0:
 			return _json_response({"error": "salary_min must be <= salary_max"}, 400)
+
+		from bosshunter.ai.greeter import greeting_config_error
+		if error := greeting_config_error(data):
+			return _json_response({"error": error}, 400)
 
 		# Write YAML (backend exclusively owns YAML serialization)
 		_write_config(data)

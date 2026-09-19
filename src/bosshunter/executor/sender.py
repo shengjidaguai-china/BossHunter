@@ -1,6 +1,7 @@
 """Sender module - Auto-send greetings with throttle control."""
 
 import time
+from contextlib import nullcontext
 import json
 from threading import Event
 from urllib.parse import urljoin
@@ -1080,6 +1081,9 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         return 0
 
     jobs = get_jobs_ready_to_send(db)
+    # Review choices made during generation require a separate send confirmation.
+    pending_review_ids = config.get("_workbench_pending_review_ids", set())
+    jobs = [job for job in jobs if str(job["id"]) not in pending_review_ids]
     if workbench_job_ids:
         jobs = [job for job in jobs if str(job["id"]) in workbench_job_ids]
     unsupported_jobs = [
@@ -1149,15 +1153,6 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                 send_report["stop_reason"] = "stopped"
                 break
 
-            greeting = job.get("greeting", "")
-            if not greeting:
-                update_job_status(db, job["id"], "error")
-                update_job_last_error(db, job["id"], "该岗位没有已生成的招呼语，无法发送", "no_greeting")
-                send_report["attempted_count"] += 1
-                send_report["failed_count"] += 1
-                progress.update(task, advance=1)
-                continue
-
             current_job = f"{job.get('company') or '公司未知'}｜{job.get('title') or '职位未知'}"
             next_job = jobs_to_send[index + 1] if index + 1 < len(jobs_to_send) else None
             next_label = (
@@ -1177,93 +1172,113 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     send_report["stop_reason"] = "stopped"
                     break
 
-            if callable(workbench_log):
-                workbench_log(
-                    f"招呼语进度 {index + 1}/{len(jobs_to_send)}\n正在发送：{current_job}\n{next_label}"
-                )
-            progress.update(task, description=f"发送: {job['company'][:10]} - {job['title'][:15]}")
+            activity_guard = config.get("_workbench_greeting_activity")
+            with activity_guard(job["id"], "sending") if callable(activity_guard) else nullcontext(True) as acquired:
+                if not acquired:
+                    progress.update(task, advance=1)
+                    continue
+                if callable(activity_guard):
+                    row = db.execute("SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL", (job["id"],)).fetchone()
+                    if row is None or row["status"] not in {"ready", "approved"} or row["greeting_selection"] == "pending":
+                        progress.update(task, advance=1)
+                        continue
+                    job = dict(row)
+                greeting = job.get("greeting", "")
+                if not greeting:
+                    update_job_status(db, job["id"], "error")
+                    update_job_last_error(db, job["id"], "该岗位没有已生成的招呼语，无法发送", "no_greeting")
+                    send_report["attempted_count"] += 1
+                    send_report["failed_count"] += 1
+                    progress.update(task, advance=1)
+                    continue
 
-            result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
-            if result_data.get("error") == "stopped":
-                send_report["stop_reason"] = "stopped"
-                break
-            if result_data.get("error") == "no_chat_input" and failed_target_id:
-                console.print("[yellow]    ! 未进入具体聊天会话，重新打开岗位页再试一次[/yellow]")
-                close_tab(failed_target_id)
+                if callable(workbench_log):
+                    workbench_log(
+                        f"招呼语进度 {index + 1}/{len(jobs_to_send)}\n正在发送：{current_job}\n{next_label}"
+                    )
+                progress.update(task, description=f"发送: {job['company'][:10]} - {job['title'][:15]}")
+
                 result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
                 if result_data.get("error") == "stopped":
                     send_report["stop_reason"] = "stopped"
                     break
-
-            send_report["attempted_count"] += 1
-
-            if not result_data.get("success"):
-                console.print(f"[yellow]    ! 发送失败，已记录并关闭任务页面: {result_data.get('error', 'unknown')}[/yellow]")
-                if failed_target_id:
+                if result_data.get("error") == "no_chat_input" and failed_target_id:
+                    console.print("[yellow]    ! 未进入具体聊天会话，重新打开岗位页再试一次[/yellow]")
                     close_tab(failed_target_id)
-                    failed_target_id = None
-
-            if result_data.get("success"):
-                throttle.mark()
-                update_job_status(db, job["id"], "sent")
-                update_job_last_error(db, job["id"], "")
-                add_history(db, job["id"], "sent", greeting[:50])
-                sent_count += 1
-                send_report["sent_count"] = sent_count
-                backoff.record_success()
-            else:
-                error = result_data.get("error", "unknown")
-                if error in {"daily_platform_page_limit", "persistent_risk_lock"}:
-                    send_report["stop_reason"] = error
-                    console.print("[yellow]为了账户安全，已达到平台页面访问上限或仍处于风险冷却，停止投递[/yellow]")
-                    break
-                send_report["failed_count"] += 1
-                history_detail = result_data.get("history_detail", f"发送失败: {error}")
-                update_job_status(db, job["id"], "error")
-                update_job_last_error(db, job["id"], history_detail, error)
-                add_history(db, job["id"], "error", history_detail)
-                if result_data.get("skip_backoff"):
-                    progress.update(task, advance=1)
-                    continue
-
-                throttle.mark()
-
-                # Progressive backoff on errors
-                pause_duration = backoff.record_error()
-                add_risk_event(db, "send_error", f"{error} (连续{backoff._consecutive_errors}次)")
-
-                # If we encounter rate limiting, stop immediately
-                if error in ["captcha", "rate_limit", "blocked"]:
-                    console.print(f"\n[red]⚠ 检测到风控信号: {error}，安全暂停[/red]")
-                    add_risk_event(db, error, f"触发风控: {error}")
-                    lock_minutes = config.get("safety", {}).get("risk_lock_minutes", 10)
-                    try:
-                        lock_minutes = max(int(lock_minutes), 1)
-                    except (TypeError, ValueError):
-                        lock_minutes = 10
-                    set_platform_safety_lock(db, error, minutes=lock_minutes)
-                    send_report["stop_reason"] = error
-                    break
-
-                # If too many consecutive errors, pause
-                if backoff.should_pause_long:
-                    console.print(f"\n[red]⚠ 连续错误过多，暂停 {int(pause_duration/60)} 分钟[/red]")
-                    add_risk_event(db, "backoff_pause", f"暂停{int(pause_duration)}秒")
-                    lock_minutes = config.get("safety", {}).get("risk_lock_minutes", 10)
-                    try:
-                        lock_minutes = max(int(lock_minutes), 1)
-                    except (TypeError, ValueError):
-                        lock_minutes = 10
-                    set_platform_safety_lock(db, "consecutive_errors", minutes=lock_minutes)
-                    send_report["stop_reason"] = "consecutive_errors"
-                    break
-                elif pause_duration > 0:
-                    console.print(f"\n[yellow]  错误退避: 额外等待 {int(pause_duration)}秒[/yellow]")
-                    if _sleep_or_stop(pause_duration, stop_event):
+                    result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
+                    if result_data.get("error") == "stopped":
                         send_report["stop_reason"] = "stopped"
                         break
 
-            progress.update(task, advance=1)
+                send_report["attempted_count"] += 1
+
+                if not result_data.get("success"):
+                    console.print(f"[yellow]    ! 发送失败，已记录并关闭任务页面: {result_data.get('error', 'unknown')}[/yellow]")
+                    if failed_target_id:
+                        close_tab(failed_target_id)
+                        failed_target_id = None
+
+                if result_data.get("success"):
+                    throttle.mark()
+                    update_job_status(db, job["id"], "sent")
+                    update_job_last_error(db, job["id"], "")
+                    add_history(db, job["id"], "sent", greeting[:50])
+                    sent_count += 1
+                    send_report["sent_count"] = sent_count
+                    backoff.record_success()
+                else:
+                    error = result_data.get("error", "unknown")
+                    if error in {"daily_platform_page_limit", "persistent_risk_lock"}:
+                        send_report["stop_reason"] = error
+                        console.print("[yellow]为了账户安全，已达到平台页面访问上限或仍处于风险冷却，停止投递[/yellow]")
+                        break
+                    send_report["failed_count"] += 1
+                    history_detail = result_data.get("history_detail", f"发送失败: {error}")
+                    update_job_status(db, job["id"], "error")
+                    update_job_last_error(db, job["id"], history_detail, error)
+                    add_history(db, job["id"], "error", history_detail)
+                    if result_data.get("skip_backoff"):
+                        progress.update(task, advance=1)
+                        continue
+
+                    throttle.mark()
+
+                    # Progressive backoff on errors
+                    pause_duration = backoff.record_error()
+                    add_risk_event(db, "send_error", f"{error} (连续{backoff._consecutive_errors}次)")
+
+                    # If we encounter rate limiting, stop immediately
+                    if error in ["captcha", "rate_limit", "blocked"]:
+                        console.print(f"\n[red]⚠ 检测到风控信号: {error}，安全暂停[/red]")
+                        add_risk_event(db, error, f"触发风控: {error}")
+                        lock_minutes = config.get("safety", {}).get("risk_lock_minutes", 10)
+                        try:
+                            lock_minutes = max(int(lock_minutes), 1)
+                        except (TypeError, ValueError):
+                            lock_minutes = 10
+                        set_platform_safety_lock(db, error, minutes=lock_minutes)
+                        send_report["stop_reason"] = error
+                        break
+
+                    # If too many consecutive errors, pause
+                    if backoff.should_pause_long:
+                        console.print(f"\n[red]⚠ 连续错误过多，暂停 {int(pause_duration/60)} 分钟[/red]")
+                        add_risk_event(db, "backoff_pause", f"暂停{int(pause_duration)}秒")
+                        lock_minutes = config.get("safety", {}).get("risk_lock_minutes", 10)
+                        try:
+                            lock_minutes = max(int(lock_minutes), 1)
+                        except (TypeError, ValueError):
+                            lock_minutes = 10
+                        set_platform_safety_lock(db, "consecutive_errors", minutes=lock_minutes)
+                        send_report["stop_reason"] = "consecutive_errors"
+                        break
+                    elif pause_duration > 0:
+                        console.print(f"\n[yellow]  错误退避: 额外等待 {int(pause_duration)}秒[/yellow]")
+                        if _sleep_or_stop(pause_duration, stop_event):
+                            send_report["stop_reason"] = "stopped"
+                            break
+
+                progress.update(task, advance=1)
 
     console.print(f"\n[green]✓ 成功发送 {sent_count} 条[/green]")
     report_total = len(workbench_job_ids) if workbench_job_ids else len(jobs)

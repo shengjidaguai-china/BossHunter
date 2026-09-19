@@ -135,6 +135,27 @@ class WebApiRouteTests(unittest.TestCase):
                 close()
         return status_headers["status"], status_headers["headers"], body
 
+    def test_fixed_greeting_settings_validate_and_persist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            server._write_config({"profile": {"greeting_preference": "不要问问题"}})
+            before = server.CONFIG_PATH.read_bytes()
+            for fixed in ("", "   ", "字" * 301, 123):
+                status, _, body = self._request("/api/config", "POST", {
+                    "profile": {"ai_greeting_enabled": False, "fixed_greeting": fixed},
+                })
+                self.assertTrue(status.startswith("400"), body)
+                self.assertEqual(server.CONFIG_PATH.read_bytes(), before)
+            status, _, body = self._request("/api/config", "POST", {
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "您好，我想了解这个岗位。", "greeting_preference": "不要问问题"},
+            })
+            self.assertTrue(status.startswith("200"), body)
+            status, _, body = self._request("/api/config")
+            profile = json.loads(body)["profile"]
+            self.assertFalse(profile["ai_greeting_enabled"])
+            self.assertEqual(profile["fixed_greeting"], "您好，我想了解这个岗位。")
+            self.assertEqual(profile["greeting_preference"], "不要问问题")
+
     def test_model_list_uses_draft_settings_and_preserves_saved_config(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
             server.set_base_dir(Path(tmp))
@@ -2598,8 +2619,8 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("400"), body)
         self.assertIn("生成打招呼用语", payload["error"])
 
-    def test_greeting_edit_blocked_while_delivery_task_active(self):
-        # Codex 审计 P2 回归：投递任务运行期间编辑招呼语必须 409，防止平台发旧文本、库里存新文本。
+    def test_greeting_edit_blocked_only_for_job_being_sent(self):
+        # Sending holds only this job until its final database status is recorded.
         active_task = WorkbenchTask(id="active-delivery", mode="deliver", label="确认投递")
         runner = WorkbenchTaskRunner()
         runner._tasks[active_task.id] = active_task
@@ -2615,7 +2636,7 @@ class WebApiRouteTests(unittest.TestCase):
                 db.close()
             server.set_base_dir(base_dir)
 
-            with patch.object(server, "task_runner", runner):
+            with patch.object(server, "task_runner", runner), server.greeting_activity.claim("edit-busy", "sending"):
                 status, _, body = self._request(
                     "/api/jobs/edit-busy/greeting",
                     method="POST",
@@ -2635,8 +2656,8 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["code"], "greeting_edit_busy")
         self.assertEqual(row["greeting"], "原招呼语")
 
-    def test_greeting_edit_blocked_while_monitor_task_active(self):
-        # Codex 审计 P2 回归：monitor 任务内部也会发送，编辑拦截集合必须覆盖 monitor。
+    def test_greeting_edit_allowed_while_monitor_task_active(self):
+        # An idle monitor owns no greeting snapshot and must not block review.
         active_task = WorkbenchTask(id="active-monitor", mode="monitor", label="单独监测")
         runner = WorkbenchTaskRunner()
         runner._tasks[active_task.id] = active_task
@@ -2660,8 +2681,8 @@ class WebApiRouteTests(unittest.TestCase):
                 )
 
         payload = json.loads(body)
-        self.assertTrue(status.startswith("409"), body)
-        self.assertEqual(payload["code"], "greeting_edit_busy")
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["greeting"], "监测期间的新文本")
 
     def test_full_flow_does_not_auto_send_ready_drafts_without_confirmation(self):
         # Codex 审计 P1 回归：只生成过草稿（ready）未经确认，全流程启动不得自动发送积压。
@@ -4176,7 +4197,7 @@ class WebApiRouteTests(unittest.TestCase):
                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
                 patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
             ):
-                send_greetings({"_workbench_log": edit_during_send, "throttle": {"daily_limit": 10}})
+                send_greetings({"_workbench_log": edit_during_send, "_workbench_greeting_activity": server.greeting_activity.claim, "throttle": {"daily_limit": 10}})
             db = get_db(db_path)
             try:
                 row = db.execute("SELECT greeting, status FROM jobs WHERE id = 'send-snapshot'").fetchone()
@@ -4187,6 +4208,160 @@ class WebApiRouteTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM history WHERE action = 'greeting_selected'").fetchone()[0], 0)
             finally:
                 db.close()
+
+    def test_send_allows_other_job_edits_and_reads_latest_text_after_throttle(self):
+        from bosshunter.executor.sender import send_greetings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db_path = base_dir / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            for index, job_id in enumerate(["first", "next", "review-only"]):
+                insert_job(db, _job(job_id))
+                update_job_greeting(db, job_id, "原文" + job_id)
+                update_job_status(db, job_id, "ready")
+                update_job_score(db, job_id, 90 - index, "test")
+            db.execute("UPDATE jobs SET greeting_selection = 'pending' WHERE id = 'review-only'")
+            db.commit()
+            db.close()
+            server.set_base_dir(base_dir)
+            sent = []
+
+            def edit(job_id, text):
+                return self._request(
+                    f"/api/jobs/{job_id}/greeting-selection", method="POST",
+                    json_body={"selection": "edited", "greeting": text, "confirmed": True},
+                )
+
+            def fake_send(job, greeting, config):
+                sent.append((job["id"], greeting))
+                self.assertEqual(server.greeting_activity.get(job["id"]), "sending")
+                status, _, body = edit(job["id"], "不能改正在发送的这条")
+                self.assertTrue(status.startswith("409"), body)
+                if job["id"] == "first":
+                    status, _, body = edit("review-only", "只确认版本，不发送")
+                    self.assertTrue(status.startswith("200"), body)
+                return {"success": True}, None
+
+            def during_wait(stop_event):
+                self.assertIsNone(server.greeting_activity.get("next"))
+                status, _, body = edit("next", "发送前最新确认的文字")
+                self.assertTrue(status.startswith("200"), body)
+                return False
+
+            with (
+                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
+                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
+                patch("bosshunter.executor.sender.RequestThrottle.wait", side_effect=during_wait),
+                patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
+            ):
+                count = send_greetings({
+                    "_workbench_greeting_activity": server.greeting_activity.claim,
+                    "throttle": {"daily_limit": 10},
+                }, db_path=db_path)
+            self.assertEqual(count, 2)
+            self.assertEqual(sent, [("first", "原文first"), ("next", "发送前最新确认的文字")])
+            self.assertIsNone(server.greeting_activity.get("first"))
+            self.assertIsNone(server.greeting_activity.get("next"))
+            db = get_db(db_path)
+            try:
+                row = db.execute("SELECT status, greeting FROM jobs WHERE id = 'review-only'").fetchone()
+                self.assertEqual(dict(row), {"status": "ready", "greeting": "只确认版本，不发送"})
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM history WHERE job_id = 'review-only' AND action = 'sent'").fetchone()[0], 0)
+            finally:
+                db.close()
+
+    def test_generation_locks_only_current_job_and_preserves_new_manual_choice(self):
+        from bosshunter.ai.greeter import generate_greetings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db_path = base_dir / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            for index, job_id in enumerate(["generating-first", "generating-next"]):
+                insert_job(db, _job(job_id))
+                update_job_greeting(db, job_id, "旧草稿")
+                update_job_status(db, job_id, "ready")
+                update_job_score(db, job_id, 90 - index, "test")
+            db.close()
+            server.set_base_dir(base_dir)
+
+            def fake_generate(job, *args):
+                self.assertEqual(job["id"], "generating-first")
+                status, _, body = self._request("/api/jobs/generating-first")
+                self.assertEqual(json.loads(body)["greeting_activity"], "generating")
+                for job_id, expected in [("generating-first", "409"), ("generating-next", "200")]:
+                    status, _, body = self._request(
+                        f"/api/jobs/{job_id}/greeting-selection", method="POST",
+                        json_body={"selection": "edited", "greeting": "用户已确认的版本", "confirmed": True},
+                    )
+                    self.assertTrue(status.startswith(expected), body)
+                return "新生成的第一条"
+
+            config = {
+                "_workbench_greeting_activity": server.greeting_activity.claim,
+                "_workbench_regenerate": True,
+                "ai": {"greeting_max_iterations": 0},
+            }
+            with (
+                patch("bosshunter.ai.greeter._get_resume_summary", return_value="测试简历"),
+                patch("bosshunter.ai.greeter._generate_with_token_retry", side_effect=fake_generate) as generate,
+            ):
+                count = generate_greetings(config, job_ids=["generating-first", "generating-next"], db_path=db_path)
+            self.assertEqual(count, 1)
+            self.assertEqual(generate.call_count, 1)
+            self.assertEqual(config["_workbench_greeting_report"]["skipped_existing"], 1)
+            self.assertIsNone(server.greeting_activity.get("generating-first"))
+            self.assertIsNone(server.greeting_activity.get("generating-next"))
+            db = get_db(db_path)
+            try:
+                row = db.execute("SELECT greeting, greeting_reviewed_at FROM jobs WHERE id = 'generating-next'").fetchone()
+                self.assertEqual(row["greeting"], "用户已确认的版本")
+                self.assertIsNotNone(row["greeting_reviewed_at"])
+            finally:
+                db.close()
+
+    def test_review_choice_between_generation_and_send_does_not_auto_send(self):
+        from bosshunter.ai.greeter import generate_greetings
+        from bosshunter.executor.sender import send_greetings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db_path = base_dir / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            insert_job(db, _job("choose-only"))
+            update_job_status(db, "choose-only", "approved")
+            save_generated_greeting_preview(db, 'choose-only', original='原稿', optimized='优化稿', style_issues=['建议'], selected_greeting='原稿', selection='pending')
+            db.close()
+            server.set_base_dir(base_dir)
+            config = {
+                "_workbench_greeting_activity": server.greeting_activity.claim,
+                "_workbench_job_ids": ["choose-only"],
+                "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1},
+                "throttle": {"daily_limit": 10},
+            }
+            with (
+                patch("bosshunter.ai.greeter._get_resume_summary", return_value="测试简历"),
+                patch("bosshunter.ai.greeter._generate_with_token_retry", side_effect=["原稿", "优化稿"]),
+                patch("bosshunter.ai.greeter._review_greeting", return_value={"avg": 1, "critique": "调整措辞"}),
+            ):
+                self.assertEqual(generate_greetings(config, job_ids=["choose-only"], db_path=db_path), 0)
+            status, _, body = self._request(
+                "/api/jobs/choose-only/greeting-selection", method="POST",
+                json_body={"selection": "optimized", "confirmed": True},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            with (
+                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
+                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
+                patch("bosshunter.executor.sender._send_greeting_once", return_value=({"success": True}, None)) as send,
+            ):
+                self.assertEqual(send_greetings(config, db_path=db_path), 0)
+                send.assert_not_called()
+                # A later, separate send action has a fresh config and may send the saved choice.
+                send_config = {"_workbench_job_ids": ["choose-only"], "_workbench_greeting_activity": server.greeting_activity.claim}
+                self.assertEqual(send_greetings(send_config, db_path=db_path), 1)
+                self.assertEqual(send.call_args.args[1], "优化稿")
 
     def test_detail_edit_confirms_preview_and_cannot_be_regenerated(self):
         with tempfile.TemporaryDirectory() as tmp:

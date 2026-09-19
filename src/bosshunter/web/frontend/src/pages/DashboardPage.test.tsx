@@ -72,10 +72,10 @@ describe('DashboardPage workbench task panel', () => {
       }),
     })
     render(<DashboardPage view="workbench" />)
-    expect(await screen.findByText('生成招呼语 (2/3)：字节跳动｜后端工程师')).toBeTruthy()
+    expect(within(await screen.findByLabelText('任务状态摘要')).getByText('生成招呼语 (2/3)：字节跳动｜后端工程师')).toBeTruthy()
   })
 
-  it('shows the latest greeting queue progress directly and preserves line breaks', async () => {
+  it('shows the latest queue summary and preserves full progress in expandable details', async () => {
     const latestProgress = '招呼语进度：2/3\n成功 1，失败 1，待处理 1'
     workbenchPayload = baseWorkbench({
       task: buildTask({
@@ -85,8 +85,10 @@ describe('DashboardPage workbench task panel', () => {
       }),
     })
     render(<DashboardPage view="workbench" />)
-    const progress = await screen.findByText(latestProgress, { normalizer: text => text })
-    expect(screen.getByText('任务运行状态')).toBeTruthy()
+    const summary = await screen.findByLabelText('任务状态摘要')
+    expect(within(summary).getByText('招呼语进度：2/3')).toBeTruthy()
+    fireEvent.click(screen.getByText('任务详情'))
+    const progress = screen.getByText(latestProgress, { normalizer: text => text })
     expect(progress.textContent).toBe(latestProgress)
     expect(progress.classList.contains('whitespace-pre-line')).toBe(true)
     expect(progress.closest('details:not([open]), [hidden], [aria-hidden="true"]')).toBeNull()
@@ -215,6 +217,44 @@ describe('DashboardPage workbench task panel', () => {
     fireEvent.click(screen.getByRole('button', { name: '收起招呼语：测试公司｜测试岗位' }))
     expect(screen.queryByText('优化候选')).toBeNull()
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  })
+
+  it.each(['full', 'monitor', 'greet', 'deliver'] as const)('allows version selection during an unrelated %s task without stopping or sending', async (mode) => {
+    const job = {
+      id: 'editable-preview', company: '测试公司', title: '测试岗位', status: 'ready',
+      greeting: '待确认原文', greeting_original: '待确认原文',
+      greeting_optimized: '优化候选', greeting_selection: 'pending',
+    }
+    workbenchPayload = baseWorkbench({ task: buildTask({ mode }), pending_greetings: [job] })
+    render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：测试公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '保留原文' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '手动编辑' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '采用优化版' }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').length).toBe(1))
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
+    expect(String(posts[0][0])).toBe('/api/jobs/editable-preview/greeting-selection')
+    expect(JSON.parse(String(posts[0][1]?.body))).toEqual({ selection: 'optimized', greeting: '', confirmed: true })
+    expect(screen.queryByRole('button', { name: '停止任务后选择' })).toBeNull()
+  })
+
+  it.each(['sending', 'generating'] as const)('locks only the greeting currently %s and explains why', async (activity) => {
+    const job = {
+      id: 'busy-preview', company: '当前公司', title: '测试岗位', status: 'ready',
+      greeting: '原文', greeting_original: '原文', greeting_optimized: '候选', greeting_selection: 'pending',
+    }
+    workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'full' }), pending_greetings: [
+      { ...job, greeting_activity: activity }, { ...job, id: 'free-preview', company: '其他公司' },
+    ] })
+    render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '展开招呼语：当前公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '保留原文' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(activity === 'sending' ? '这条正在发送，暂不可修改。' : '这条正在生成，完成后即可选择。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '收起招呼语：当前公司｜测试岗位' }))
+    fireEvent.click(screen.getByRole('button', { name: '展开招呼语：其他公司｜测试岗位' }))
+    expect((screen.getByRole('button', { name: '保留原文' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '手动编辑' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('summarizes collection limits while keeping full diagnostics in closed details', async () => {

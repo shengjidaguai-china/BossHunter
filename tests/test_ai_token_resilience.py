@@ -859,7 +859,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
 
         issues = greeter._greeting_style_issues(greeting)
 
-        self.assertTrue(any("模板化开头" in issue for issue in issues))
+        # 普通来意介绍不再强制改成行业判断，仍检查空泛套话。
         self.assertTrue(any("求职套话" in issue for issue in issues))
         self.assertTrue(any("技术名词" in issue for issue in issues))
 
@@ -899,7 +899,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         self.assertIn("不得生成", call_ai.call_args.args[0])
         self.assertIn("未明确提供的网址", call_ai.call_args.args[0])
 
-    def test_resume_urls_after_prompt_limit_remain_trusted(self):
+    def test_resume_tail_urls_are_in_full_source_and_remain_trusted(self):
         with tempfile.TemporaryDirectory() as tmp:
             resume_path = Path(tmp) / "resume.md"
             resume_path.write_text(
@@ -919,15 +919,15 @@ class GreeterTokenResilienceTests(unittest.TestCase):
                     config,
                 )
 
-        self.assertNotIn("https://resume.example/late-project", resume_summary)
+        self.assertIn("https://resume.example/late-project", resume_summary)
         self.assertEqual(result, "项目介绍：https://resume.example/late-project")
 
-    def test_resume_tail_is_not_sent_to_model(self):
-        sensitive_tail = "敏感标识：身份证号123456789"
+    def test_resume_tail_evidence_is_sent_to_model(self):
+        tail_evidence = "社媒案例：负责小红书内容策划和复盘。"
         with tempfile.TemporaryDirectory() as tmp:
             resume_path = Path(tmp) / "resume.md"
             resume_path.write_text(
-                f"{'公开简历内容' * 300}\n{sensitive_tail}",
+                f"{'公开简历内容' * 300}\n{tail_evidence}",
                 encoding="utf-8",
             )
             config = {"profile": {"resume_path": str(resume_path)}}
@@ -937,12 +937,12 @@ class GreeterTokenResilienceTests(unittest.TestCase):
                 return_value="普通招呼语",
             ) as call_ai:
                 greeter._generate_greeting_once(
-                    _job("private-resume-tail"),
+                    _job("relevant-resume-tail"),
                     greeter._get_resume_summary(config),
                     config,
                 )
 
-        self.assertNotIn(sensitive_tail, call_ai.call_args.args[0])
+        self.assertIn(tail_evidence, call_ai.call_args.args[0])
 
     def test_invented_greeting_url_is_rejected(self):
         logs: list[str] = []
@@ -1189,7 +1189,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings(
                 {
-                    "ai": {"greeting_max_iterations": 2},
+                    "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 2},
                     "_workbench_log": logs.append,
                 }
             )
@@ -1229,7 +1229,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         self.assertEqual(config["_workbench_greeting_report"]["skipped_existing"], 1)
         self.assertTrue(any("不会用 AI 覆盖" in message for message in logs))
 
-    def test_style_guard_rewrites_even_when_model_review_is_malformed(self):
+    def test_style_guard_keeps_draft_when_model_review_is_malformed(self):
         db = MagicMock()
         jobs = [_job("style-rewrite")]
 
@@ -1248,23 +1248,20 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings(
-                {"ai": {"greeting_max_iterations": 1}}
+                {"ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1}}
             )
 
         self.assertEqual(count, 1)
-        self.assertEqual(call_ai.call_count, 3)
+        self.assertEqual(call_ai.call_count, 2)
         save_preview.assert_called_once()
         self.assertEqual(save_preview.call_args.args, (db, "style-rewrite"))
         self.assertEqual(
             save_preview.call_args.kwargs["original"],
             "看到这个岗位挺有共鸣，我一直在做相关项目，期待进一步沟通。",
         )
-        self.assertEqual(
-            save_preview.call_args.kwargs["optimized"],
-            "复杂流程先理清异常边界更重要，我有相关需求梳理经验，可以交流下具体场景。",
-        )
+        self.assertIsNone(save_preview.call_args.kwargs["optimized"])
         self.assertEqual(save_preview.call_args.kwargs["selected_greeting"], save_preview.call_args.kwargs["original"])
-        self.assertEqual(save_preview.call_args.kwargs["selection"], "pending")
+        self.assertEqual(save_preview.call_args.kwargs["selection"], "generated")
         self.assertTrue(save_preview.call_args.kwargs["style_issues"])
 
     def test_style_suggestions_can_be_disabled(self):
@@ -1290,7 +1287,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         self.assertEqual(save_preview.call_args.kwargs["optimized"], None)
         self.assertEqual(save_preview.call_args.kwargs["selection"], "generated")
 
-    def test_auto_apply_style_uses_optimized_variant_when_explicitly_enabled(self):
+    def test_legacy_auto_apply_setting_does_not_rewrite_draft(self):
         db = MagicMock()
         jobs = [_job("style-auto")]
         original = "看到这个岗位挺有共鸣，我一直在做相关项目，期待进一步沟通。"
@@ -1308,16 +1305,16 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         ):
             count = greeter.generate_greetings({
                 "ai": {
-                    "greeting_max_iterations": 1,
+                    "greeting_style_suggestions": True, "greeting_max_iterations": 1,
                     "greeting_auto_apply_style": True,
                 }
             })
 
         self.assertEqual(count, 1)
         self.assertEqual(save_preview.call_args.kwargs["original"], original)
-        self.assertEqual(save_preview.call_args.kwargs["optimized"], optimized)
-        self.assertEqual(save_preview.call_args.kwargs["selected_greeting"], optimized)
-        self.assertEqual(save_preview.call_args.kwargs["selection"], "auto_optimized")
+        self.assertIsNone(save_preview.call_args.kwargs["optimized"])
+        self.assertEqual(save_preview.call_args.kwargs["selected_greeting"], original)
+        self.assertEqual(save_preview.call_args.kwargs["selection"], "generated")
 
     def test_human_reviewed_greeting_is_not_regenerated(self):
         db = MagicMock()
@@ -1365,7 +1362,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         save_preview.assert_called_once_with(db, 'retry-empty', original='第二次生成成功的个性化招呼语', optimized=None, style_issues=[], selected_greeting='第二次生成成功的个性化招呼语', selection='generated', expected_greeting='', expected_status='approved')
         add_history.assert_not_called()
 
-    def test_review_quota_error_preserves_first_greeting_and_pauses_batch(self):
+    def test_review_quota_error_keeps_draft_and_continues_without_review(self):
         db = MagicMock()
         jobs = [_job("1"), _job("2")]
         logs: list[str] = []
@@ -1379,21 +1376,24 @@ class GreeterTokenResilienceTests(unittest.TestCase):
                 side_effect=[
                     "这是一条已经可以使用的个性化招呼语。",
                     credentials.AIRequestError("token_quota", "AI Token 额度或账户余额不足"),
+                    "这是第二个岗位的招呼语。",
                 ],
             ) as call_ai,
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings(
                 {
-                    "ai": {"greeting_max_iterations": 1},
+                    "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1},
                     "_workbench_log": logs.append,
                 }
             )
 
-        self.assertEqual(count, 1)
-        self.assertEqual(call_ai.call_count, 2)
-        save_preview.assert_called_once_with(db, '1', original='这是一条已经可以使用的个性化招呼语。', optimized=None, style_issues=[], selected_greeting='这是一条已经可以使用的个性化招呼语。', selection='generated', expected_greeting='', expected_status='approved')
-        self.assertTrue(any("安全暂停" in message and "已生成内容已保存" in message for message in logs))
+        self.assertEqual(count, 2)
+        self.assertEqual(call_ai.call_count, 3)
+        self.assertEqual(save_preview.call_count, 2)
+        self.assertEqual(save_preview.call_args_list[0].kwargs['selected_greeting'], '这是一条已经可以使用的个性化招呼语。')
+        self.assertEqual(save_preview.call_args_list[1].kwargs['selected_greeting'], '这是第二个岗位的招呼语。')
+        self.assertFalse(any('安全暂停' in message for message in logs))
 
     def test_output_limit_retries_greeting_without_reducing_batch_size(self):
         db = MagicMock()
@@ -1614,11 +1614,11 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             patch("bosshunter.ai.greeter.save_generated_greeting_preview", return_value=True) as save_preview,
         ):
             count = greeter.generate_greetings(
-                {"ai": {"greeting_max_iterations": 1}, "_workbench_log": logs.append}
+                {"ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1}, "_workbench_log": logs.append}
             )
 
         self.assertEqual(count, 2)
-        self.assertEqual(call_ai.call_count, 4)
+        self.assertEqual(call_ai.call_count, 3)
         self.assertEqual(save_preview.call_count, 2)
         self.assertEqual(
             [call.args for call in save_preview.call_args_list],
@@ -1626,7 +1626,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         )
         self.assertEqual(save_preview.call_args_list[0].kwargs["selected_greeting"], "这是岗位1的个性化招呼语。")
         self.assertEqual(save_preview.call_args_list[1].kwargs["selected_greeting"], "这是岗位2的个性化招呼语。")
-        self.assertTrue(any("质量检查未返回内容，已保留可用招呼语并继续" in message for message in logs))
+        self.assertTrue(any("质量检查暂不可用" in message for message in logs))
         self.assertFalse(any("安全暂停" in message for message in logs))
 
 

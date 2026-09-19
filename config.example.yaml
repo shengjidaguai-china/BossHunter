@@ -6,6 +6,8 @@ profile:
   # 用于校招/社招岗位筛选与 AI 评分；留空保持旧行为。
   education: ""
   recruitment_type: ""  # campus / experienced / both
+  ai_greeting_enabled: true  # 关闭后使用下面的固定招呼语，不调用 AI 生成或优化
+  fixed_greeting: ""  # 关闭 AI 时必填，最多 300 字；发送仍需人工确认
   greeting_preference: ""  # 只补充招呼语语气与内容偏好，不覆盖事实和安全规则
   resume_output_dir: "./data/resumes"
   target_roles: ["你的目标岗位1", "目标岗位2", "目标岗位3"]
@@ -14,7 +16,7 @@ profile:
   salary_max: 25  # K
   salary_ceil_ratio: 1.5  # 岗位薪资下限超过 salary_max × 该倍数时过滤
   filter_unparsed_salary: true  # 过滤面议或无法解析薪资的岗位
-  allow_internship: false
+  allow_internship: false  # 开启时自动关闭 filter_unparsed_salary，避免日薪实习被误过滤
   deal_breakers: ["外包", "996"]
   jd_deal_breakers: []  # 示例：需要排除完整 JD 中的词时再填写
   blocked_companies: [] # 示例：不希望采集的公司名称或关键词
@@ -117,9 +119,7 @@ ai:
   # greeting_thinking_mode: "auto"
   # greeting_timeout_seconds: 180
   greeting_review_threshold: 7
-  greeting_max_iterations: 2
-  greeting_style_suggestions: true  # 生成原文与优化预览；关闭后只保留首次生成结果
-  greeting_auto_apply_style: false  # 默认不自动替换，需在页面选择原文或优化版
+  greeting_style_suggestions: false  # 可选质量提醒；只检查一次，不拒绝或自动改写文案
   resume_max_pages: 3
   # 建议在本地面板填写 api_key；它会单独保存在忽略提交的本地凭据文件中，不写入 config.yaml
   # base_url 填写后优先生效；留空时才读取对应环境变量或使用服务商默认地址

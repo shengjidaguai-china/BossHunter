@@ -73,6 +73,8 @@ DEFAULTS: dict[str, Any] = {
         "education": "",
         "recruitment_type": "",
         "greeting_preference": "",
+        "ai_greeting_enabled": True,
+        "fixed_greeting": "",
         "salary_min": 0,
         "salary_max": 0,
         "salary_ceil_ratio": 1.5,
@@ -174,9 +176,7 @@ DEFAULTS: dict[str, Any] = {
         "greeting_review_max_tokens": 4096,
         "greeting_max_attempts": 2,
         "greeting_review_threshold": 7.0,
-        "greeting_max_iterations": 2,
-        "greeting_style_suggestions": True,
-        "greeting_auto_apply_style": False,
+        "greeting_style_suggestions": False,
     },
     "monitor": {
         "interval": 30,  # 分钟
@@ -241,6 +241,7 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
     """Persist settings without writing AI credentials to config.yaml."""
     config_path = Path(config_path or "config.yaml")
     public_config = _deep_copy_dict(config)
+    _normalize_internship_salary_filter(public_config)
     ai_cfg = public_config.get("ai")
     credentials: dict[str, Any] = {}
     if isinstance(ai_cfg, dict):
@@ -266,6 +267,7 @@ def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
     """Move credentials out of an existing config.yaml on the next startup."""
     config_path = Path(config_path or "config.yaml")
     public_config = _load_yaml_mapping(config_path)
+    _normalize_internship_salary_filter(public_config)
     ai_cfg = public_config.get("ai")
     if not isinstance(ai_cfg, dict):
         return False
@@ -333,12 +335,20 @@ def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
                 pass
 
 
+def _normalize_internship_salary_filter(config: dict[str, Any]) -> None:
+    """Daily internship pay must not be rejected as an unparsed monthly salary."""
+    profile = config.get("profile")
+    if isinstance(profile, dict) and profile.get("allow_internship") is True:
+        profile["filter_unparsed_salary"] = False
+
+
 def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
     """Replace malformed sections and discard retired collection-count settings."""
     for section, defaults in DEFAULTS.items():
         if isinstance(defaults, dict) and not isinstance(config.get(section), dict):
             config[section] = _deep_copy_dict(defaults)
 
+    _normalize_internship_salary_filter(config)
     return remove_retired_collection_settings(config)
 
 

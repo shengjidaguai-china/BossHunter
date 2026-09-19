@@ -8,6 +8,8 @@
         {"key": "resume_path", "label": "简历文件路径", "type": "file", "description": "上传 .md 格式简历"},
         {"key": "education", "label": "最高学历", "type": "select", "options": ["博士", "硕士", "本科", "大专", "其他"], "default": "", "description": "用于 AI 评分时判断岗位学历要求与个人背景的匹配度"},
         {"key": "recruitment_type", "label": "求职招聘类型", "type": "select", "options": ["campus", "experienced", "both"], "default": "", "description": "选择校招、社招或两者均可"},
+        {"key": "ai_greeting_enabled", "label": "AI 生成招呼语", "type": "switch", "default": true, "description": "关闭后使用固定招呼语，发送仍需确认"},
+        {"key": "fixed_greeting", "label": "固定招呼语", "type": "textarea", "default": "", "description": "关闭 AI 招呼语时必填，最多300字；新生成时原样使用"},
         {"key": "greeting_preference", "label": "招呼语偏好", "type": "textarea", "default": "", "description": "补充语气和内容偏好；不会覆盖真实简历与安全规则"},
         {"key": "target_cities", "label": "目标城市", "type": "multi-select", "options_from": "cities", "description": "支持多城市"},
         {"key": "salary_min", "label": "最低薪资 (K)", "type": "number", "min": 0, "max": 200, "default": 0},
@@ -17,7 +19,7 @@
         {"key": "deal_breakers", "label": "职位名排除词", "type": "tags", "description": "职位名含这些词时自动跳过"},
         {"key": "jd_deal_breakers", "label": "JD 排除词", "type": "tags", "description": "完整 JD 含这些词时自动跳过"},
         {"key": "blocked_companies", "label": "屏蔽公司", "type": "tags", "description": "公司名含这些词时自动跳过"},
-        {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "关闭时自动过滤实习、intern、管培岗位"}
+        {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "开启时自动关闭无法解析薪资过滤，避免日薪实习被误过滤；关闭时过滤实习、intern、管培岗位"}
       ]
     },
     {
@@ -105,8 +107,7 @@
         {"key": "timeout_seconds", "label": "AI 请求超时 (秒)", "type": "number", "min": 5, "max": 600, "default": 180},
         {"key": "scoring_concurrency", "label": "AI 评分并发数", "type": "number", "min": 1, "max": 3, "default": 1, "description": "仅并发调用 AI，岗位数据仍按顺序安全写入"},
         {"key": "scoring_second_review", "label": "临界评分二次复核", "type": "switch", "default": false, "description": "开启后对首次68-79分的岗位再调用一次 AI"},
-        {"key": "greeting_style_suggestions", "label": "生成招呼语优化建议", "type": "switch", "default": true, "description": "保存原文、优化预览和触发原因；关闭后只保留首次生成结果"},
-        {"key": "greeting_auto_apply_style", "label": "自动采用招呼语优化版", "type": "switch", "default": false, "description": "默认关闭；关闭时必须在发送前选择原文或优化版"}
+        {"key": "greeting_style_suggestions", "label": "招呼语质量提醒", "type": "switch", "default": false, "description": "可选检查一次，只提供建议，不拒绝或自动改写文案"}
       ]
     },
     {

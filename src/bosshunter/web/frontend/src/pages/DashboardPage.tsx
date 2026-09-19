@@ -681,7 +681,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }
 
   const sendReadyGreetings = async (ids: string[]) => {
-    if (!ids.length || ids.some(id => sendingGreetingIds.has(id) || busyGreetingIds.has(id))) return
+    if (!ids.length || ids.some(id => sendingGreetingIds.has(id) || busyGreetingIds.has(id) || pendingGreetingJobs.find(job => job.id === id)?.greeting_activity)) return
     const count = ids.length
     // 人工确认门控：直接发送前必须显式确认，防止误触批量联系招聘方。
     if (!window.confirm(`确认向所选 ${count} 个岗位发送招呼语？\n发送将立即开始并受每日额度与发送时间窗口限制。`)) return
@@ -882,27 +882,29 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             </div>
             </div>
             <div className={`mt-3 rounded-xl border px-3 py-2.5 ${taskStatusClass(visibleTask.status)}`}>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                <span className="font-semibold text-foreground">{taskStatusTitle(visibleTask.status)}</span>
-                <span className="text-muted">{taskStatusText(visibleTask.status)}</span>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs" aria-label="任务状态摘要">
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="font-semibold text-foreground">{taskStatusTitle(visibleTask.status)}</span>
+                  <span className="text-muted">{taskStatusText(visibleTask.status)}</span>
+                </div>
+                <p className="min-w-0 flex-[1_1_12rem] truncate leading-5 text-foreground" title={currentTaskStage(visibleTask)}>{currentTaskStage(visibleTask).split('\n')[0]}</p>
+                {visibleTask.metrics && (
+                  <div className="flex max-w-full flex-wrap items-center gap-x-4 gap-y-1" aria-label="任务关键统计">
+                    {taskMetricItems.filter(item => ['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
+                      <span key={item.key} className="whitespace-nowrap text-muted">{item.label} <strong className="font-semibold tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
+                    ))}
+                    {taskMetricItems.filter(item => item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
+                      <span key={item.key} className="whitespace-nowrap text-danger">{item.label} {visibleTask.metrics?.[item.key]}</span>
+                    ))}
+                  </div>
+                )}
                 {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
               </div>
-              <p className="mt-1 line-clamp-2 text-sm leading-5 text-foreground">{currentTaskStage(visibleTask).split('\n')[0].slice(0, 100)}{currentTaskStage(visibleTask).split('\n')[0].length > 100 ? '…' : ''}</p>
-              {visibleTask.metrics && (
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs" aria-label="任务关键统计">
-                  {taskMetricItems.filter(item => ['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
-                    <span key={item.key} className="text-muted">{item.label} <strong className="font-semibold tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
-                  ))}
-                  {taskMetricItems.filter(item => item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
-                    <span key={item.key} className="text-danger">{item.label} {visibleTask.metrics?.[item.key]}</span>
-                  ))}
-                </div>
-              )}
               <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
                 <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
                   <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
                 </summary>
-                {(currentTaskStage(visibleTask).includes('\n') || currentTaskStage(visibleTask).length > 100) && <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{currentTaskStage(visibleTask)}</p>}
+                <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{currentTaskStage(visibleTask)}</p>
                 <p className="mt-2 leading-5 text-muted">浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。</p>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
                   {taskMetricItems.filter(item => item.key in (visibleTask.metrics || {})).map(item => (
@@ -1047,7 +1049,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             {workbench.needs_resume.slice(0, 4).map(job => (
               <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span className="min-w-0 break-words text-sm">{job.company}｜{job.title}</span>
-                <div className="flex shrink-0 gap-1">
+                <div className="flex max-w-full flex-wrap items-center gap-1">
+                  <Button variant="ghost" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />跳转岗位链接</Button>
                   <Button variant="ghost" size="sm" onClick={() => downloadResume(job)}><Download className="mr-1 h-3.5 w-3.5" />下载简历</Button>
                   <Button variant="secondary" size="sm" onClick={() => markResumeSent(job)}>标记已发送</Button>
                 </div>
@@ -1101,7 +1104,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-semibold">待发送招呼语 <span className="ml-1 text-xs font-normal text-muted">{pendingGreetingJobs.length} 条</span></h3>
-              <p className="mt-1 text-xs text-muted">展开预览并确认，已确认内容不会被覆盖。</p>
+              <p className="mt-1 text-xs text-muted">选择只保存版本，发送需另行确认。</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {pendingGreetingReviewCount > 0 && (
@@ -1111,7 +1114,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               )}
               <Button
                 size="sm"
-                disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id))}
+                disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id) || Boolean(job.greeting_activity))}
                 onClick={() => sendReadyGreetings(reviewedGreetingJobs.map(job => job.id))}
               >
                 发送已确认 {reviewedGreetingJobs.length} 个
@@ -1124,7 +1127,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <GreetingReviewCard
                 key={job.id}
                 job={job}
-                busy={sendingGreetingIds.has(job.id) || Boolean(activeTask && ['greet', 'deliver', 'full', 'monitor'].includes(activeTask.mode))}
+                busy={sendingGreetingIds.has(job.id) || Boolean(job.greeting_activity)}
                 onBusyChange={onGreetingBusyChange}
                 onSelect={(selection, greeting) => selectGreeting(job, selection, greeting)}
                 onSend={() => sendReadyGreetings([job.id])}
@@ -1317,6 +1320,13 @@ function GreetingReviewCard({
         </span>
         {!expanded && <span className="mt-1 block truncate text-xs leading-5 text-muted">{job.greeting || original || '展开查看招呼语'}</span>}
       </button>
+      {job.greeting_activity && (
+        <p className="mt-1 text-xs text-muted" role="status">
+          {job.greeting_activity === 'sending' ? '这条正在发送，暂不可修改。'
+            : job.greeting_activity === 'generating' ? '这条正在生成，完成后即可选择。'
+              : '这条正在保存，请稍后。'}
+        </p>
+      )}
       {expanded && <div id={`greeting-review-${job.id}`}>
 
         {issues.length > 0 && (

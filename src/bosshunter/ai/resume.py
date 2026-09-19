@@ -1,5 +1,7 @@
 """AI Resume - Generate tailored resume for specific jobs."""
 
+import json
+import math
 import re
 from collections import Counter
 from difflib import SequenceMatcher
@@ -19,13 +21,22 @@ DEFAULT_RESUME_MAX_PAGES = 3
 DEFAULT_RESUME_CHARS_PER_PAGE = 1400
 MASTER_RESUME_POLICY = """母版定制规则：
 - 基础简历是事实与项目全集母版；默认完整保留全部项目和教育背景
-- 只允许按 JD 调整求职方向、个人概述、项目顺序、关键词、表述和证据重点
+- 只允许按 JD 调整个人概述、项目顺序、关键词、表述和证据重点
 - 项目不得删除、合并或虚构；若确需删减，必须先由候选人单独确认
 - 经历按“任务/问题—个人行动—结果/验证边界”组织；来源缺少的内容不得补造
 - 严格区分设计、实现、本地验证、真实环境验证、部署和业务结果
 """
 
 RESUME_TAILOR_PROMPT = """你是一位专业简历顾问。请输出一份正常投递用的 Markdown 简历。
+
+写作前先完成经历挖掘（仅用于组织正文，不输出分析过程）：
+- 先逐条拆解目标岗位的职责、必备能力、经验限定、成果要求和加分项，再查找候选人证据；深挖方向由这个岗位决定，不预设所有岗位都突出管理、运营或付费。以让招聘方判断能否胜任、是否值得约面试为目标，不以堆叠岗位关键词代替证明。
+- 通读完整母版，按每段经历提取本人身份、面对的问题、决策与行动、协作对象、管理机制、交付物和结果；不要只摘职位名称、工具或数字。
+- 按 JD 的实际任务寻找证据，允许跨行业、创业、自媒体、社区和开源经历提供能力证明。例如组织维护团队、分配职责、协调审核与版本交付，能够证明团队组织和交付管理；不能仅因没有企业管理者职称，就判断没有管理经验。
+- 区分“有能力证据”与“满足全部限定条件”：管理行动、团队规模、管理年限、雇佣关系、销售指标是不同维度。只缺某个维度时，应保留已经证实的管理能力，不能整体否定，也不能补造缺少的条件。
+- 深挖成果背后的动作：内容定位与选题、用户研究、招募与分工、资源协调、质量审核、问题处理、付费产品实践和数据复盘；只能从母版已记载的行动展开，不从“创始人”等头衔推断未记载的职责。
+- 为每项要求选择最强的真实经历，建立“要求—来源经历—本人行动—结果”的对应，区分直接证据、部分证据和无证据，再决定首屏和经历要点。争取每条要求都有真实支撑，岗位最关键的证据优先；不因缺少单项限定就忽略已有能力，也不为凑齐覆盖率编造条件。与岗位直接相关的成果不能被弱相关的技术工具或开源热度挤掉。
+- 检查是否遗漏母版里已存在的相关证据。正文让招聘方通过具体经历看见能力，不使用“可迁移、匹配该岗位”等自我解释，不改变原工作的真实职位与行业。
 
 规则：
 1. 只输出简历正文，不输出任何前言、说明、备注、免责声明
@@ -47,9 +58,13 @@ RESUME_TAILOR_PROMPT = """你是一位专业简历顾问。请输出一份正常
 17. 项目身份、本人角色、时间、成熟度、指标口径和事实边界必须可回溯到基础简历
 18. 不得把团队成果改写为候选人的个人成果
 19. 若完整保留项目后超过建议篇幅，应继续输出完整简历并交给人工审核，不得自行删项目
-20. 第一行使用“# 姓名”，随后保留基础简历已有的联系方式，再写“求职方向：{target_direction}”
-21. 二级标题统一使用“教育背景、个人概述、工作经历、项目经历、技能”，并按此顺序排列
+20. 第一行使用“# 姓名”，随后保留基础简历已有的联系方式；不要新增“求职方向”“目标公司”“应聘岗位”等投递标签，不把招聘公司的名称或职位包装为候选人的个人定位
+21. 社招将个人概述放在联系方式之后，教育背景放在经历之后；校招可将教育背景前置。母版中独立的社媒案例、荣誉等栏目与成果也必须保留；将最相关的经历栏目紧接个人概述，例如内容运营岗位优先展示社媒案例，不应将其埋在弱相关技术项目之后
 22. 公司与职位使用三级标题；项目与工作要点使用紧凑项目符号
+23. 在内部选出岗位最重要的三项要求，逐项找到母版中的具体行动和结果，再撰写概述；概述用最多三条简短要点呈现最强的相关证据，不写泛泛的自我评价或“可带领团队实现业绩”等无事实支撑的承诺
+24. 必须区分内容曝光、粉丝增长、线索、成交和收入；不得将播放量改成获客或销售业绩，不得将社区协作改成正式团队管理年限，不得将路演改成融资或资本市场经验，不得将其他行业经验改成目标行业实操
+25. 每个数字必须保留其所属公司、项目、平台、个人参与范围，以及来源明确的达成周期或测量窗口；不可跨经历拼接因果。增长、付费、交付等成果应写清“多久做到多少”，不能遗漏已有时间信息；来源未提供周期时不得推算或编造，不得把某项成果的周期移用到另一指标，也不得把期间累计改成每月常态。优先呈现与岗位相关的真实成果，其他成就仍保留在所属经历中，不因相关性弱而删除
+26. 用具体的动作和结果表达竞争优势，不堆砌“赋能、闭环、抓手、深度洞察”等空话；同一经历不要在概述与正文反复展开。不输出“数据统计截至某日”或“数据更新”说明，但必须保留证明增长速度、执行效率的成果达成周期，以及保证指标含义准确的测量窗口
 
 ## 固定母版策略
 {master_policy}
@@ -80,8 +95,9 @@ RESUME_RETRY_PROMPT = """{base_prompt}
 3. 不要新增任何候选人原简历中没有的事实
 4. 仍然必须保留基本信息、个人优势、工作经历、教育经历、相关技能
 5. 最后一行仍然单独输出 {completion_marker}
+6. 修复上述具体问题，按岗位核心要求重排真实证据；不能只改标题或增加关键词，也不能靠编造能力来提高匹配度
 
-请直接输出压缩后的 Markdown 简历正文：
+请直接输出修正后的完整 Markdown 简历正文：
 """
 
 RESUME_ARTIFACT_PHRASES = [
@@ -125,6 +141,11 @@ REQUIRED_RESUME_SECTIONS = [
     "## 教育经历",
     "## 相关技能",
 ]
+
+BACKGROUND_SECTION_ALIASES = {
+    "工作经历": ("工作经历", "工作经验", "职业经历", "职业经验", "任职经历", "实习经历", "实习经验"),
+    "教育经历": ("教育", "学历", "学习经历"),
+}
 
 ROLE_KEYWORD_GROUPS = [
     {
@@ -187,6 +208,21 @@ def _remove_recruiter_company_references(markdown_text: str, job: dict | None) -
         if not re.fullmatch(r"\s*(?:目标|意向)公司\s*[：:]?\s*", line):
             cleaned_lines.append(line)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines)).strip() + "\n"
+
+
+def _remove_generated_target_header(markdown_text: str) -> str:
+    """Drop generated application labels, preserving all experience sections."""
+    lines = []
+    in_header = True
+    for line in markdown_text.splitlines():
+        if re.match(r"^\s*#{2,6}\s+", line):
+            in_header = False
+        label = re.sub(r"[*_`]", "", line).strip()
+        if in_header and re.match(r"^(?:[-+]\s+)?(?:求职方向|目标公司|意向公司|应聘岗位)\s*[：:]", label):
+            continue
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
+
 
 PLACEHOLDER_PATTERNS = [
     re.compile(r"\{\{[^{}\n]{1,100}\}\}"),
@@ -281,8 +317,12 @@ def _markdown_section(markdown_text: str, heading: str) -> str:
 
 def _project_section(markdown_text: str) -> str:
     """Return the first conventional project section from a resume."""
-    for heading in ("## 项目经历", "## 项目经验", "## 代表项目"):
-        section = _markdown_section(markdown_text, heading)
+    headings = re.findall(
+        r"(?m)^##\s+(?:项目经历|项目经验|代表项目|代表性[^\n]*?(?:项目|案例))\s*$",
+        markdown_text,
+    )
+    for heading in headings:
+        section = _markdown_section(markdown_text, heading.strip())
         if section:
             return section
     return ""
@@ -341,20 +381,71 @@ def _find_project_preservation_issues(markdown_text: str, base_resume: str) -> l
 
 
 def _find_missing_core_facts(markdown_text: str, base_resume: str) -> list[str]:
-    """Keep fact-like contact/basic-info values from the source resume."""
+    """Keep contacts regardless of their location or section title."""
     source_basic_info = _markdown_section(base_resume, "## 基本信息")
-    if not source_basic_info:
-        return []
     source_tokens = _extract_validation_tokens(source_basic_info, FACT_TOKEN_PATTERNS)
+    # Contacts may be directly below the name. Project links elsewhere are not contacts.
+    header = re.split(r"(?m)^\s*##\s+", base_resume, maxsplit=1)[0]
+    source_tokens.extend(_extract_validation_tokens(header, FACT_TOKEN_PATTERNS[:3]))
+    source_tokens.extend(_extract_validation_tokens(base_resume, [FACT_TOKEN_PATTERNS[0], FACT_TOKEN_PATTERNS[2]]))
     generated_keys = {
         _normalize_validation_token(token)
         for token in _extract_validation_tokens(markdown_text, FACT_TOKEN_PATTERNS)
     }
     return [
         token
-        for token in source_tokens
+        for token in dict.fromkeys(source_tokens)
         if _normalize_validation_token(token) not in generated_keys
     ]
+
+
+def _resume_sections(markdown_text: str) -> list[tuple[str, str]]:
+    """Read semantic sections without requiring one exact Markdown label."""
+    return [
+        (match.group(1).strip(), match.group(2).strip())
+        for match in re.finditer(r"(?ms)^\s*##[ \t]+([^\n]+)\n(.*?)(?=^\s*##[ \t]+|\Z)", markdown_text)
+    ]
+
+
+def _find_background_preservation_issues(markdown_text: str, base_resume: str) -> list[str]:
+    """Protect identity, education and named employers without policing role wording."""
+    issues: list[str] = []
+    source_name = re.search(r"(?m)^#[ \t]+([^\n]+)", base_resume)
+    if source_name:
+        name = re.split(r"[|｜·：:]", source_name.group(1), maxsplit=1)[0].strip().strip("*_ ")
+        if name and name not in markdown_text:
+            issues.append("基础信息保留校验失败：缺少原简历姓名")
+
+    for label, aliases in BACKGROUND_SECTION_ALIASES.items():
+        source_sections = [(title, body) for title, body in _resume_sections(base_resume) if any(a in title for a in aliases)]
+        source = "\n".join(body for _, body in source_sections)
+        if not source.strip():
+            continue
+        candidate = "\n".join(body for title, body in _resume_sections(markdown_text) if any(a in title for a in aliases))
+        # An empty heading is not preservation of the underlying background.
+        content = candidate if label == "教育经历" else re.sub(r"(?m)^\s*#{1,6}\s+.*$", "", candidate)
+        if not content.strip():
+            issues.append(f"经历保留校验失败：缺少或清空{label}内容")
+            continue
+        source_entries = re.findall(r"(?m)^\s*###\s+(.+?)\s*$", source)
+        candidate_entries = re.findall(r"(?m)^\s*###\s+(.+?)\s*$", candidate)
+        for entry in source_entries:
+            identity = re.split(r"[|｜]", entry, maxsplit=1)[0].strip().strip("*_ ")
+            # Allow heading changes and a move to plain text, but keep the actual employer/school.
+            if identity not in candidate and not any(_project_identity_matches(entry, other) for other in candidate_entries):
+                issues.append(f"经历保留校验失败：{label}缺少 {identity}")
+        if label == "教育经历":
+            schools = re.findall(r"[\u4e00-\u9fffA-Za-z]+(?:大学|学院|学校)", source)
+            degrees = re.findall(r"博士|硕士|本科|学士|大专|专科", source)
+            dates = _extract_validation_tokens(source, [FACT_TOKEN_PATTERNS[3]])
+            candidate_dates = {_normalize_validation_token(t) for t in _extract_validation_tokens(candidate, [FACT_TOKEN_PATTERNS[3]])}
+            for fact in dict.fromkeys([*schools, *degrees]):
+                if fact not in candidate:
+                    issues.append(f"教育信息保留校验失败：缺少 {fact}")
+            for fact in dict.fromkeys(dates):
+                if _normalize_validation_token(fact) not in candidate_dates:
+                    issues.append(f"教育信息保留校验失败：缺少时间 {fact}")
+    return issues
 
 
 def _find_blocking_integrity_issues(
@@ -385,6 +476,7 @@ def _find_blocking_integrity_issues(
             + ", ".join(new_placeholders[:8])
         )
     issues.extend(_find_project_preservation_issues(markdown_text, base_resume))
+    issues.extend(_find_background_preservation_issues(markdown_text, base_resume))
     return issues
 
 
@@ -426,6 +518,9 @@ def _find_resume_quality_issues(
         issues.append(f"简历内容过长，默认应控制在 {max_pages} 页以内")
 
     for section in _required_sections_from_base(base_resume):
+        aliases = BACKGROUND_SECTION_ALIASES.get(section.removeprefix("## "), ())
+        if aliases and any(any(alias in title for alias in aliases) for title, _ in _resume_sections(markdown_text)):
+            continue
         if section not in markdown_text:
             issues.append(f"缺少基础简历中的常规栏目：{section.replace('## ', '')}")
 
@@ -550,12 +645,15 @@ def _resume_html(markdown_text: str, *, image_mode: bool = False) -> str:
     """Build the deterministic Job OK layout shared by PDF and PNG."""
     import markdown2
 
+    # markdown2 treats a CJK colon at the closing emphasis boundary as literal
+    # Markdown. Keep the visible text, placing punctuation outside the emphasis.
+    markdown_text = re.sub(r"\*\*([^*\n]+?)([：:])\*\*", r"**\1**\2", markdown_text)
     html_body = markdown2.markdown(markdown_text, extras=["tables", "fenced-code-blocks"])
-    page_rule = "@page { size: A4; margin: 0; }" if image_mode else "@page { size: A4; margin: 9mm 11mm; }"
+    page_rule = "@page { size: A4; margin: 0; }" if image_mode else "@page { size: A4; margin: 12mm 14mm; }"
     sheet_style = """
     html, body { margin: 0; padding: 0; background: #fff; }
-    [data-resume-sheet] { width: 210mm; min-height: 297mm; padding: 9mm 11mm; background: #fff; }
-    """ if image_mode else ""
+    [data-resume-sheet] { width: 210mm; min-height: 297mm; padding: 12mm 14mm; background: #fff; }
+    """ if image_mode else "body { width: 182mm; }"
     rendered_body = (
         f'<main data-resume-sheet>{html_body}<span data-resume-end aria-hidden="true"></span></main>'
         if image_mode else html_body
@@ -570,16 +668,17 @@ def _resume_html(markdown_text: str, *, image_mode: bool = False) -> str:
     {sheet_style}
     body {{
         font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-        font-size: 8.4pt; line-height: 1.32; margin: 0; color: #20242a;
+        font-size: 10.5pt; line-height: 1.45; margin: 0; color: #20242a;
     }}
     h1 {{ font-size: 21.5pt; line-height: 1.05; color: #1f4e79; margin: 0 0 2.5mm; }}
-    h2 {{ font-size: 10.5pt; color: #1f4e79; margin: 3.2mm 0 1.5mm; padding-bottom: .8mm; border-bottom: .7pt solid #b8c7d9; break-after: avoid; }}
-    h3 {{ font-size: 9.1pt; color: #20242a; margin: 1.8mm 0 .8mm; break-after: avoid; }}
-    p {{ margin: 0 0 1.3mm; }}
-    ul, ol {{ padding-left: 4.6mm; margin: .6mm 0 1.5mm; }}
-    li {{ margin: 0 0 .7mm; }}
+    h2 {{ font-size: 13pt; color: #1f4e79; margin: 4mm 0 2mm; padding-bottom: 1mm; border-bottom: .7pt solid #b8c7d9; break-after: avoid; }}
+    h3 {{ font-size: 11pt; color: #20242a; margin: 2.8mm 0 1.2mm; break-after: avoid; }}
+    p {{ margin: 0 0 1.8mm; orphans: 2; widows: 2; }}
+    ul, ol {{ padding-left: 5mm; margin: 1mm 0 2mm; }}
+    li {{ margin: 0 0 1.2mm; }}
     h3, li, table, blockquote {{ break-inside: avoid; }}
-    table {{ border-collapse: collapse; width: 100%; margin: 1.2mm 0; font-size: 8pt; }}
+    a {{ color: #1f4e79; overflow-wrap: anywhere; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1.2mm 0; font-size: 10pt; }}
     th, td {{ border: .5pt solid #b8c7d9; padding: 1mm 1.5mm; text-align: left; }}
     th {{ background: #edf3f8; color: #1f4e79; }}
 </style>
@@ -588,6 +687,81 @@ def _resume_html(markdown_text: str, *, image_mode: bool = False) -> str:
 {rendered_body}
 </body>
 </html>"""
+
+
+def _balanced_page_starts(boundaries: list[dict], page_height: float) -> list[int]:
+    """Balance measured content at safe boundaries, without shrinking the text.
+
+    The final boundary is the bottom of the document. Prefer section starts;
+    allow long lists to continue between complete bullets. Oversized indivisible
+    blocks fall back to Chrome's native pagination.
+    """
+    if len(boundaries) < 3 or page_height <= 0:
+        return []
+    positions = [float(item["y"]) for item in boundaries]
+    total = positions[-1] - positions[0]
+    if total <= page_height:
+        return []
+    if any(b - a > page_height for a, b in zip(positions, positions[1:])):
+        return []
+    end = len(positions) - 1
+    for pages in range(math.ceil(total / page_height), end + 1):
+        target = total / pages
+        states = {0: (0.0, [])}
+        for _ in range(pages):
+            next_states = {}
+            for start, (cost, cuts) in states.items():
+                for stop in range(start + 1, end + 1):
+                    height = positions[stop] - positions[start]
+                    if height > page_height:
+                        break
+                    penalty = 0 if stop == end or boundaries[stop].get("section") else page_height ** 2 * 0.12
+                    score = cost + (height - target) ** 2 + penalty
+                    if stop not in next_states or score < next_states[stop][0]:
+                        next_states[stop] = (score, cuts + [stop])
+            states = next_states
+        if end in states:
+            return states[end][1][:-1]
+    return []
+
+
+def _balance_pdf_pages(target_id: str) -> None:
+    """Measure the actual loaded font and keep headings with their first item."""
+    layout = evaluate(target_id, """(async () => {
+        await document.fonts.ready;
+        const children = [...document.body.children];
+        const boundaries = [{y: 0, section: true}];
+        const add = (element, section) => {
+            element.dataset.resumeBreak = String(boundaries.length);
+            boundaries.push({y: element.getBoundingClientRect().top, section});
+        };
+        for (let i = 1; i < children.length; i++) {
+            const element = children[i];
+            const previous = children[i - 1];
+            const afterHeading = /^H[1-6]$/.test(previous.tagName);
+            if (/^H[23]$/.test(element.tagName) && !afterHeading) add(element, true);
+            else if (element.tagName === 'UL' || element.tagName === 'OL') {
+                [...element.children].slice(1).forEach(item => add(item, false));
+            } else if (!afterHeading && /^(P|TABLE|BLOCKQUOTE)$/.test(element.tagName)) {
+                add(element, false);
+            }
+        }
+        boundaries.push({y: document.body.getBoundingClientRect().bottom, section: true});
+        return boundaries;
+    })()""")
+    if not isinstance(layout, list):
+        return
+    # A4 minus two 12 mm margins; allow 4 mm for print rounding/list spacing.
+    starts = _balanced_page_starts(layout, (297 - 24 - 4) * 96 / 25.4)
+    if starts:
+        evaluate(target_id, """(() => {
+            const starts = %s;
+            for (const index of starts) {
+                const element = document.querySelector(`[data-resume-break="${index}"]`);
+                element.style.breakBefore = 'page';
+            }
+            return true;
+        })()""" % json.dumps(starts))
 
 
 def _render_pdf(markdown_text: str, output_path: Path) -> bool:
@@ -686,9 +860,7 @@ def _render_pdf_via_cdp(html_content: str, output_path: Path) -> bool:
             try:
                 target_id = new_tab(file_url, background=True)
                 if target_id and wait_for_load(target_id, timeout=10):
-                    # Give Chrome a brief turn to resolve system fonts after
-                    # the document load event before printing the page.
-                    time.sleep(0.25)
+                    _balance_pdf_pages(target_id)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.unlink(missing_ok=True)
                     if print_pdf(target_id, output_path):
@@ -811,6 +983,26 @@ def save_resume_draft(
         db.close()
 
 
+def _build_resume_prompt(job: dict, resume_text: str, resume_max_pages: int) -> str:
+    """Pass the full job description and factual master to the model."""
+    recruiter_job = _is_recruiter_job(job)
+    prompt_company = "猎头/代招岗位（客户公司未提供）" if recruiter_job else job["company"]
+    return RESUME_TAILOR_PROMPT.format(
+        title=job["title"],
+        company=prompt_company,
+        salary=job["salary"] or "面议",
+        education=job.get("education", "") or "未识别",
+        recruitment_type={"campus": "校招", "experienced": "社招"}.get(
+            job.get("recruitment_type", ""), "未识别"
+        ),
+        jd=job.get("jd") or "无详细描述",
+        resume=resume_text,
+        resume_max_pages=resume_max_pages,
+        completion_marker=RESUME_COMPLETION_MARKER,
+        master_policy=MASTER_RESUME_POLICY,
+    )
+
+
 def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
     """Generate a tailored resume for a specific job.
 
@@ -849,24 +1041,7 @@ def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
     # Generate tailored resume via AI
     console.print(f"[bold]为 {job['company']} - {job['title']} 生成定制简历...[/bold]")
 
-    recruiter_job = _is_recruiter_job(job)
-    prompt_company = "猎头/代招岗位（客户公司未提供）" if recruiter_job else job["company"]
-    target_direction = str(job["title"]) if recruiter_job else f"{job['title']}｜{job['company']}"
-    base_prompt = RESUME_TAILOR_PROMPT.format(
-        title=job["title"],
-        company=prompt_company,
-        salary=job["salary"] or "面议",
-        education=job.get("education", "") or "未识别",
-        recruitment_type={"campus": "校招", "experienced": "社招"}.get(
-            job.get("recruitment_type", ""), "未识别"
-        ),
-        jd=job["jd"][:2000] if job["jd"] else "无详细描述",
-        resume=resume_text,
-        resume_max_pages=resume_max_pages,
-        completion_marker=RESUME_COMPLETION_MARKER,
-        master_policy=MASTER_RESUME_POLICY,
-        target_direction=target_direction,
-    )
+    base_prompt = _build_resume_prompt(job, resume_text, resume_max_pages)
 
     tailored_md = None
     prompt = base_prompt
@@ -887,6 +1062,7 @@ def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
         candidate_md, marker_issue = _strip_completion_marker(raw_tailored_md)
         if not candidate_md:
             return fail(marker_issue or "生成结果为空")
+        candidate_md = _remove_generated_target_header(candidate_md)
         candidate_md = _remove_recruiter_company_references(candidate_md, job)
 
         artifacts = _find_resume_artifacts(candidate_md)
@@ -901,9 +1077,12 @@ def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
             candidate_md,
             resume_text,
         )
-        overlong = any(issue.startswith("简历内容过长") for issue in quality_issues)
-        if attempt == 0 and (overlong or blocking_issues):
+        if _is_nearly_unchanged(candidate_md, resume_text):
+            blocking_issues.append("生成结果与原始简历几乎一致，定制化不足；请检查母版或重新生成")
+        if attempt == 0 and (quality_issues or blocking_issues or artifacts):
             retry_issues = [*blocking_issues, *quality_issues]
+            if artifacts:
+                retry_issues.append(f"包含定制过程性措辞：{', '.join(artifacts)}")
             issue_text = "; ".join(dict.fromkeys(retry_issues))
             console.print(f"[yellow]生成结果校验未通过，尝试修正一次：{issue_text}[/yellow]")
             prompt = RESUME_RETRY_PROMPT.format(

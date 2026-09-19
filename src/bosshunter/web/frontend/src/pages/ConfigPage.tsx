@@ -328,7 +328,32 @@ export default function ConfigPage() {
                 </Select>
               </Field>
             </div>
-            <Field label="招呼语偏好">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <label className="text-xs text-foreground">AI 生成招呼语</label>
+                <p className="mt-1 text-xs text-muted">关闭后使用你填写的固定文案，发送仍需确认。</p>
+              </div>
+              <Switch
+                aria-label="AI 生成招呼语"
+                checked={config.profile?.ai_greeting_enabled ?? true}
+                onChange={value => updateConfig('profile.ai_greeting_enabled', value)}
+              />
+            </div>
+            {(config.profile?.ai_greeting_enabled ?? true) === false && (
+              <Field label="固定招呼语">
+                <textarea
+                  aria-label="固定招呼语"
+                  value={config.profile?.fixed_greeting || ''}
+                  onChange={e => updateConfig('profile.fixed_greeting', e.target.value)}
+                  placeholder="填写你希望使用的招呼语"
+                  rows={3}
+                  maxLength={300}
+                  className="w-full resize-y rounded-md border border-card-border bg-[#FFFCFA] px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                />
+                <p className="mt-1 text-xs text-muted">保存后，新生成时原样使用，不调用 AI。已有文案保留，可逐条编辑。</p>
+              </Field>
+            )}
+            {(config.profile?.ai_greeting_enabled ?? true) && <Field label="招呼语偏好">
               <textarea
                 value={config.profile?.greeting_preference || ''}
                 onChange={e => updateConfig('profile.greeting_preference', e.target.value)}
@@ -338,7 +363,7 @@ export default function ConfigPage() {
                 className="w-full resize-y rounded-md border border-card-border bg-[#FFFCFA] px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted focus:border-primary"
               />
               <p className="mt-1 text-xs text-muted">仅补充语气和内容偏好，不能覆盖真实简历与安全规则。</p>
-            </Field>
+            </Field>}
             <NumberRangeField
               label="期望薪资范围（K）"
               minValue={config.profile?.salary_min ?? 0}
@@ -361,9 +386,9 @@ export default function ConfigPage() {
             <div className="flex items-center justify-between rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2">
               <div>
                 <label className="text-xs text-foreground">过滤面议/无法解析薪资</label>
-                <p className="mt-1 text-xs text-muted">关闭后这类岗位会保留给 AI 综合判断。</p>
+                <p className="mt-1 text-xs text-muted">{config.profile?.allow_internship ? '已接受实习，自动关闭此过滤，避免日薪岗位被误排除。' : '关闭后这类岗位会保留给 AI 综合判断。'}</p>
               </div>
-              <Switch checked={config.profile?.filter_unparsed_salary ?? true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
+              <Switch aria-label="过滤面议/无法解析薪资" checked={config.profile?.allow_internship ? false : (config.profile?.filter_unparsed_salary ?? true)} disabled={config.profile?.allow_internship === true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
             </div>
             <Field label="排除关键词">
               <TagsInput value={config.profile?.deal_breakers || []} onChange={v => updateConfig('profile.deal_breakers', v)} placeholder="如：外包、996" />
@@ -378,7 +403,10 @@ export default function ConfigPage() {
             </Field>
             <div className="flex items-center justify-between">
               <label className="text-xs text-foreground">接受实习/管培岗位</label>
-              <Switch checked={config.profile?.allow_internship ?? false} onChange={v => updateConfig('profile.allow_internship', v)} />
+              <Switch aria-label="接受实习/管培岗位" checked={config.profile?.allow_internship ?? false} onChange={v => {
+                updateConfig('profile.allow_internship', v)
+                if (v) updateConfig('profile.filter_unparsed_salary', false)
+              }} />
             </div>
           </div>
         </SectionCard>
@@ -630,29 +658,19 @@ export default function ConfigPage() {
               </div>
               <Switch checked={config.ai?.scoring_second_review ?? false} onChange={v => updateConfig('ai.scoring_second_review', v)} />
             </div>
-            <div className="rounded-2xl border border-primary/20 bg-[#FFF8F2] p-4">
+            {(config.profile?.ai_greeting_enabled ?? true) && <div className="rounded-2xl border border-primary/20 bg-[#FFF8F2] p-4">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <label className="text-sm font-black text-foreground">生成招呼语优化建议</label>
-                  <p className="mt-1 text-xs leading-5 text-muted">保留首次生成原文，同时生成可对比的优化预览和触发原因；关闭后只生成一版。</p>
+                  <label className="text-sm font-black text-foreground">招呼语质量提醒</label>
+                  <p className="mt-1 text-xs leading-5 text-muted">可选检查一次，只提供建议，不拒绝或自动改写文案。默认关闭。</p>
                 </div>
                 <Switch
-                  checked={config.ai?.greeting_style_suggestions ?? true}
+                  aria-label="招呼语质量提醒"
+                  checked={config.ai?.greeting_style_suggestions ?? false}
                   onChange={value => updateConfig('ai.greeting_style_suggestions', value)}
                 />
               </div>
-              <div className="mt-3 flex items-center justify-between gap-4 border-t border-primary/10 pt-3">
-                <div>
-                  <label className="text-sm font-black text-foreground">自动采用优化版</label>
-                  <p className="mt-1 text-xs leading-5 text-muted">默认关闭。关闭时，发送前必须选择保留原文或采用优化版。</p>
-                </div>
-                <Switch
-                  checked={config.ai?.greeting_auto_apply_style ?? false}
-                  disabled={(config.ai?.greeting_style_suggestions ?? true) === false}
-                  onChange={value => updateConfig('ai.greeting_auto_apply_style', value)}
-                />
-              </div>
-            </div>
+            </div>}
             <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>

@@ -31,6 +31,7 @@ interface Job {
   greeting_optimized?: string | null
   greeting_style_issues?: string[]
   greeting_selection?: 'legacy' | 'generated' | 'pending' | 'auto_optimized' | 'original' | 'optimized' | 'edited' | string
+  greeting_activity?: 'generating' | 'sending' | 'editing' | null
   greeting_reviewed_at?: string | null
   status: string
   hr_name: string
