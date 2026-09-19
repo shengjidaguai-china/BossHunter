@@ -39,7 +39,7 @@ export function TopCompanies({ data }: TopCompaniesProps) {
                     <span className="text-xs font-mono font-black text-primary">{company.avg_score}</span>
                   </div>
                 </div>
-                <div className="h-1.5 bg-[#FFF0E5] rounded-full overflow-hidden">
+                <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
                   <div
                     className="h-full bg-primary rounded-full transition-all"
                     style={{ width: `${(company.avg_score / maxScore) * 100}%` }}

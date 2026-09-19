@@ -173,8 +173,8 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
         />
       ) : (
         <label
-          className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 transition-colors hover:border-primary/50 hover:bg-[#FFFCFA] ${
-            resumeDragActive ? 'border-primary bg-[#FFFCFA]' : 'border-card-border'
+          className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 transition-colors hover:border-primary/50 hover:bg-surface ${
+            resumeDragActive ? 'border-primary bg-surface' : 'border-card-border'
           }`}
           onDragEnter={handleResumeDragOver}
           onDragOver={handleResumeDragOver}
@@ -187,7 +187,7 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
         </label>
       )}
       {panelMessage ? (
-        <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-500">{panelMessage}</p>
+        <p className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{panelMessage}</p>
       ) : null}
     </div>
   )

@@ -95,9 +95,9 @@ function taskStatusText(status: string) {
 }
 
 function taskStatusClass(status: string) {
-  if (status === 'failed') return 'border-red-100 bg-red-50'
-  if (status === 'completed' || status === 'stopped') return 'border-card-border bg-white'
-  return 'border-primary/20 bg-[#FFF0E5]'
+  if (status === 'failed') return 'border-danger-border bg-danger-soft'
+  if (status === 'completed' || status === 'stopped') return 'border-card-border bg-card'
+  return 'border-primary/20 bg-secondary'
 }
 
 function taskStatusTitle(status: string) {
@@ -301,7 +301,7 @@ async function parsePreflightResponse(res: Response) {
 
 function CompactNotice({ message, danger = false }: { message: string; danger?: boolean }) {
   return (
-    <details className={cn('group mt-2 rounded-lg px-2 text-xs', danger ? 'bg-red-50 text-danger' : 'bg-[#FFF0E5] text-primary')}>
+    <details className={cn('group mt-2 rounded-lg px-2 text-xs', danger ? 'bg-danger-soft text-danger' : 'bg-secondary text-primary')}>
       <summary className="flex h-8 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
         <span role="status" className="min-w-0 flex-1 truncate" title={message}>{message}</span>
         <ChevronDown className="h-3 w-3 shrink-0 group-open:rotate-180" />
@@ -331,12 +331,12 @@ function PreflightPanel({
 
   return (
     <div role="region" aria-label="启动检查结果" className={`mt-2 rounded-lg border px-2 text-xs ${
-      errors ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'
+      errors ? 'border-danger-border bg-danger-soft' : 'border-warning-border bg-warning-soft'
     }`}>
       <div className="flex h-8 min-w-0 items-center gap-2">
         {errors
           ? <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />
-          : <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />}
+          : <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />}
         <span role="status" title={summary} className="min-w-0 flex-1 truncate text-foreground">{summary}</span>
         <button type="button" aria-expanded={expanded} aria-controls="preflight-details" onClick={() => setExpanded(value => !value)} className="flex h-7 shrink-0 items-center gap-1 rounded px-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
           {expanded ? '收起' : '详情'}<ChevronDown className={cn('h-3 w-3', expanded && 'rotate-180')} />
@@ -785,7 +785,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
 
   return (
     <div className="space-y-4">
-      <section id="today-workbench" className="scroll-mt-6 rounded-2xl border border-card-border bg-white p-4">
+      <section id="today-workbench" className="scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <h2 className="text-lg font-bold tracking-tight">今日求职行动</h2>
           <div className="flex items-center gap-2 text-xs text-muted">
@@ -828,10 +828,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   'min-w-0 rounded-xl border p-4 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-32 md:p-5',
                   item.mode === 'full' ? 'col-span-2 min-h-28 md:col-span-1' : 'min-h-24',
                   isActive
-                    ? 'border-primary bg-primary text-white'
+                    ? 'border-primary bg-primary text-primary-foreground'
                     : disabled
-                      ? 'cursor-not-allowed border-card-border bg-white text-muted opacity-45'
-                      : 'border-card-border bg-[#FFFCFA] text-foreground hover:border-primary/60 hover:shadow-md'
+                      ? 'cursor-not-allowed border-card-border bg-card text-muted opacity-45'
+                      : 'border-card-border bg-surface text-foreground hover:border-primary/60 hover:shadow-md'
                 )}
               >
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -844,7 +844,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                     {isActive ? <Square className="h-4 w-4 fill-current" /> : <Play className="h-5 w-5 fill-current" />}
                   </span>
                 </div>
-                <p className={`text-xs leading-5 ${isActive ? 'text-white/85' : 'text-muted'}`}>{item.description}</p>
+                <p className={`text-xs leading-5 ${isActive ? 'text-primary-foreground/85' : 'text-muted'}`}>{item.description}</p>
               </button>
             )
           })}
@@ -855,14 +855,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         )}
         {error && <CompactNotice message={error} danger />}
         {visibleTask && (
-          <div className="mt-3 rounded-3xl border border-card-border bg-[#FFFCFA] p-4">
+          <div className="mt-3 rounded-3xl border border-card-border bg-surface p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-black">任务运行状态</div>
                 <p className="mt-1 text-xs leading-5 text-muted">如果点击后浏览器没有反应，请先打开 BOSS 直聘并确认已登录；常见失败原因是 BOSS 未登录或 Chrome 调试连接不可用。</p>
               </div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
+              <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">
                 {visibleTask.label}
               </span>
               {activeTask && (
@@ -897,7 +897,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               {visibleTask.metrics && taskMetricItems.some(item => item.key in visibleTask.metrics!) && (
                 <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
                   {taskMetricItems.filter(item => item.key in visibleTask.metrics!).map(item => (
-                    <div key={item.key} className="rounded-lg border border-card-border bg-white px-2 py-1.5">
+                    <div key={item.key} className="rounded-lg border border-card-border bg-card px-2 py-1.5">
                       <div className="text-[10px] font-bold text-muted">{item.label}</div>
                       <div className="text-sm font-bold text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</div>
                     </div>
@@ -905,24 +905,24 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </div>
               )}
               {Boolean(visibleTask.metrics?.greet_paused) && (
-                <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">
+                <div className="mt-2 rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-xs font-bold leading-5 text-warning-strong">
                   提前暂停原因：{greetPauseReasonLabel(visibleTask.metrics?.greet_pause_reason) || 'AI 服务异常'}。已生成内容已保存，剩余岗位下次运行会继续处理。
                 </div>
               )}
             </div>
             {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} />}
             {visibleTask.error && visibleTaskError && (
-              <div className="mt-3 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">
+              <div className="mt-3 rounded-2xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">
                 <div className="font-black">{visibleTaskError.title}</div>
                 <p className="mt-1 text-xs leading-5">{visibleTaskError.detail}</p>
                 <details className="mt-2 text-xs text-muted">
                   <summary className="cursor-pointer font-bold">查看原始错误</summary>
-                  <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-white p-2">{visibleTask.error}</pre>
+                  <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-card p-2">{visibleTask.error}</pre>
                 </details>
               </div>
             )}
             {visibleTask.stop_reason && (
-              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-amber-200 bg-amber-50 text-amber-800' : 'bg-[#FFF0E5] text-primary'}`}>
+              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-warning-border bg-warning-soft text-warning-strong' : 'bg-secondary text-primary'}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="font-black">{visibleTask.stop_reason === 'daily_limit' ? '本次未发送' : '任务说明'}</div>
@@ -941,7 +941,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       </section>
 
       {workbench.send_quota?.exhausted && (
-        <section className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+        <section className="rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-warning-strong">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold">今日发送额度已用完</h3>
@@ -961,7 +961,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <div>
             <h3 className="text-lg font-black">求职数据</h3>
           </div>
-          <div className="inline-flex rounded-full border border-card-border bg-white p-1">
+          <div className="inline-flex rounded-full border border-card-border bg-card p-1">
             {([
               { value: 'today' as const, label: '今日数据' },
               { value: 'total' as const, label: '累计数据' },
@@ -971,7 +971,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 type="button"
                 onClick={() => setStatsScope(option.value)}
                 className={`rounded-full px-3 py-1.5 text-xs font-black transition ${
-                  statsScope === option.value ? 'bg-primary text-white shadow-sm' : 'text-muted hover:text-primary'
+                  statsScope === option.value ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'
                 }`}
               >
                 {option.label}
@@ -989,7 +989,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               ? '实时待处理数量'
               : `${statsScope === 'today' ? '累计' : '今日'} ${alternateFunnel[item.key] || 0}`
             return (
-              <div key={item.key} className="rounded-2xl border border-card-border bg-white p-4">
+              <div key={item.key} className="rounded-2xl border border-card-border bg-card p-4">
                 <div className="text-xs text-muted">{statsScope === 'today' ? item.todayLabel : item.totalLabel}</div>
                 <div className={`mt-1 text-2xl font-black ${item.highlight ? 'text-primary' : 'text-foreground'}`}>
                   {value}
@@ -1027,7 +1027,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <PipelineFlow />
         </section>
       )}
-      <section className="rounded-2xl border border-card-border bg-white px-4 py-3">
+      <section className="rounded-2xl border border-card-border bg-card px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 className="text-sm font-bold">HR 简历待办 <span className="ml-1 text-xs font-normal text-muted">{workbench.needs_resume.length ? `${workbench.needs_resume.length} 项待处理` : '暂无待办'}</span></h3>
@@ -1038,10 +1038,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         {workbench.needs_resume.length ? (
           <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
             {workbench.needs_resume.slice(0, 4).map(job => (
-              <div key={job.id} className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+              <div key={job.id} className="rounded-2xl border border-card-border bg-surface p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="font-black">{job.company}｜{job.title}</div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发简历</span>
+                  <span className="rounded-full bg-secondary px-2 py-1 text-[11px] font-black text-primary">待发简历</span>
                 </div>
                 <p className="mt-2 text-sm leading-6 text-muted">HR 已请求简历，系统已准备定制化简历下载入口。</p>
                 <div className="mt-3 flex gap-2">
@@ -1055,7 +1055,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       </section>
 
       {workbench.send_errors.length > 0 && (
-        <section className="rounded-3xl border border-red-100 bg-red-50 p-5">
+        <section className="rounded-3xl border border-danger-border bg-danger-soft p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black text-danger">发送失败待处理</h3>
@@ -1070,13 +1070,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {workbench.send_errors.map(job => (
-              <div key={job.id} className="rounded-2xl border border-red-100 bg-white p-4">
+              <div key={job.id} className="rounded-2xl border border-danger-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="font-black">{job.company}｜{job.title}</div>
                     <div className="mt-1 text-xs text-danger">最近失败原因：{job.last_error || '发送失败，等待重试'}</div>
                   </div>
-                  <span className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
+                  <span className="rounded-full bg-danger-soft px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
                 </div>
                 <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待重新发送。'}</p>
                 <div className="mt-3 flex gap-2">
@@ -1094,7 +1094,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       )}
 
       {pendingGreetingJobs.length > 0 && (
-        <section className="rounded-3xl border border-primary/20 bg-[#FFF0E5] p-5">
+        <section className="rounded-3xl border border-primary/20 bg-secondary p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black">待发送招呼语</h3>
@@ -1102,7 +1102,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             </div>
             <div className="flex flex-wrap gap-2">
               {pendingGreetingReviewCount > 0 && (
-                <span className="rounded-full bg-amber-100 px-3 py-2 text-xs font-black text-amber-700">
+                <span className="rounded-full bg-warning-soft px-3 py-2 text-xs font-black text-warning">
                   {pendingGreetingReviewCount} 个待选择
                 </span>
               )}
@@ -1133,7 +1133,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </section>
       )}
 
-      <section className="rounded-2xl border border-card-border bg-white p-4">
+      <section className="rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-black">今日待确认</h3>
@@ -1149,7 +1149,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             <Button size="sm" disabled={!actionableSelected.length} onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
           </div>
         </div>
-        <details className="group mb-3 rounded-xl border border-card-border bg-[#FFFCFA]">
+        <details className="group mb-3 rounded-xl border border-card-border bg-surface">
           <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs [&::-webkit-details-marker]:hidden">
             <span className="flex items-center gap-2 font-bold">
               <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
@@ -1186,7 +1186,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             ))}
           </div>
         ) : todayJobs.length ? (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-center text-sm text-muted">
+          <div className="rounded-2xl border border-dashed border-card-border bg-surface p-5 text-center text-sm text-muted">
             <p>没有符合当前条件的岗位</p>
             <Button className="mt-3" variant="secondary" size="sm" onClick={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}>重置筛选</Button>
           </div>
@@ -1209,14 +1209,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
 
 function CollectionProgressPanel({ progress }: { progress: CollectionProgress }) {
   return (
-    <div className="mt-3 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
+    <div className="mt-3 rounded-2xl border border-primary/20 bg-secondary p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-black text-primary">多平台采集进度</div>
         <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '采集中' : progress.outcome === 'scoring' ? '正在自动评分' : progress.outcome || '已结束'}</div>
       </div>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
         {Object.entries(progress.platforms || {}).map(([platform, state]) => (
-          <div key={platform} className="rounded-xl border border-card-border bg-white p-3">
+          <div key={platform} className="rounded-xl border border-card-border bg-card p-3">
             <div className="flex items-center justify-between text-sm font-black">
               <span>{PLATFORM_LABELS[platform] || platform}</span>
               <span>新增 {state.new}</span>
@@ -1285,13 +1285,13 @@ function GreetingReviewCard({
   }
 
   return (
-    <div className={`rounded-2xl border bg-white p-4 ${needsSelection ? 'border-amber-200' : 'border-primary/20'}`}>
+    <div className={`rounded-2xl border bg-card p-4 ${needsSelection ? 'border-warning-border' : 'border-primary/20'}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="font-black">{job.company}｜{job.title}</div>
           <div className="mt-1 text-xs text-muted">发送前确认最终使用的表达</div>
         </div>
-        <span className={`rounded-full px-2 py-1 text-[11px] font-black ${needsSelection ? 'bg-amber-100 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+        <span className={`rounded-full px-2 py-1 text-[11px] font-black ${needsSelection ? 'bg-warning-soft text-warning' : 'bg-success-soft text-success'}`}>
           {selectionLabel}
         </span>
       </div>
@@ -1299,7 +1299,7 @@ function GreetingReviewCard({
       {issues.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5" aria-label="招呼语优化原因">
           {issues.map(issue => (
-            <span key={issue} className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">
+            <span key={issue} className="rounded-full bg-warning-soft px-2.5 py-1 text-[11px] font-bold text-warning">
               {issue}
             </span>
           ))}
@@ -1308,14 +1308,14 @@ function GreetingReviewCard({
 
       {hasPreview ? (
         <div className="mt-3 grid gap-3 xl:grid-cols-2">
-          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'original' || needsSelection ? 'border-card-border bg-[#FFFCFA]' : 'border-card-border/70 bg-white'}`}>
+          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'original' || needsSelection ? 'border-card-border bg-surface' : 'border-card-border/70 bg-card'}`}>
             <div className="text-[11px] font-black tracking-[0.12em] text-muted">原始版本</div>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{original}</p>
             <Button className="mt-3" variant="secondary" size="sm" disabled={saving || busy} onClick={() => void saveSelection('original')}>
               保留原文
             </Button>
           </div>
-          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'optimized' || job.greeting_selection === 'auto_optimized' ? 'border-primary/30 bg-[#FFF8F2]' : 'border-primary/20 bg-white'}`}>
+          <div className={`rounded-xl border p-3 ${job.greeting_selection === 'optimized' || job.greeting_selection === 'auto_optimized' ? 'border-primary/30 bg-surface-muted' : 'border-primary/20 bg-card'}`}>
             <div className="flex items-center gap-1.5 text-[11px] font-black tracking-[0.12em] text-primary">
               <Sparkles className="h-3.5 w-3.5" />优化预览
             </div>
@@ -1326,28 +1326,28 @@ function GreetingReviewCard({
           </div>
         </div>
       ) : (
-        <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+        <div className="mt-3 rounded-xl border border-card-border bg-surface p-3">
           <div className="text-[11px] font-black tracking-[0.12em] text-muted">当前版本</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting || '招呼语已生成，等待发送。'}</p>
         </div>
       )}
 
       {hasPreview && !needsSelection && (
-        <div className="mt-3 rounded-xl border border-primary/30 bg-[#FFF8F2] p-3" aria-label="最终发送版本">
+        <div className="mt-3 rounded-xl border border-primary/30 bg-surface-muted p-3" aria-label="最终发送版本">
           <div className="text-[11px] font-black tracking-[0.12em] text-primary">最终发送版本</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting}</p>
         </div>
       )}
 
       {editing && (
-        <div className="mt-3 rounded-xl border border-card-border bg-[#FFFCFA] p-3">
+        <div className="mt-3 rounded-xl border border-card-border bg-surface p-3">
           <label className="text-xs font-black text-foreground" htmlFor={`greeting-edit-${job.id}`}>手动编辑最终版本</label>
           <textarea
             id={`greeting-edit-${job.id}`}
             value={draft}
             maxLength={300}
             onChange={event => setDraft(event.target.value)}
-            className="mt-2 min-h-28 w-full resize-y rounded-xl border border-card-border bg-white p-3 text-sm leading-6 outline-none focus:border-primary"
+            className="mt-2 min-h-28 w-full resize-y rounded-xl border border-card-border bg-card p-3 text-sm leading-6 outline-none focus:border-primary"
           />
           <div className="mt-2 flex items-center justify-between gap-3">
             <span className="text-xs text-muted">{draft.length}/300</span>
@@ -1359,7 +1359,7 @@ function GreetingReviewCard({
         </div>
       )}
 
-      {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-danger">{error}</p>}
+      {error && <p className="mt-3 rounded-lg bg-danger-soft px-3 py-2 text-xs font-bold text-danger">{error}</p>}
 
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" disabled={needsSelection || editing || saving || busy} onClick={onSend}>发送招呼语</Button>
@@ -1375,7 +1375,7 @@ function GreetingReviewCard({
 
 function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: Job; selected: boolean; onToggle: () => void; onDetail: () => void; onReject: () => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-[#FFFCFA]' : 'border-card-border bg-[#FFFCFA]'}`}>
+    <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-surface' : 'border-card-border bg-surface'}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="font-black">{job.company}｜{job.title}</div>
@@ -1492,7 +1492,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
-      <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-white p-6 shadow-2xl">
+      <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">岗位详情</div>
@@ -1509,11 +1509,11 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           <InfoBlock label="匹配分" value={String(job.score || '-')} />
           <InfoBlock label="定制简历" value={job.resume_path || '未生成'} />
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">评分理由</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.score_reason || '-'}</p>
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-black">招呼语</div>
             <div className="flex gap-2">
@@ -1533,10 +1533,10 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
             </div>
           </div>
           {reviewed && <p className="mt-2 text-xs text-muted">最终发送版本已人工确认；如需调整，请手动编辑。</p>}
-          {selectionPending && <p className="mt-2 text-xs text-amber-700">已有优化预览，请返回待发送列表选择最终版本，或手动编辑并保存。</p>}
+          {selectionPending && <p className="mt-2 text-xs text-warning">已有优化预览，请返回待发送列表选择最终版本，或手动编辑并保存。</p>}
           {editing ? (
             <textarea
-              className="mt-2 w-full rounded-xl border border-card-border bg-white p-3 text-sm leading-6 text-foreground focus:border-primary focus:outline-none"
+              className="mt-2 w-full rounded-xl border border-card-border bg-card p-3 text-sm leading-6 text-foreground focus:border-primary focus:outline-none"
               rows={4}
               maxLength={300}
               value={greeting}
@@ -1547,7 +1547,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           )}
           {notice && <div className="mt-2 text-xs font-bold text-primary">{notice}</div>}
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">JD</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.jd || '-'}</p>
         </div>
@@ -1558,7 +1558,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
 
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+    <div className="rounded-2xl border border-card-border bg-surface p-4">
       <div className="text-xs text-muted">{label}</div>
       <div className="mt-1 font-bold text-foreground">{value}</div>
     </div>
@@ -1838,7 +1838,7 @@ function JobsPoolView() {
           <Button variant="ghost" size="sm" onClick={() => setShowRecycleBin(false)}>返回岗位池</Button>
           <Button variant="secondary" size="sm" onClick={() => void loadRecycleBin()} disabled={recycleLoading}>刷新回收站</Button>
         </div>
-        {notice && <div className="rounded-xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+        {notice && <div className="rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
         <RecycleBinPanel
           jobs={recycleJobs}
           selectedIds={recycleSelectedIds}
@@ -1850,9 +1850,9 @@ function JobsPoolView() {
         />
         {permanentDeleteIds.length > 0 && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true">
-            <div className="w-full max-w-lg rounded-3xl border border-red-200 bg-white p-6 shadow-2xl">
+            <div className="w-full max-w-lg rounded-3xl border border-danger-border bg-card p-6 shadow-2xl">
               <div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-danger" /><div><h3 className="text-xl font-black">确认永久删除</h3><p className="mt-2 text-sm leading-6 text-muted">将永久删除 {permanentDeleteIds.length} 条岗位及其历史，无法恢复。存在发送或回复证据的岗位会被后端拒绝删除。</p></div></div>
-              <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-red-100 bg-red-50 p-3 text-sm font-bold"><input type="checkbox" checked={permanentDeleteAcknowledged} onChange={event => setPermanentDeleteAcknowledged(event.target.checked)} className="mt-0.5 h-4 w-4 accent-danger" /><span>我确认永久删除，并了解此操作无法撤销。</span></label>
+              <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-danger-border bg-danger-soft p-3 text-sm font-bold"><input type="checkbox" checked={permanentDeleteAcknowledged} onChange={event => setPermanentDeleteAcknowledged(event.target.checked)} className="mt-0.5 h-4 w-4 accent-danger" /><span>我确认永久删除，并了解此操作无法撤销。</span></label>
               <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" size="sm" onClick={() => setPermanentDeleteIds([])}>取消</Button><Button variant="destructive" size="sm" disabled={!permanentDeleteAcknowledged} onClick={() => void confirmPermanentDelete()}>永久删除</Button></div>
             </div>
           </div>
@@ -1862,7 +1862,7 @@ function JobsPoolView() {
   }
 
   return (
-    <div className="rounded-3xl border border-card-border bg-white p-5">
+    <div className="rounded-3xl border border-card-border bg-card p-5">
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-black">岗位池</h2>
@@ -1887,7 +1887,7 @@ function JobsPoolView() {
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '取消选择本页' : '选择本页'}
         </Button>
-        <span className="rounded-full bg-[#FFF0E5] px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
+        <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
         <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
@@ -1899,25 +1899,25 @@ function JobsPoolView() {
         <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>评分选项</Button>
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
-      {notice && <div className="mb-4 rounded-xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+      {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
       {deliveryTask && (
-        <div className="mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mb-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-black">投递队列</div>
               <p className="mt-1 text-xs text-muted">只展示已人工确认的 BOSS 发送任务；智联和 51job 不会进入此队列。</p>
             </div>
-            <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
+            <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">
               {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}
             </span>
           </div>
-          <div className="mt-3 rounded-xl border border-card-border bg-white px-3 py-2 text-sm">
+          <div className="mt-3 rounded-xl border border-card-border bg-card px-3 py-2 text-sm">
             <div className="font-bold">{deliveryTask.logs?.[deliveryTask.logs.length - 1] || '队列已创建，等待执行'}</div>
             <div className="mt-1 text-xs text-muted">任务 ID：{deliveryTask.id}</div>
           </div>
         </div>
       )}
-      {error && <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
+      {error && <div className="mb-4 rounded-xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">{error}</div>}
       <JobsTable
         jobs={items}
         page={page}
@@ -1958,7 +1958,7 @@ function ExportMenu({
       <select
         value={format}
         onChange={event => setFormat(event.target.value as 'xlsx' | 'csv')}
-        className="rounded-xl border border-card-border bg-white px-2 py-2 text-xs outline-none focus:border-primary"
+        className="rounded-xl border border-card-border bg-card px-2 py-2 text-xs outline-none focus:border-primary"
       >
         <option value="xlsx">XLSX</option>
         <option value="csv">CSV</option>
@@ -2234,7 +2234,7 @@ function MonitorExecutionView({
   }
 
   return (
-    <div className="rounded-3xl border border-card-border bg-white p-5">
+    <div className="rounded-3xl border border-card-border bg-card p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-black">监测执行</h2>
@@ -2248,7 +2248,7 @@ function MonitorExecutionView({
             <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             {refreshing ? '刷新中' : '立即刷新'}
           </Button>
-          <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">待处理 {pendingItems.length}</span>
+          <span className="rounded-full bg-secondary px-3 py-2 text-xs font-black text-primary">待处理 {pendingItems.length}</span>
         </div>
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
@@ -2264,14 +2264,14 @@ function MonitorExecutionView({
               key={item.key}
               type="button"
               onClick={() => setActiveMonitorFilter(item.key)}
-              className={`rounded-full px-3 py-1 text-xs font-bold transition ${active ? 'bg-primary text-white' : 'border border-card-border text-muted hover:border-primary/60 hover:text-primary'}`}
+              className={`rounded-full px-3 py-1 text-xs font-bold transition ${active ? 'bg-primary text-primary-foreground' : 'border border-card-border text-muted hover:border-primary/60 hover:text-primary'}`}
             >
               {item.label} {item.count}
             </button>
           )
         })}
       </div>
-      {notice && <div className="mb-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+      {notice && <div className="mb-3 rounded-2xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
       <div className="space-y-3">
         {displayedHistory.map((item, index) => {
           const canReply = item.action === 'reply_pending'
@@ -2291,10 +2291,10 @@ function MonitorExecutionView({
           const preparingReply = preparingReplyId === item.id
           const canOpenChat = (item.source_platform || 'boss') === 'boss' ? Boolean(item.id) : Boolean(targetUrl)
           return (
-            <div key={item.id || `${item.created_at}-${index}`} className="grid gap-3 rounded-2xl border border-card-border bg-[#FFFCFA] p-4 lg:grid-cols-[130px_1fr_160px]">
+            <div key={item.id || `${item.created_at}-${index}`} className="grid gap-3 rounded-2xl border border-card-border bg-surface p-4 lg:grid-cols-[130px_1fr_160px]">
               <div className="text-xs text-muted">
                 <div>{item.created_at}</div>
-                <div className="mt-2 rounded-full bg-white px-2 py-1 text-center font-bold text-primary">{getActionLabel(item.action)}</div>
+                <div className="mt-2 rounded-full bg-card px-2 py-1 text-center font-bold text-primary">{getActionLabel(item.action)}</div>
               </div>
               <div>
                 <div className="font-black">{item.company || '岗位'}｜{item.title || '监测记录'}</div>
@@ -2311,7 +2311,7 @@ function MonitorExecutionView({
                       </div>
                     )}
                     {conversationMessages.length > 0 && (
-                      <div className="overflow-hidden rounded-2xl border border-card-border bg-white">
+                      <div className="overflow-hidden rounded-2xl border border-card-border bg-card">
                         <div className="flex items-center justify-between border-b border-card-border px-3 py-1.5">
                           <span className="text-xs font-black text-foreground">聊天记录</span>
                         </div>
@@ -2320,7 +2320,7 @@ function MonitorExecutionView({
                             const fromHr = message.sender === 'hr'
                             return (
                               <div key={`${item.id}-${messageIndex}-${message.sender}`} className="grid grid-cols-[28px_minmax(0,1fr)] items-start gap-2 px-3 py-1.5">
-                                <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-black ${fromHr ? 'bg-[#FFF0E5] text-primary' : 'bg-emerald-50 text-emerald-700'}`}>
+                                <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-black ${fromHr ? 'bg-secondary text-primary' : 'bg-success-soft text-success'}`}>
                                   {fromHr ? 'HR' : 'AI'}
                                 </div>
                                 <p className="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-5 text-foreground">{message.text}</p>
@@ -2331,7 +2331,7 @@ function MonitorExecutionView({
                       </div>
                     )}
                     {isResumeFailure && (
-                      <div className="rounded-2xl border border-danger/30 bg-red-50 p-3">
+                      <div className="rounded-2xl border border-danger/30 bg-danger-soft p-3">
                         <div className="text-xs font-black text-danger">系统失败原因</div>
                         <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-danger">{systemFailureReason}</p>
                       </div>
@@ -2343,7 +2343,7 @@ function MonitorExecutionView({
                           id={`reply-draft-${item.id}`}
                           value={draftFor(item)}
                           onChange={event => setReplyDrafts(prev => ({ ...prev, [item.id]: event.target.value }))}
-                          className="min-h-[92px] w-full rounded-2xl border border-card-border bg-white p-3 text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                          className="min-h-[92px] w-full rounded-2xl border border-card-border bg-card p-3 text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                         />
                       </div>
                     ) : null}
@@ -2399,7 +2399,7 @@ function MonitorExecutionView({
           )
         })}
         {!visibleHistory.length && (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">
+          <div className="rounded-2xl border border-dashed border-card-border bg-surface p-5 text-sm text-muted">
             {activeMonitorFilter === 'replied' ? '暂无近 7 天已回复对话。' : '暂无待处理 HR 问题。'}
           </div>
         )}

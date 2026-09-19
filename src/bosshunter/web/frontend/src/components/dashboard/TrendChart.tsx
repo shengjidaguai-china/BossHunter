@@ -39,17 +39,17 @@ export function TrendChart({ data }: TrendChartProps) {
         <div className="h-[200px]">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F2E7DE" />
-              <XAxis dataKey="day" stroke="#7A6C61" fontSize={12} />
-              <YAxis stroke="#7A6C61" fontSize={12} />
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+              <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
               <Tooltip
-                contentStyle={{ background: '#FFFFFF', border: '1px solid #F2E7DE', borderRadius: '12px', boxShadow: '0 4px 12px rgba(251,101,17,0.08)' }}
-                labelStyle={{ color: '#1F1F1F', fontWeight: 700 }}
-                itemStyle={{ color: '#7A6C61', fontSize: '12px' }}
+                contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '12px', boxShadow: '0 4px 12px hsl(var(--primary) / 0.08)' }}
+                labelStyle={{ color: 'hsl(var(--foreground))', fontWeight: 700 }}
+                itemStyle={{ color: 'hsl(var(--muted-foreground))', fontSize: '12px' }}
               />
-              <Legend wrapperStyle={{ fontSize: '12px', color: '#7A6C61' }} />
-              <Line type="monotone" dataKey="send" name="发送" stroke="#16A34A" strokeWidth={2} dot={{ r: 3, fill: '#16A34A' }} activeDot={{ r: 5 }} />
-              <Line type="monotone" dataKey="reply" name="回复" stroke="#FB6511" strokeWidth={2} dot={{ r: 3, fill: '#FB6511' }} activeDot={{ r: 5 }} />
+              <Legend wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }} />
+              <Line type="monotone" dataKey="send" name="发送" stroke="hsl(var(--success))" strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--success))' }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="reply" name="回复" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--primary))' }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>

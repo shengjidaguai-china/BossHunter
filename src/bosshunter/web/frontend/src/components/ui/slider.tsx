@@ -23,7 +23,7 @@ export function Slider({ value, onChange, min = 0, max = 100, step = 1, classNam
         onChange={e => onChange(Number(e.target.value))}
         className="w-full h-2 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:cursor-pointer"
         style={{
-          background: `linear-gradient(to right, #FB6511 0%, #FB6511 ${pct}%, #F2E7DE ${pct}%, #F2E7DE 100%)`
+          background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${pct}%, hsl(var(--border)) ${pct}%, hsl(var(--border)) 100%)`
         }}
       />
       <span className="ml-3 text-sm font-bold text-foreground min-w-[3ch] text-right">{value}</span>

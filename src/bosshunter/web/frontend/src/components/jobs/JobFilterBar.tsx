@@ -33,7 +33,7 @@ export function JobFilterBar({
   const update = (key: keyof JobFilters, value: string) => onChange({ ...filters, [key]: value })
 
   return (
-    <div className={cn(!compact && "mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-3")}>
+    <div className={cn(!compact && "mb-4 rounded-2xl border border-card-border bg-surface p-3")}>
       <div className={cn("grid min-w-0", compact ? "grid-cols-2 gap-1.5 xl:grid-cols-4" : "grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-4")}>
         <label className={cn("relative min-w-0", compact ? "col-span-2 xl:col-span-1" : "md:col-span-2 2xl:col-span-1")}>
           <Search className={cn("pointer-events-none absolute text-muted", compact ? "left-2 top-2 h-3 w-3" : "left-3 top-2.5 h-4 w-4")} />
@@ -109,7 +109,7 @@ export function JobFilterBar({
           <option value="experienced">社招</option>
           <option value="unknown">未识别</option>
         </Select>
-        <div className={cn("flex min-w-0 items-center gap-2", compact ? "col-span-2 justify-end xl:col-span-1" : "min-h-9 flex-wrap justify-between rounded-md border border-card-border bg-white px-3 py-1")}>
+        <div className={cn("flex min-w-0 items-center gap-2", compact ? "col-span-2 justify-end xl:col-span-1" : "min-h-9 flex-wrap justify-between rounded-md border border-card-border bg-card px-3 py-1")}>
           {!compact && <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>}
           <Button
             type="button"
