@@ -11,13 +11,13 @@ const steps = [
 
 export function PipelineFlow() {
   return (
-    <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-6">
+    <div className="rounded-2xl border border-card-border bg-surface p-6">
       <h3 className="text-sm font-black text-foreground mb-4">BossHunter 自动求职流程</h3>
       <div className="grid grid-cols-3 gap-x-3 gap-y-5 lg:grid-cols-6">
         {steps.map((step, i) => (
           <div key={step.label} className="relative min-w-0">
             <div className="flex flex-col items-center">
-              <div className="w-12 h-12 rounded-xl bg-white border border-card-border flex items-center justify-center mb-2 hover:border-primary/50 hover:shadow-md transition-all shadow-sm">
+              <div className="w-12 h-12 rounded-xl bg-card border border-card-border flex items-center justify-center mb-2 hover:border-primary/50 hover:shadow-md transition-all shadow-sm">
                 <step.icon className="w-5 h-5 text-primary" />
               </div>
               <span className="text-xs font-black text-foreground">{step.label}</span>

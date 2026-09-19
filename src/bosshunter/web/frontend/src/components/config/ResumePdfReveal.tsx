@@ -27,7 +27,7 @@ export function ResumePdfReveal({ info, visible, onToggle }: ResumePdfRevealProp
       <iframe
         title={info.original_filename || '原 PDF 预览'}
         src={resumeOriginalPreviewSrc(info)}
-        className="h-96 w-full rounded-md border border-card-border bg-white"
+        className="h-96 w-full rounded-md border border-card-border bg-card"
       />
     </ResumeRevealPanel>
   )
