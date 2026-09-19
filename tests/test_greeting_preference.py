@@ -103,6 +103,29 @@ def test_review_receives_user_preferences():
     assert '不得建议补问句' in call.call_args.args[0]
 
 
+@pytest.mark.parametrize('greeting', [
+    '你们的内容获客可以先围绕一个细分场景试选题。我做过公众号和社群运营，想聊聊这个岗位。',
+    '您好，我做过公众号和社群运营，想应聘这个岗位。',
+])
+def test_business_suggestion_is_optional_and_does_not_trigger_regeneration(greeting):
+    config = {'profile': {'greeting_preference': '自然简短，有依据时带业务建议'}}
+    with (
+        patch.object(greeter, 'get_db', return_value=MagicMock()),
+        patch.object(greeter, 'get_jobs_by_status', return_value=[{
+            'id': 'one', 'title': '运营', 'company': '示例', 'salary': '',
+            'jd': '负责内容获客', 'status': 'approved',
+        }]),
+        patch.object(greeter, '_get_resume_summary', return_value='做过公众号和社群运营'),
+        patch.object(greeter, '_call_claude', return_value=greeting) as call,
+        patch.object(greeter, 'save_generated_greeting_preview', return_value=True) as save,
+    ):
+        assert greeter.generate_greetings(config) == 1
+    call.assert_called_once()
+    assert '不硬编建议' in call.call_args.args[0]
+    assert save.call_args.kwargs['selected_greeting'] == greeting
+    assert config['_workbench_greeting_report']['failed_count'] == 0
+
+
 def test_no_question_preference_stays_in_prompt_without_rejecting_draft():
     config = {'profile': {'greeting_preference': '简洁，不要问问题'}, 'ai': {'greeting_style_suggestions': False}}
     job = {'title': '运营', 'company': '示例', 'salary': '16-25K'}

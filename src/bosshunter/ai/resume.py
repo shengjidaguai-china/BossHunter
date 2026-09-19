@@ -5,6 +5,7 @@ import math
 import re
 from collections import Counter
 from difflib import SequenceMatcher
+from html import unescape
 from pathlib import Path
 
 from rich.console import Console
@@ -654,15 +655,58 @@ def _call_claude(prompt: str, config: dict) -> str | None:
         return None
 
 
+def _resume_display_markdown(markdown_text: str) -> str:
+    """Unify equivalent labels without moving, merging or dropping sections.
+
+    Adapted from #227's heading normalization; keep the candidate's section
+    order and custom case-study headings instead of imposing education first.
+    """
+    aliases = {
+        "个人优势": "个人概述", "职业概述": "个人概述",
+        "任职经历": "工作经历", "工作经验": "工作经历",
+        "教育经历": "教育背景", "相关技能": "专业技能",
+    }
+    return re.sub(
+        r"(?m)^##[ \t]+([^\n]+?)[ \t]*$",
+        lambda match: "## " + aliases.get(match[1], match[1]),
+        markdown_text,
+    )
+
+
 def _resume_html(markdown_text: str, *, image_mode: bool = False) -> str:
-    """Build the deterministic Job OK layout shared by PDF and PNG."""
+    """Build a readable, single-column resume shared by PDF and PNG."""
     import markdown2
 
+    markdown_text = _resume_display_markdown(markdown_text)
     # markdown2 treats a CJK colon at the closing emphasis boundary as literal
     # Markdown. Keep the visible text, placing punctuation outside the emphasis.
     markdown_text = re.sub(r"\*\*([^*\n]+?)([：:])\*\*", r"**\1**\2", markdown_text)
     html_body = markdown2.markdown(markdown_text, extras=["tables", "fenced-code-blocks"])
-    page_rule = "@page { size: A4; margin: 0; }" if image_mode else "@page { size: A4; margin: 12mm 14mm; }"
+    # Separate contact lines that Markdown otherwise folds into one paragraph.
+    def masthead(match):
+        contacts = re.sub(r"(?<!>)\n(?=\S)", "<br>\n", match[2].strip())
+        return f'<header class="resume-header">{match[1]}{contacts}</header>\n'
+
+    html_body = re.sub(r"\A(<h1>.*?</h1>)\s*(.*?)(?=<h[2-6]\b|\Z)", masthead, html_body, flags=re.S)
+
+    def entry_heading(match):
+        title, metadata = match[1], match[2]
+        plain = unescape(re.sub(r"<[^>]+>", "", metadata)).strip()
+        date_part = re.split(r"[|｜]", plain, maxsplit=1)[0].strip()
+        # Only style short, explicit year/date metadata. Narrative paragraphs
+        # stay untouched, even when they immediately follow an entry heading.
+        if len(plain) > 140 or not re.fullmatch(r"(?:19|20)\d{2}[\d年月日、,./\s\-–—~至今现]*", date_part):
+            return match[0]
+        return f'<div class="resume-entry">{title}<p class="resume-meta">{metadata}</p></div>\n'
+
+    html_body = re.sub(r"(<h3>.*?</h3>)\s*<p>(.*?)</p>", entry_heading, html_body, flags=re.S)
+    page_rule = "@page { size: A4; margin: 0; }" if image_mode else """@page {
+        size: A4; margin: 12mm 14mm 14mm;
+        @bottom-right {
+            content: counter(page) " / " counter(pages);
+            font: 8pt sans-serif; color: #667085;
+        }
+    }"""
     sheet_style = """
     html, body { margin: 0; padding: 0; background: #fff; }
     [data-resume-sheet] { width: 210mm; min-height: 297mm; padding: 12mm 14mm; background: #fff; }
@@ -681,16 +725,26 @@ def _resume_html(markdown_text: str, *, image_mode: bool = False) -> str:
     {sheet_style}
     body {{
         font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-        font-size: 10.5pt; line-height: 1.45; margin: 0; color: #20242a;
+        font-size: 10.25pt; line-height: 1.45; margin: 0; color: #293340;
     }}
-    h1 {{ font-size: 21.5pt; line-height: 1.05; color: #1f4e79; margin: 0 0 2.5mm; }}
-    h2 {{ font-size: 13pt; color: #1f4e79; margin: 4mm 0 2mm; padding-bottom: 1mm; border-bottom: .7pt solid #b8c7d9; break-after: avoid; }}
-    h3 {{ font-size: 11pt; color: #20242a; margin: 2.8mm 0 1.2mm; break-after: avoid; }}
-    p {{ margin: 0 0 1.8mm; orphans: 2; widows: 2; }}
-    ul, ol {{ padding-left: 5mm; margin: 1mm 0 2mm; }}
-    li {{ margin: 0 0 1.2mm; }}
+    .resume-header {{ border-bottom: 1.5pt solid #264d64; padding-bottom: 3mm; margin-bottom: 4mm; }}
+    .resume-header p {{ color: #536170; font-size: 9pt; line-height: 1.6; margin: 0; }}
+    h1 {{ font-size: 25pt; font-weight: 700; letter-spacing: .6pt; line-height: 1.15; color: #182d3b; margin: 0 0 2.5mm; }}
+    h2 {{ font-size: 12pt; letter-spacing: .5pt; color: #264d64; margin: 4.5mm 0 2.2mm; padding-left: 2.5mm; border-left: 2.5pt solid #264d64; line-height: 1.15; break-after: avoid; }}
+    h3 {{ font-size: 10.5pt; color: #182d3b; margin: 2.5mm 0 1mm; line-height: 1.4; break-after: avoid; }}
+    .resume-entry {{ display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: 4mm; margin: 2.5mm 0 1.2mm; break-inside: avoid; break-after: avoid; }}
+    .resume-entry h3 {{ margin: 0 0 .7mm; }}
+    .resume-meta {{ font-size: 9pt; color: #607080; margin: 0; }}
+    .resume-meta strong {{ font-weight: 400; }}
+    p {{ margin: 0 0 1.5mm; orphans: 2; widows: 2; }}
+    ul, ol {{ padding-left: 4.5mm; margin: 1mm 0 2mm; }}
+    li {{ padding-left: .5mm; margin: 0 0 .9mm; orphans: 2; widows: 2; }}
+    li::marker {{ color: #738592; font-size: .8em; }}
+    strong {{ font-weight: 700; color: #243b4b; }}
     h3, li, table, blockquote {{ break-inside: avoid; }}
-    a {{ color: #1f4e79; overflow-wrap: anywhere; }}
+    .resume-continuation {{ font-size: 8.5pt; color: #607080; border-bottom: .5pt solid #d8e0e5; padding: 0 0 2mm; margin: 0 0 3mm; list-style: none; break-after: avoid; }}
+    li.resume-continuation {{ margin-left: -4.5mm; }}
+    a {{ color: #264d64; text-decoration: none; overflow-wrap: anywhere; }}
     table {{ border-collapse: collapse; width: 100%; margin: 1.2mm 0; font-size: 10pt; }}
     th, td {{ border: .5pt solid #b8c7d9; padding: 1mm 1.5mm; text-align: left; }}
     th {{ background: #edf3f8; color: #1f4e79; }}
@@ -728,7 +782,7 @@ def _balanced_page_starts(boundaries: list[dict], page_height: float) -> list[in
                     height = positions[stop] - positions[start]
                     if height > page_height:
                         break
-                    penalty = 0 if stop == end or boundaries[stop].get("section") else page_height ** 2 * 0.12
+                    penalty = 0 if stop == end or boundaries[stop].get("section") else page_height ** 2 * 0.003
                     score = cost + (height - target) ** 2 + penalty
                     if stop not in next_states or score < next_states[stop][0]:
                         next_states[stop] = (score, cuts + [stop])
@@ -744,15 +798,31 @@ def _balance_pdf_pages(target_id: str) -> None:
         await document.fonts.ready;
         const children = [...document.body.children];
         const boundaries = [{y: 0, section: true}];
+        for (const list of document.querySelectorAll('ol')) {
+            let ordinal = list.hasAttribute('start') ? list.start : (list.reversed ? list.children.length : 1);
+            for (const item of list.children) {
+                if (item.hasAttribute('value')) ordinal = item.value;
+                item.dataset.resumeOrdinal = String(ordinal);
+                ordinal += list.reversed ? -1 : 1;
+            }
+        }
+        let sectionTitle = '';
+        let entryTitle = '';
         const add = (element, section) => {
             element.dataset.resumeBreak = String(boundaries.length);
+            element.dataset.resumeContinuation = sectionTitle +
+                (!section && entryTitle ? ' · ' + entryTitle : '');
             boundaries.push({y: element.getBoundingClientRect().top, section});
         };
         for (let i = 1; i < children.length; i++) {
             const element = children[i];
             const previous = children[i - 1];
-            const afterHeading = /^H[1-6]$/.test(previous.tagName);
-            if (/^H[23]$/.test(element.tagName) && !afterHeading) add(element, true);
+            if (element.tagName === 'H2') { sectionTitle = element.textContent; entryTitle = ''; }
+            const entry = element.matches('.resume-entry') ? element.querySelector('h3') :
+                (element.tagName === 'H3' ? element : null);
+            if (entry) entryTitle = entry.textContent;
+            const afterHeading = /^H[1-6]$/.test(previous.tagName) || previous.matches('.resume-entry');
+            if ((/^H[23]$/.test(element.tagName) || entry) && !afterHeading) add(element, true);
             else if (element.tagName === 'UL' || element.tagName === 'OL') {
                 [...element.children].slice(1).forEach(item => add(item, false));
             } else if (!afterHeading && /^(P|TABLE|BLOCKQUOTE)$/.test(element.tagName)) {
@@ -764,14 +834,27 @@ def _balance_pdf_pages(target_id: str) -> None:
     })()""")
     if not isinstance(layout, list):
         return
-    # A4 minus two 12 mm margins; allow 4 mm for print rounding/list spacing.
-    starts = _balanced_page_starts(layout, (297 - 24 - 4) * 96 / 25.4)
+    # Reserve room for the continuation label, footer and print rounding.
+    starts = _balanced_page_starts(layout, (297 - 26 - 10) * 96 / 25.4)
     if starts:
         evaluate(target_id, """(() => {
             const starts = %s;
             for (const index of starts) {
                 const element = document.querySelector(`[data-resume-break="${index}"]`);
-                element.style.breakBefore = 'page';
+                if (element.tagName === 'H2' || !element.dataset.resumeContinuation) {
+                    element.style.breakBefore = 'page';
+                    continue;
+                }
+                const label = document.createElement(element.tagName === 'LI' ? 'li' : 'div');
+                label.className = 'resume-continuation';
+                label.textContent = element.dataset.resumeContinuation + '（续）';
+                label.style.breakBefore = 'page';
+                if (element.dataset.resumeOrdinal) {
+                    // Do not shift numbers in a continued ordered list.
+                    element.value = Number(element.dataset.resumeOrdinal);
+                    label.value = element.value - (element.parentElement.reversed ? -1 : 1);
+                }
+                element.before(label);
             }
             return true;
         })()""" % json.dumps(starts))

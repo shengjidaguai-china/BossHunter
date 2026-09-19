@@ -758,7 +758,7 @@ class SidebarTests(unittest.TestCase):
         self.assertIn("md:absolute md:left-3", self.source)
         self.assertIn("mx-auto hidden items-center justify-center gap-2 md:flex", self.source)
         self.assertIn("text-xl", self.source)
-        self.assertIn("text-yellow-400", self.source)
+        self.assertIn("text-star", self.source)
 
     def test_sidebar_fetches_unresolved_reply_count(self):
         # Act / Assert

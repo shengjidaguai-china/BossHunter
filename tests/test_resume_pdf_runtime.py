@@ -668,6 +668,50 @@ class ResumePdfRuntimeTests(unittest.TestCase):
 
 
 class ResumePaginationTests(unittest.TestCase):
+    def test_section_preference_does_not_leave_large_uneven_blank_areas(self):
+        from bosshunter.ai.resume import _balanced_page_starts
+
+        boundaries = [
+            {"y": 0}, {"y": 600, "section": True}, {"y": 800},
+            {"y": 1400, "section": True}, {"y": 1600}, {"y": 2400},
+        ]
+        self.assertEqual(_balanced_page_starts(boundaries, 1000), [2, 4])
+
+    def test_display_aliases_preserve_custom_sections_order_and_all_content(self):
+        from bosshunter.ai.resume import _resume_display_markdown
+
+        source = (
+            "# 候选人\n\n## 个人优势\n- 真实成果\n\n"
+            "## 代表性传播案例\n### 案例一\n- 原始证据\n\n"
+            "## 工作经历\n### 公司\n- 工作内容\n\n"
+            "## 教育经历\n学校\n\n## 相关技能\n技能\n\n"
+            "## 荣誉\n奖项\n\n## 个人优势\n- 第二段内容\n"
+        )
+        result = _resume_display_markdown(source)
+        expected = source.replace("## 个人优势", "## 个人概述").replace(
+            "## 教育经历", "## 教育背景"
+        ).replace("## 相关技能", "## 专业技能")
+        self.assertEqual(result, expected)
+        self.assertEqual(_resume_display_markdown(result), expected)
+
+    def test_layout_keeps_metadata_links_and_narrative_paragraphs(self):
+        from bosshunter.ai.resume import _resume_html
+
+        html = _resume_html(
+            "# 候选人\n\n邮箱：candidate@example.com\n"
+            "GitHub：[作品](https://example.com/work)\n\n"
+            "## 工作经历\n### 公司｜职位\n**2020 - 2024｜行业**\n\n"
+            "- 交付原始成果\n\n### 项目\n这是一段完整的项目介绍，不是日期。\n\n"
+            "- 验证范围\n\n### 项目二\n2020年完成了有来源的交付。\n"
+        )
+        self.assertIn('href="https://example.com/work"', html)
+        self.assertIn('邮箱：candidate@example.com<br>', html)
+        self.assertIn('<p class="resume-meta"><strong>2020 - 2024｜行业</strong></p>', html)
+        self.assertIn('<h3>项目</h3>\n\n<p>这是一段完整的项目介绍，不是日期。</p>', html)
+        self.assertIn('交付原始成果', html)
+        self.assertIn('验证范围', html)
+        self.assertIn('<h3>项目二</h3>\n\n<p>2020年完成了有来源的交付。</p>', html)
+
     def test_balances_sparse_last_page_at_section_boundary(self):
         from bosshunter.ai.resume import _balanced_page_starts
 
