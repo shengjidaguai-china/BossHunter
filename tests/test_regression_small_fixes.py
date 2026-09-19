@@ -456,20 +456,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("最后刷新：", self.source)
         self.assertIn("refreshing && 'animate-spin'", self.source)
 
-    def test_dashboard_keeps_greeting_queue_progress_in_collapsed_details(self):
-        import re
-
-        self.assertIn("if (log.includes('招呼语进度')) return log", self.source)
-        details = re.search(
-            r'<details\b([^>]*aria-label="任务运行状态"[^>]*)>(.*?)</details>',
-            self.source,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(details)
-        self.assertNotRegex(details.group(1), r"\bopen(?:\s|=|$)")
-        self.assertIn("{taskSummary}", details.group(2))
-        self.assertIn("currentTaskStage(visibleTask)", details.group(2))
-        self.assertIn("whitespace-pre-line", details.group(2))
+    # Greeting queue progress is covered by rendered component assertions in
+    # DashboardPage.test.tsx; the task panel no longer uses collapsed details.
 
     def test_dashboard_falls_back_to_concrete_task_status(self):
         self.assertNotIn("return '等待后端返回阶段'", self.source)

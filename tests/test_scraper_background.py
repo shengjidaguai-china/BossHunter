@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from threading import Event
-from unittest.mock import Mock, call, patch
+from unittest.mock import MagicMock, call, patch
 
 from bosshunter.scraper.jobs import scrape_jobs
 from bosshunter.web.server import _execute_collect
@@ -29,7 +29,7 @@ class ScraperBackgroundTests(unittest.TestCase):
                 hooks.on_candidate(candidate)
             return PlatformCollectionResult("boss", "completed", "search_exhausted", "采集结束")
 
-        registry = CollectorRegistry({"boss": lambda: Mock(collect=collect)})
+        registry = CollectorRegistry({"boss": lambda: MagicMock(collect=collect)})
 
         def score_with_progress(score_config, **options):
             self.assertEqual(options["job_ids"], ["new-scoring-job"])
@@ -60,7 +60,7 @@ class ScraperBackgroundTests(unittest.TestCase):
         self.assertIn("评分结果已保存", task.logs)
 
     def test_stopped_collection_does_not_open_a_search_page(self):
-        db = Mock()
+        db = MagicMock()
         stop_event = Event()
         stop_event.set()
         config = {
@@ -111,12 +111,12 @@ class ScraperBackgroundTests(unittest.TestCase):
         self.assertEqual(task.snapshot()["metrics"], task.metrics)
 
     def test_scraper_reports_seen_new_and_duplicate_counts(self):
-        db = Mock()
-        progress = Mock()
+        db = MagicMock()
+        progress = MagicMock()
         progress.add_task.return_value = "task-1"
-        progress_context = Mock()
-        progress_context.__enter__ = Mock(return_value=progress)
-        progress_context.__exit__ = Mock(return_value=False)
+        progress_context = MagicMock()
+        progress_context.__enter__ = MagicMock(return_value=progress)
+        progress_context.__exit__ = MagicMock(return_value=False)
         updates = []
         collected_job_ids = []
         jobs = [
@@ -159,12 +159,12 @@ class ScraperBackgroundTests(unittest.TestCase):
         })
 
     def test_search_and_detail_pages_reuse_one_background_worker_tab(self):
-        db = Mock()
-        progress = Mock()
+        db = MagicMock()
+        progress = MagicMock()
         progress.add_task.return_value = "task-1"
-        progress_context = Mock()
-        progress_context.__enter__ = Mock(return_value=progress)
-        progress_context.__exit__ = Mock(return_value=False)
+        progress_context = MagicMock()
+        progress_context.__enter__ = MagicMock(return_value=progress)
+        progress_context.__exit__ = MagicMock(return_value=False)
 
         jobs = [{
             "title": "AI Product Manager",

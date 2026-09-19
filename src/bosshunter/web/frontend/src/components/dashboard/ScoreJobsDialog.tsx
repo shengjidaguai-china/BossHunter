@@ -16,7 +16,8 @@ interface ScoreJobsDialogProps {
   open: boolean
   selectedJobIds: string[]
   onClose: () => void
-  onStart: (options: { scope: ScoreScope; limit: number | null; job_ids: string[]; force_rescore: boolean }) => Promise<void>
+  /** 返回启动结果：成功返回 ok:true（弹窗自动关闭），失败返回错误信息（弹窗保留并展示）。 */
+  onStart: (options: { scope: ScoreScope; limit: number | null; job_ids: string[]; force_rescore: boolean }) => Promise<{ ok: boolean; error?: string }>
 }
 
 interface ScoringRun {
@@ -99,12 +100,16 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     if (scope === 'all_scored' && !window.confirm('将重新评分所有仍可重评的有效评分岗位，已进入投递链路的岗位不会触碰。确认继续？')) return
     if (!window.confirm(`本轮最多发出 ${preview.max_possible_requests} 次 AI 请求，是否开始？`)) return
     setLoading(true)
+    setMessage('')
     try {
-      await onStart({ scope, limit, job_ids: scope === 'selected' ? selectedJobIds : [], force_rescore: scope === 'all_scored' })
-      setMessage('评分任务已启动；可以关闭窗口，后台会继续执行。')
-      await loadRuns()
+      const result = await onStart({ scope, limit, job_ids: scope === 'selected' ? selectedJobIds : [], force_rescore: scope === 'all_scored' })
+      if (result.ok) {
+        onClose()
+        return
+      }
+      setMessage(result.error || '启动评分失败，请稍后重试。')
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '启动评分失败')
+      setMessage(err instanceof Error ? err.message : '启动评分失败，请稍后重试。')
     } finally {
       setLoading(false)
     }

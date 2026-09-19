@@ -75,6 +75,25 @@ describe('DashboardPage workbench task panel', () => {
     expect(await screen.findByText('生成招呼语 (2/3)：字节跳动｜后端工程师')).toBeTruthy()
   })
 
+  it('shows the latest greeting queue progress directly and preserves line breaks', async () => {
+    const latestProgress = '招呼语进度：2/3\n成功 1，失败 1，待处理 1'
+    workbenchPayload = baseWorkbench({
+      task: buildTask({
+        mode: 'full',
+        label: '全流程',
+        logs: ['招呼语进度：1/3', latestProgress, '正在等待下一次发送窗口'],
+      }),
+    })
+    render(<DashboardPage view="workbench" />)
+    const progress = await screen.findByText(latestProgress, { normalizer: text => text })
+    expect(screen.getByText('任务运行状态')).toBeTruthy()
+    expect(progress.textContent).toBe(latestProgress)
+    expect(progress.classList.contains('whitespace-pre-line')).toBe(true)
+    expect(progress.closest('details:not([open]), [hidden], [aria-hidden="true"]')).toBeNull()
+    expect(screen.queryByText('招呼语进度：1/3')).toBeNull()
+    expect(screen.getByRole('button', { name: '停止任务' })).toBeTruthy()
+  })
+
   it('shows the pause reason when a greet task completed with partial success', async () => {
     workbenchPayload = baseWorkbench({
       last_task: buildTask({
@@ -175,4 +194,72 @@ describe('DashboardPage workbench task panel', () => {
     expect(within(screen.getByLabelText('最终发送版本')).getByText(saved.greeting)).toBeTruthy()
   })
 
+})
+
+describe('DashboardPage scoring dialog confirm behaviour', () => {
+  const scoringPreview = {
+    eligible_jobs: 3,
+    skipped_jobs: 0,
+    first_attempt_requests: 3,
+    max_attempts_per_job: 2,
+    max_possible_requests: 6,
+    note: '',
+  }
+
+  function stubDashboardFetch(overrides: Record<string, () => Response | undefined> = {}) {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const override = overrides[url]
+      if (override) {
+        const response = override()
+        if (response) return response
+      }
+      if (url === '/api/workbench' && (!init?.method || init.method === 'GET')) return jsonResponse(workbenchPayload)
+      if (url.startsWith('/api/jobs/search')) return jsonResponse({ items: [], total: 0, all_total: 0 })
+      if (url === '/api/scoring/preview' && init?.method === 'POST') return jsonResponse(scoringPreview)
+      if (url === '/api/scoring/runs') return jsonResponse([])
+      if (url === '/api/scoring/start' && init?.method === 'POST') {
+        return jsonResponse({ run: { remaining_job_ids: ['j1', 'j2', 'j3'] } })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  beforeEach(() => {
+    workbenchPayload = baseWorkbench()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  async function openScoringDialog() {
+    render(<DashboardPage view="jobs" />)
+    fireEvent.click(await screen.findByText('评分选项'))
+    expect(await screen.findByText('符合条件')).toBeTruthy()
+  }
+
+  it('closes the scoring dialog and shows the started notice after scoring starts', async () => {
+    stubDashboardFetch()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await openScoringDialog()
+    fireEvent.click(screen.getByText('确认开始评分'))
+    expect((await screen.findAllByText('独立评分已启动，共 3 个岗位。')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
+  })
+
+  it('keeps the scoring dialog open and shows the failure inside it when the scoring start fails', async () => {
+    stubDashboardFetch({
+      '/api/scoring/start': () => jsonResponse({ error: 'AI 额度不足' }, false),
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await openScoringDialog()
+    fireEvent.click(screen.getByText('确认开始评分'))
+    expect(await screen.findByText('AI 额度不足')).toBeTruthy()
+    expect(screen.getByText('确认开始评分')).toBeTruthy()
+  })
 })

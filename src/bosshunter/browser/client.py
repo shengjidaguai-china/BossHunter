@@ -34,7 +34,10 @@ class RuntimeClient:
         return self._get_ok("/close", params={"target": target_id}, timeout=5)
 
     def navigate(self, target_id: str, url: str) -> bool:
-        return self._get_ok("/navigate", params={"target": target_id, "url": url}, timeout=15)
+        # The server-side navigate waits for page load (up to 15s) on top of
+        # Page.navigate; a 15s client timeout races that and turns slow loads
+        # into silent failures.
+        return self._get_ok("/navigate", params={"target": target_id, "url": url}, timeout=45)
 
     def back(self, target_id: str) -> bool:
         return self._get_ok("/back", params={"target": target_id}, timeout=10)

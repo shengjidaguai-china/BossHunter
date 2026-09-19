@@ -17,6 +17,7 @@ dependencies = [
     "anthropic>=0.40",
     "markdown2>=2.4",
     "bottle>=0.13",
+    "fonttools[woff]>=4.28",
     "openpyxl>=3.1",
     "pypdf>=5.0",
 ]
