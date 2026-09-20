@@ -73,12 +73,57 @@ def _parse_salary_range_k(salary: str) -> tuple[float, float] | None:
         high = float(range_match.group(2))
         return low, max(low, high)
 
+    cn_range = _parse_cn_salary_range_k(salary)
+    if cn_range:
+        return cn_range
+
     single_match = re.search(r"(\d+(?:\.\d+)?)\s*[kK]", salary)
     if single_match:
         value = float(single_match.group(1))
         return value, value
 
     return None
+
+
+_CN_RANGE_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(千|万|[wW])?\s*[-~—]\s*(\d+(?:\.\d+)?)\s*(千|万|[wW])?\s*元?"
+    r"|(\d+(?:\.\d+)?)\s*(千|万|[wW])?\s*元"
+)
+_YEARLY_RE = re.compile(r"/\s*(?:年|12\s*个月)|年薪")
+
+
+def _cn_amount_to_k(value: str, unit: str | None) -> float:
+    amount = float(value)
+    if unit in ("万", "w", "W"):
+        return amount * 10
+    if unit == "千":
+        return amount
+    return amount / 1000
+
+
+def _parse_cn_salary_range_k(salary: str) -> tuple[float, float] | None:
+    """Parse 元/千/万 monthly ranges used by 智联 and 前程无忧 into K units."""
+    match = _CN_RANGE_RE.search(salary)
+    if not match:
+        return None
+
+    if match.group(1):
+        # 「1-2万」只在末位带单位，首位沿用末位单位。
+        low_unit = match.group(2) or match.group(4)
+        if not (low_unit or match.group(4) or "元" in match.group(0)):
+            # 无单位也无「元」字（如 "15-25"）不足以判断币种，交给 AI 判断。
+            return None
+        low = _cn_amount_to_k(match.group(1), low_unit)
+        high = _cn_amount_to_k(match.group(3), match.group(4))
+    else:
+        low = high = _cn_amount_to_k(match.group(5), match.group(6))
+
+    if low <= 0:
+        return None
+    if _YEARLY_RE.search(salary):
+        low /= 12
+        high /= 12
+    return min(low, high), max(low, high)
 
 
 def _as_number(value: object) -> float:
