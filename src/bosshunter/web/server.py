@@ -79,7 +79,10 @@ from bosshunter.collection_run_store import (
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
 )
-from bosshunter.job_filters import parse_monthly_salary_k
+from bosshunter.job_filters import (
+	matches_hr_activity, parse_hr_active_days, parse_monthly_salary_k,
+	validate_hr_activity_config, validate_hr_activity_filter,
+)
 from bosshunter.job_export import InvalidJobSelectionError, export_jobs, export_row_count
 from bosshunter.scoring_run_store import (
 	create_scoring_run,
@@ -229,6 +232,7 @@ def _serialize_history_items(items):
 def _serialize_job(item):
 	"""Expose greeting style issues as a list while retaining DB compatibility."""
 	record = dict(item)
+	record["hr_active_days"] = parse_hr_active_days(record.get("hr_active"))
 	raw_issues = record.get("greeting_style_issues")
 	if isinstance(raw_issues, str):
 		try:
@@ -1120,6 +1124,7 @@ def _score_trace_missing_state(job: dict) -> str:
 @app.route("/api/jobs/search")
 def api_job_search():
 	try:
+		activity_filter = validate_hr_activity_filter(request.params.get("hr_active_within", "").strip())
 		minimum_score = _optional_float_param("min_score", maximum=100)
 		salary_min = _optional_float_param("salary_min")
 		salary_max = _optional_float_param("salary_max")
@@ -1210,9 +1215,10 @@ def api_job_search():
 					continue
 				filtered_rows.append(row)
 			rows = filtered_rows
+		rows = [row for row in rows if matches_hr_activity(row.get("hr_active"), activity_filter)]
 		total = len(rows)
 		return _json_response({
-			"items": rows[offset:offset + limit],
+			"items": [_serialize_job(row) for row in rows[offset:offset + limit]],
 			"total": total,
 			"all_total": all_total,
 			"limit": limit,
@@ -2485,6 +2491,11 @@ def api_config_post():
 		profile = data.get("profile", {})
 		if profile.get("salary_min", 0) > profile.get("salary_max", 0) and profile.get("salary_max", 0) > 0:
 			return _json_response({"error": "salary_min must be <= salary_max"}, 400)
+
+		try:
+			validate_hr_activity_config(profile)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 
 		# Write YAML (backend exclusively owns YAML serialization)
 		_write_config(data)

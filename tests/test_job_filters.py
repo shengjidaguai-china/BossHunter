@@ -8,6 +8,57 @@ from bosshunter.job_filters import (
 )
 
 
+class HrActivityTests(unittest.TestCase):
+    def test_activity_labels_and_unknowns(self):
+        from bosshunter.job_filters import parse_hr_active_days
+        cases = {
+            None: None, "": None, "活跃度未知": None, "近期活跃": None,
+            "not active": None, "非今日活跃": None, "30天未活跃": None,
+            "在线": 0, "刚刚活跃": 0, "今日活跃": 1, "昨天活跃": 2,
+            "3天内活跃": 3, "近7天活跃": 7, " 近 7 天 活跃 ": 7,
+            "30天内活跃": 30, "本周活跃": 7, "本月活跃": 30,
+            "近一个月活跃": 30, "2小时前活跃": 2 / 24, "30分钟前活跃": 30 / 1440,
+        }
+        for label, expected in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual(parse_hr_active_days(label), expected)
+
+    def test_opt_in_boundaries_and_unknown_policy(self):
+        from bosshunter.job_filters import hr_activity_filter_reason, matches_hr_activity
+        self.assertIsNone(hr_activity_filter_reason("30天内活跃", {}))
+        self.assertIsNone(hr_activity_filter_reason("", {"hr_active_keep_unknown": False}))
+        profile = {"hr_active_within_days": 3}
+        self.assertIsNone(hr_activity_filter_reason("3天内活跃", profile))
+        self.assertIsNotNone(hr_activity_filter_reason("近7天活跃", profile))
+        self.assertIsNone(hr_activity_filter_reason("", profile))
+        self.assertIsNotNone(hr_activity_filter_reason("", {**profile, "hr_active_keep_unknown": False}))
+        self.assertTrue(matches_hr_activity("今日活跃", "1d"))
+        self.assertFalse(matches_hr_activity("昨天活跃", "1d"))
+        self.assertFalse(matches_hr_activity("近7天活跃", "3d"))
+        self.assertFalse(matches_hr_activity("", "7d"))
+        self.assertTrue(matches_hr_activity("近期活跃", "unknown"))
+
+    def test_config_validation_and_legacy_defaults(self):
+        import tempfile
+        from pathlib import Path
+        from bosshunter.config import load_config
+        from bosshunter.job_filters import validate_hr_activity_config
+        for invalid in [-1, 366, True, 3.5, "7", None, float("nan")]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_hr_activity_config({"hr_active_within_days": invalid})
+        for invalid in ["false", 0, None]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_hr_activity_config({"hr_active_keep_unknown": invalid})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            profile = load_config(path)["profile"]
+            self.assertEqual(profile["hr_active_within_days"], 0)
+            self.assertTrue(profile["hr_active_keep_unknown"])
+            path.write_text("profile:\n  hr_active_within_days: -7\n")
+            with self.assertRaises(ValueError):
+                load_config(path)
+
+
 class JobFilterTests(unittest.TestCase):
     def test_parse_common_monthly_salary_formats(self):
         self.assertEqual(parse_monthly_salary_k("10-15K"), (10.0, 15.0))

@@ -36,6 +36,7 @@ interface Job {
   hr_name: string
   hr_title: string
   hr_active: string
+  hr_active_days?: number | null
   company_size: string
   company_industry: string
   url: string

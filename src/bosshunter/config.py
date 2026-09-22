@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from bosshunter.job_filters import validate_hr_activity_config
+
 
 # BOSS直聘城市编码映射
 CITY_CODES: dict[str, str] = {
@@ -78,6 +80,8 @@ DEFAULTS: dict[str, Any] = {
         "salary_ceil_ratio": 1.5,
         "filter_unparsed_salary": True,
         "allow_internship": False,
+        "hr_active_within_days": 0,
+        "hr_active_keep_unknown": True,
         "deal_breakers": [],
         "jd_deal_breakers": [],
         "blocked_companies": [],
@@ -234,6 +238,7 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
         _deep_merge(cfg, user_cfg)
     _normalize_config_sections(cfg)
     _validate_ai_provider(cfg)
+    validate_hr_activity_config(cfg["profile"])
     return cfg
 
 

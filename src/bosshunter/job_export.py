@@ -10,7 +10,7 @@ import sqlite3
 from typing import Any, Iterable
 
 from bosshunter.cities import get_city_code
-from bosshunter.job_filters import parse_monthly_salary_k
+from bosshunter.job_filters import matches_hr_activity, parse_monthly_salary_k, validate_hr_activity_filter
 
 
 MAX_EXPORT_JOB_IDS = 1000
@@ -84,6 +84,7 @@ def _normalize_export_ids(job_ids: Iterable[Any] | None) -> list[str]:
 
 def _filtered_rows(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
 	filters = filters or {}
+	activity_filter = validate_hr_activity_filter(str(filters.get("hr_active_within") or "").strip())
 	conditions: list[str] = ["deleted_at IS NULL"]
 	params: list[Any] = []
 	keyword = str(filters.get("q") or filters.get("query") or "").strip()
@@ -137,6 +138,8 @@ def _filtered_rows(conn: sqlite3.Connection, filters: dict[str, Any] | None = No
 		query += " WHERE " + " AND ".join(conditions)
 	query += " ORDER BY created_at DESC, score DESC"
 	rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+
+	rows = [row for row in rows if matches_hr_activity(row.get("hr_active"), activity_filter)]
 
 	salary_min = filters.get("salary_min")
 	salary_max = filters.get("salary_max")

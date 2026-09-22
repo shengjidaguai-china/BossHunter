@@ -14,6 +14,8 @@ profile:
   salary_max: 25  # K
   salary_ceil_ratio: 1.5  # 岗位薪资下限超过 salary_max × 该倍数时过滤
   filter_unparsed_salary: true  # 过滤面议或无法解析薪资的岗位
+  hr_active_within_days: 0        # BOSS 采集：仅保留近 N 天活跃 HR，0 不限（0-365）
+  hr_active_keep_unknown: true   # 启用活跃过滤时，保留缺失或无法识别的活跃状态
   allow_internship: false
   deal_breakers: ["外包", "996"]
   jd_deal_breakers: []  # 示例：需要排除完整 JD 中的词时再填写

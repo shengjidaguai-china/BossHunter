@@ -8,6 +8,7 @@ export interface JobFilters {
   salaryMax: string
   status: string
   createdWithin: string
+  hrActiveWithin: string
   sourcePlatform: string
   education: string
   recruitmentType: string
@@ -20,6 +21,7 @@ export const EMPTY_JOB_FILTERS: JobFilters = {
   salaryMax: '',
   status: '',
   createdWithin: '',
+  hrActiveWithin: '',
   sourcePlatform: '',
   education: '',
   recruitmentType: '',
@@ -94,6 +96,12 @@ export function filterJobs(jobs: Job[], filters: JobFilters) {
 
   return jobs.filter(job => {
     if (!matchesCreatedWithin(job.created_at, filters.createdWithin)) return false
+    if (filters.hrActiveWithin) {
+      const days = job.hr_active_days
+      if (filters.hrActiveWithin === 'unknown') {
+        if (days != null) return false
+      } else if (days == null || days > Number(filters.hrActiveWithin.slice(0, -1))) return false
+    }
     if (keyword) {
       const searchable = [job.title, job.company, job.jd, job.score_reason]
         .join('\n')

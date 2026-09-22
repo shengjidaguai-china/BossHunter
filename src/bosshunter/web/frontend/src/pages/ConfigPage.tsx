@@ -365,6 +365,18 @@ export default function ConfigPage() {
               </div>
               <Switch checked={config.profile?.filter_unparsed_salary ?? true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
             </div>
+            <Field label="BOSS HR 活跃时间（天）">
+              <Input type="number" min={0} max={365} step={1} aria-label="BOSS HR 活跃时间（天）"
+                value={config.profile?.hr_active_within_days ?? 0}
+                onChange={e => updateConfig('profile.hr_active_within_days', Number(e.target.value))} />
+              <p className="mt-1 text-xs text-muted">仅采集近 N 天活跃的 HR 岗位，0 表示不限。读取详情后过滤，不修改已有岗位，不影响其他平台。</p>
+            </Field>
+            <label className="flex items-center gap-2 text-xs text-foreground">
+              <input type="checkbox" checked={config.profile?.hr_active_keep_unknown ?? true}
+                disabled={!config.profile?.hr_active_within_days}
+                onChange={e => updateConfig('profile.hr_active_keep_unknown', e.target.checked)} />
+              保留活跃度未知岗位（仅在启用活跃过滤时生效）
+            </label>
             <Field label="排除关键词">
               <TagsInput value={config.profile?.deal_breakers || []} onChange={v => updateConfig('profile.deal_breakers', v)} placeholder="如：外包、996" />
             </Field>

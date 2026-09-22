@@ -17,6 +17,8 @@
         {"key": "deal_breakers", "label": "职位名排除词", "type": "tags", "description": "职位名含这些词时自动跳过"},
         {"key": "jd_deal_breakers", "label": "JD 排除词", "type": "tags", "description": "完整 JD 含这些词时自动跳过"},
         {"key": "blocked_companies", "label": "屏蔽公司", "type": "tags", "description": "公司名含这些词时自动跳过"},
+        {"key": "hr_active_within_days", "label": "BOSS HR 活跃时间（天）", "type": "number", "default": 0, "min": 0, "max": 365, "description": "采集时仅保留近 N 天活跃 HR；0 表示不限，不修改已有岗位"},
+        {"key": "hr_active_keep_unknown", "label": "保留活跃度未知岗位", "type": "switch", "default": true, "description": "仅在启用 BOSS HR 活跃时间过滤时生效"},
         {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "关闭时自动过滤实习、intern、管培岗位"}
       ]
     },

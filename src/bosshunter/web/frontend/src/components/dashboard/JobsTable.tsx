@@ -183,7 +183,11 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       <td className="px-4 py-3">
                         <Badge variant={statusVariant(job.status) as any}>{getStatusLabel(job.status)}</Badge>
                       </td>
-                      <td className="px-4 py-3 text-xs text-muted">{job.hr_active || '活跃度未知'}</td>
+                      <td className="px-4 py-3">
+                        <Badge className="whitespace-nowrap" title="采集时记录的 HR 活跃状态，不代表实时状态">
+                          {job.hr_active?.trim() || '活跃度未知'}
+                        </Badge>
+                      </td>
                       <td className="px-4 py-3 text-xs text-muted">
                         <div className="flex items-center gap-2">
                           {timeAgo(job.created_at)}

@@ -77,6 +77,31 @@ class _BlockedCollector:
 
 
 class CollectionOrchestratorTests(TestCase):
+    def test_hr_activity_filters_after_detail_and_keeps_other_platforms(self):
+        for keep_unknown in (True, False):
+            with self.subTest(keep_unknown=keep_unknown), tempfile.TemporaryDirectory() as tmp:
+                candidates = [_candidate("boss", value) for value in ("recent", "stale", "unknown")]
+                candidates[0].hr_active = "3天内活跃"
+                candidates[1].hr_active = "近7天活跃"
+                registry = CollectorRegistry({
+                    "boss": lambda: _FakeCollector("boss", [], candidates),
+                    "zhilian": lambda: _FakeCollector("zhilian", [], [_candidate("zhilian", "unknown")]),
+                })
+                db_path = Path(tmp) / "jobs.db"
+                result = CollectionOrchestrator({"profile": {
+                    "hr_active_within_days": 3, "hr_active_keep_unknown": keep_unknown,
+                }}, db_path=db_path, registry=registry).run(_options(order=["boss", "zhilian"]))
+                expected = {"recent", "zhilian:unknown"}
+                if keep_unknown:
+                    expected.add("unknown")
+                self.assertEqual(set(result["collected_job_ids"]), expected)
+                conn = get_db(db_path)
+                try:
+                    self.assertEqual({row[0] for row in conn.execute("SELECT id FROM jobs")}, expected)
+                finally:
+                    conn.close()
+                self.assertEqual(result["platforms"]["boss"]["filtered"], 1 if keep_unknown else 2)
+
     def test_boss_zero_new_reports_duplicate_and_filtered_counts(self):
         candidates = [_candidate("boss", "duplicate"), _candidate("boss", "filtered", "外包岗位")]
         registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], candidates)})

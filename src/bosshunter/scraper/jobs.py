@@ -19,7 +19,7 @@ from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest
 from bosshunter.collection.platforms.boss import BossBrowser, BossCollector, generate_boss_job_id
 from bosshunter.config import CITY_CODES
 from bosshunter.db import get_db, insert_job, job_exists
-from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.job_filters import hr_activity_filter_reason, matching_blocked_company, matching_deal_breaker
 from bosshunter.platform_safety import PlatformSafetyStop
 from bosshunter.throttle import PageThrottle
 
@@ -113,6 +113,10 @@ def _scrape_jobs_impl(
         return True
 
     def save(candidate: JobCandidate) -> bool:
+        if hr_activity_filter_reason(candidate.hr_active, profile):
+            counts["filtered"] += 1
+            emit()
+            return True
         if matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers", [])):
             counts["filtered"] += 1
             emit()

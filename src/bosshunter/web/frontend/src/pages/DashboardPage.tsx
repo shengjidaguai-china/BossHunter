@@ -1589,7 +1589,7 @@ function JobsPoolView() {
 
   useEffect(() => {
     setPage(0)
-  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.education, filters.recruitmentType])
+  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.hrActiveWithin, filters.sourcePlatform, filters.education, filters.recruitmentType])
 
   const toggleSelected = (jobId: string) => {
     setSelectedIds(previous => previous.includes(jobId) ? previous.filter(id => id !== jobId) : [...previous, jobId])
@@ -1765,6 +1765,7 @@ function JobsPoolView() {
             salary_max: filters.salaryMax,
             status: filters.status,
             created_within: filters.createdWithin,
+            hr_active_within: filters.hrActiveWithin,
             source_platform: filters.sourcePlatform,
           } : {},
         }),

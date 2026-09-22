@@ -14,6 +14,30 @@ from bosshunter.collection.registry import CollectorRegistry
 
 
 class ScraperBackgroundTests(unittest.TestCase):
+    def test_legacy_activity_filter_waits_for_detail_and_counts_skips(self):
+        db = MagicMock()
+        inserted_ids = []
+        config = {"profile": {"hr_active_within_days": 3, "hr_active_keep_unknown": False}}
+
+        def collect(_request, hooks):
+            for source_id, activity in (("stale", "近7天活跃"), ("unknown", ""), ("recent", "今日活跃")):
+                candidate = JobCandidate(platform="boss", source_job_id=source_id, title="Engineer", company="Example")
+                # List cards have no activity: they must still reach the detail callback.
+                self.assertTrue(hooks.on_list_candidate(candidate))
+                candidate.hr_active = activity
+                self.assertTrue(hooks.on_candidate(candidate))
+            return PlatformCollectionResult("boss", "completed", "search_exhausted", "done")
+
+        with patch("bosshunter.scraper.jobs.get_db", return_value=db), \
+             patch("bosshunter.scraper.jobs.job_exists", return_value=False), \
+             patch("bosshunter.scraper.jobs.BossCollector") as collector, \
+             patch("bosshunter.scraper.jobs.insert_job", side_effect=lambda _, job: inserted_ids.append(job["id"])):
+            collector.return_value.collect.side_effect = collect
+            count = scrape_jobs(config, ["Engineer"])
+        self.assertEqual(count, 1)
+        self.assertEqual(inserted_ids, ["recent"])
+        self.assertEqual(config["_workbench_collect_report"]["filtered_count"], 2)
+
     def test_collection_options_report_automatic_scoring_to_workbench(self):
         task = WorkbenchTask(id="auto-score-task", mode="collect", label="单独采集")
         config = {"_collection_options": {

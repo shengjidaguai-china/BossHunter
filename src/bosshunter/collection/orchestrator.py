@@ -25,7 +25,7 @@ from bosshunter.collection_run_store import (
     save_boss_checkpoint, update_collection_run,
 )
 from bosshunter.db import get_db, insert_job_if_new, job_identity_exists
-from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.job_filters import hr_activity_filter_reason, matching_blocked_company, matching_deal_breaker
 
 
 SUPPORTED_PLATFORMS = {"boss", "zhilian", "51job", "liepin"}
@@ -276,6 +276,13 @@ class _SharedProcessor:
 
     def save(self, candidate: JobCandidate) -> bool:
         profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
+        # BOSS currently supplies this signal; do not drop other platforms
+        # merely because their collectors do not expose HR activity.
+        reason = hr_activity_filter_reason(candidate.hr_active, profile) if candidate.platform == "boss" else None
+        if reason:
+            self.progress.filtered += 1
+            self.event(message=reason)
+            return True
         if matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers") or []):
             self.progress.filtered += 1
             self.event(message="JD 命中过滤规则")
