@@ -96,7 +96,7 @@ DEFAULTS: dict[str, Any] = {
         "default_order": ["boss"],
         "auto_score_default": False,
         "daily_search_page_limit": 60,
-        "daily_detail_page_limit": 150,
+        "daily_detail_page_limit": 900,
         "max_consecutive_page_failures": 3,
         "risk_pause_min_minutes": 5,
         "risk_pause_max_minutes": 10,
@@ -196,7 +196,7 @@ DEFAULTS: dict[str, Any] = {
         "history_file": "./data/history.jsonl",
     },
     "safety": {
-        "daily_platform_page_limit": 500,
+        "daily_platform_page_limit": 1100,
         "risk_lock_minutes": 10,
     },
     "browser": {
