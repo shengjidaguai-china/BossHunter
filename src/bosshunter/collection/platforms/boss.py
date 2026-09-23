@@ -237,7 +237,15 @@ JS_DETECT_COLLECTION_RISK = """
     if (captcha) return JSON.stringify({risk: 'captcha', evidence: 'captcha_element'});
     if (/captcha|security-check|\\/verify/i.test(url)) return JSON.stringify({risk: 'captcha', evidence: 'captcha_url'});
     if (/\\/web\\/user\\/(?:login|\\?ka=header-login)/i.test(url)) return JSON.stringify({risk: 'login_required', evidence: 'login_url'});
-    if (/(?:^|[\\/?#=_-])(?:403|forbidden|access-denied)(?:$|[\\/?#=&_-])/i.test(url)) {
+    // Search filters may legitimately contain 403 or other error words.
+    // Only explicit error paths and status parameters indicate a blocked URL.
+    const pageUrl = new URL(url);
+    const blockedPath = /(?:^|\\/)(?:403|forbidden|access-denied)(?:\\/|$)/i.test(pageUrl.pathname);
+    const blockedStatus = Array.from(pageUrl.searchParams).some(([key, value]) =>
+        /^(?:code|status|error|error_code|status_code)$/i.test(key)
+        && /^(?:403|forbidden|access-denied)$/i.test(value)
+    );
+    if (blockedPath || blockedStatus) {
         return JSON.stringify({risk: 'blocked', evidence: 'blocked_url'});
     }
     if (/^(?:403(?:\\s+forbidden)?|forbidden|access denied|访问被拒绝|账号异常|账号受限)/i.test(title.trim())) {
