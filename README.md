@@ -105,6 +105,8 @@ bosshunter run
 | [CLI 命令](docs/CLI.md) | 一键流程、分步命令、监听与状态查看 |
 | [配置指南](docs/CONFIGURATION.md) | 平台、AI、简历和风险控制配置 |
 | [常见问题](docs/FAQ.md) | 封号风险、平台边界、简历格式和连接排错 |
+| [Windows 一键启动器](docs/windows-launcher.md) | 桌面快捷方式：专用 Chrome 调试实例 + 本地工作台 |
+| [macOS 一键启动器](docs/macos-launcher.md) | 双击启动：专用 Chrome 调试实例 + 本地工作台 |
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、开发与维护者申请 |
 | [项目治理](GOVERNANCE.md) | 模块责任、权限、晋升与统计口径 |
 
