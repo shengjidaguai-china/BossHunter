@@ -13,7 +13,7 @@ from bosshunter.collection.platforms.liepin import LiepinBrowser, LiepinCollecto
 from bosshunter.db import get_db, get_collected_combos, get_page_progress, mark_combo_collected, upsert_page_progress
 
 REQUEST = PlatformCollectionRequest("liepin", ["AI"], ["上海"], {"上海": "020"}, max_pages=2)
-JOB = {"source_job_id": "review-job", "title": "AI 工程师", "company": "测试公司", "url": "https://www.liepin.com/job/1001.shtml"}
+JOB = {"source_job_id": "review-job", "title": "AI 工程师", "company": "测试公司", "salary": "15-25K", "url": "https://www.liepin.com/job/1001.shtml"}
 
 
 @pytest.fixture(autouse=True)

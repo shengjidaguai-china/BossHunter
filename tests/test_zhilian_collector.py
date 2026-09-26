@@ -225,8 +225,8 @@ class ZhilianFixtureTests(TestCase):
     def test_collector_uses_shared_runtime_and_stops_at_target(self):
         responses = {
             "list": json.dumps({"items": [
-                {"source_job_id": "zl-1", "title": "岗位一", "company": "公司一", "city": "北京"},
-                {"source_job_id": "zl-2", "title": "岗位二", "company": "公司二", "city": "北京"},
+                {"source_job_id": "zl-1", "title": "岗位一", "company": "公司一", "city": "北京", "salary": "15-25K"},
+                {"source_job_id": "zl-2", "title": "岗位二", "company": "公司二", "city": "北京", "salary": "15-25K"},
             ]}),
             "detail": json.dumps({"source_job_id": "zl-1", "title": "岗位一", "company": "公司一", "city": "北京", "jd": "JD"}),
         }
@@ -263,7 +263,7 @@ class ZhilianFixtureTests(TestCase):
     def test_collector_submits_keyword_through_shared_browser_input_actions(self):
         responses = {
             "list": json.dumps({"items": [
-                {"source_job_id": "zl-1", "title": "岗位一", "company": "公司一", "city": "北京", "url": "/job/1.html"},
+                {"source_job_id": "zl-1", "title": "岗位一", "company": "公司一", "city": "北京", "salary": "15-25K", "url": "/job/1.html"},
             ]}),
             "detail": json.dumps({"source_job_id": "zl-1", "title": "岗位一", "company": "公司一", "city": "北京", "jd": "JD"}),
         }
@@ -455,6 +455,42 @@ class ZhilianEnhancedTests(TestCase):
         c = JobCandidate(platform="zhilian", source_job_id="1", title="AI工程师",
                          company="公司", city="北京", city_code="530")
         self.assertTrue(collector._passes_filters(c))
+
+    def test_salary_below_min_blocked(self):
+        from bosshunter.collection.models import JobCandidate
+        collector = ZhilianCollector(config={"profile": {"salary_min": 10, "salary_max": 20}})
+        c = JobCandidate(platform="zhilian", source_job_id="1", title="AI工程师",
+                         company="公司", city="北京", city_code="530", salary="5-8K")
+        self.assertIsNotNone(collector._salary_block_reason(c))
+
+    def test_salary_unparsable_blocked_by_default(self):
+        from bosshunter.collection.models import JobCandidate
+        collector = ZhilianCollector(config={"profile": {"salary_min": 10, "salary_max": 20}})
+        c = JobCandidate(platform="zhilian", source_job_id="1", title="AI工程师",
+                         company="公司", city="北京", city_code="530", salary="面议")
+        self.assertIsNotNone(collector._salary_block_reason(c))
+
+    def test_salary_within_range_passes(self):
+        from bosshunter.collection.models import JobCandidate
+        collector = ZhilianCollector(config={"profile": {"salary_min": 10, "salary_max": 20}})
+        c = JobCandidate(platform="zhilian", source_job_id="1", title="AI工程师",
+                         company="公司", city="北京", city_code="530", salary="1-2万")
+        self.assertIsNone(collector._salary_block_reason(c))
+
+    def test_salary_parsed_passes_without_thresholds(self):
+        from bosshunter.collection.models import JobCandidate
+        collector = ZhilianCollector()
+        c = JobCandidate(platform="zhilian", source_job_id="1", title="AI工程师",
+                         company="公司", city="北京", city_code="530", salary="15-25K")
+        self.assertIsNone(collector._salary_block_reason(c))
+
+    def test_salary_unparsed_blocked_by_default_even_without_thresholds(self):
+        # 与 BOSS 列表预筛同规则：默认 filter_unparsed_salary=True。
+        from bosshunter.collection.models import JobCandidate
+        collector = ZhilianCollector()
+        c = JobCandidate(platform="zhilian", source_job_id="1", title="AI工程师",
+                         company="公司", city="北京", city_code="530", salary="面议")
+        self.assertIsNotNone(collector._salary_block_reason(c))
 
 
 class ZhilianResumeCheckpointTests(TestCase):
