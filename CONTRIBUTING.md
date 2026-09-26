@@ -51,8 +51,11 @@
 ## 本地开发
 
 ```bash
-# 安装开发依赖
-pip install -e ".[dev]"
+# 安装依赖（可选 extra 只有 pdf，与 QUICKSTART 一致）
+pip install -e ".[pdf]"
+
+# 安装代码风格检查工具（CI 中同样单独安装）
+pip install ruff
 
 # 检查代码风格
 ruff check src/
