@@ -64,3 +64,52 @@ class PrefilterSalaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SalaryFilterResultTests(unittest.TestCase):
+    """salary_filter_result — 采集增值层与 quick_score 共用的薪资硬过滤。"""
+
+    def test_passes_when_within_range(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        profile = {"salary_min": 10, "salary_max": 20}
+        self.assertEqual(salary_filter_result("12-18K", profile), (100, "预筛通过"))
+
+    def test_blocked_below_hard_floor(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        score, reason = salary_filter_result("5-8K", {"salary_min": 10})
+        self.assertEqual(score, 0)
+        self.assertIn("薪资低于硬性要求", reason)
+
+    def test_blocked_far_above_ceiling(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        score, reason = salary_filter_result("50-60K", {"salary_max": 20})
+        self.assertEqual(score, 0)
+        self.assertIn("薪资远超期望上限", reason)
+
+    def test_above_ceiling_within_ratio_passes(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        # 25K ≤ 20K × 1.5，仍在可接受上浮范围内。
+        self.assertEqual(salary_filter_result("25-28K", {"salary_max": 20})[0], 100)
+
+    def test_unparsed_blocked_by_default(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        score, reason = salary_filter_result("面议", {"salary_min": 10})
+        self.assertEqual(score, 0)
+        self.assertIn("薪资面议/无法解析", reason)
+
+    def test_unparsed_allowed_when_filter_disabled(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        score, reason = salary_filter_result("面议", {"filter_unparsed_salary": False})
+        self.assertEqual(score, 100)
+        self.assertIn("交由 AI 判断", reason)
+
+    def test_no_thresholds_passes_parsed_salary(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        self.assertEqual(salary_filter_result("18-25K", {}), (100, "预筛通过"))

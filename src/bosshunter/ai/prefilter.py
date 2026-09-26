@@ -39,9 +39,17 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
     if not profile.get("allow_internship", False) and _contains_internship_signal(job):
         return 0, "实习/管培岗位"
 
+    return salary_filter_result(str(job.get("salary") or ""), profile)
+
+
+def salary_filter_result(salary: str, profile: dict) -> tuple[int, str]:
+    """薪资硬过滤，采集增值层与 quick_score 共用同一条规则。
+
+    返回 (score, reason)：score=0 表示拦截并携带原因，score=100 表示通过。
+    """
     salary_min = _as_number(profile.get("salary_min", 0))
     salary_max = _as_number(profile.get("salary_max", 0))
-    parsed_salary = _parse_salary_range_k(job.get("salary") or "")
+    parsed_salary = _parse_salary_range_k(str(salary or ""))
     if parsed_salary is None:
         if _as_bool(profile.get("filter_unparsed_salary", True)):
             return 0, "薪资面议/无法解析，已过滤"
@@ -59,6 +67,7 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
         )
 
     return 100, "预筛通过"
+
 
 
 def _contains_internship_signal(job: dict) -> bool:
