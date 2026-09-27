@@ -31,6 +31,30 @@ pip install -e .
 pip install -e ".[pdf]"
 ```
 
+### macOS 安装
+
+从 Homebrew Python（3.12 起）或系统 Python 安装时，pip 会报
+ `error: externally-managed-environment`（PEP 668）——macOS 禁止直接向系统环境装包，需要先创建虚拟环境：
+
+```bash
+# 依赖（已安装可跳过）
+brew install python node@22
+
+# 克隆并创建虚拟环境
+git clone https://github.com/shengjidaguai-china/BossHunter.git
+cd BossHunter
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+bosshunter web
+```
+
+注意：
+
+- 新开的终端需要先执行 `source .venv/bin/activate`，否则找不到 `bosshunter` 命令；可把这一行追加到 `~/.zshrc` 简化日常使用。
+- 如果 `brew install node@22` 后 `node` 仍不可用，按 brew 提示把 keg-only 路径加入 PATH（`export PATH="$(brew --prefix node@22)/bin:$PATH"`）。
+- 希望双击启动（专用 Chrome 调试实例 + 本地工作台），见 [macOS 一键启动器](macos-launcher.md)。
+
 ## 3. 开启 Chrome 远程调试
 
 推荐在 Chrome 地址栏打开 `chrome://inspect/#remote-debugging`，启用 **Allow remote debugging**。
@@ -49,6 +73,8 @@ google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.bosshunter-ch
 ```
 
 使用启动参数时会打开一个独立 Chrome 窗口。请在这个窗口中登录要使用的招聘平台，并在任务期间保持窗口开启；其他 Chrome 窗口的登录状态不会自动复用。
+
+Chrome 136+ 在使用默认用户目录时会忽略 `--remote-debugging-port`，必须像上面这样搭配独立的 `--user-data-dir` 启动；macOS 上如果已有普通 Chrome 窗口在运行，请先完全退出（`Cmd+Q`）再执行启动命令。
 
 ## 4. 完成本地配置
 
