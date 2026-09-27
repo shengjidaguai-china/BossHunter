@@ -168,6 +168,20 @@ class BossCollectorCollectionTests(TestCase):
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason_code, "captcha")
 
+    def test_blocked_risk_stops_collection(self):
+        browser = self._make_browser(risk="blocked")
+        hooks, _ = self._make_hooks()
+        result = BossCollector(
+            browser=browser,
+            throttle_factory=lambda **_kw: self._make_throttle(),
+            randint=lambda _a, _b: 5,
+        ).collect(
+            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=1),
+            hooks,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.reason_code, "blocked")
+
     def test_rate_limit_risk_stops_collection(self):
         browser = self._make_browser(risk="rate_limit")
         hooks, _ = self._make_hooks()
