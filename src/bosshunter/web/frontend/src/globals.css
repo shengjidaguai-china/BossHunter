@@ -3,12 +3,19 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: light;
+
+  /* 基础面 */
   --background: 27 100% 97%;
   --foreground: 0 0% 12%;
   --card: 0 0% 100%;
   --card-foreground: 0 0% 12%;
+  --surface: 24 100% 99%;
+  --surface-muted: 28 100% 97%;
   --popover: 0 0% 100%;
   --popover-foreground: 0 0% 12%;
+
+  /* 品牌与次要色 */
   --primary: 20 97% 53%;
   --primary-foreground: 0 0% 100%;
   --secondary: 25 100% 95%;
@@ -17,12 +24,112 @@
   --muted-foreground: 25 18% 43%;
   --accent: 25 100% 95%;
   --accent-foreground: 20 97% 53%;
-  --destructive: 4 76% 57%;
-  --destructive-foreground: 0 0% 100%;
+
+  /* 状态色 */
+  --success-soft: 138 76% 97%;
+  --success-border: 141 79% 85%;
+  --success: 142 76% 36%;
+  --success-strong: 142 72% 29%;
+  --warning-soft: 48 100% 96%;
+  --warning-border: 48 96% 77%;
+  --warning: 26 90% 37%;
+  --warning-strong: 25 89% 31%;
+  --danger-soft: 0 86% 97%;
+  --danger-border: 0 96% 89%;
+  --danger: 4 76% 57%;
+  --danger-strong: 0 74% 42%;
+  --danger-solid: 4 76% 57%;
+  --danger-solid-foreground: 0 0% 100%;
+  --info-soft: 214 100% 97%;
+  --info-border: 213 97% 87%;
+  --info: 224 76% 48%;
+  --info-strong: 226 71% 40%;
+  --cyan-soft: 183 100% 96%;
+  --cyan-border: 186 94% 82%;
+  --cyan: 192 91% 36%;
+  --sky-soft: 204 100% 97%;
+  --sky-border: 201 94% 86%;
+  --sky: 201 96% 32%;
+  --purple-soft: 270 100% 98%;
+  --purple-border: 269 100% 92%;
+  --purple: 272 72% 47%;
+  --star: 48 96% 53%;
+
+  /* 描边与焦点 */
   --border: 27 35% 91%;
   --input: 27 35% 91%;
   --ring: 20 97% 53%;
+
+  /* 滚动条 */
+  --scrollbar-track: 27 100% 95%;
+  --scrollbar-thumb: 22 72% 81%;
+  --scrollbar-thumb-hover: 20 97% 53%;
+
   --radius: 0.75rem;
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* 基础面 */
+  --background: 24 10% 9%;
+  --foreground: 30 12% 93%;
+  --card: 24 8% 16%;
+  --card-foreground: 30 12% 93%;
+  --surface: 24 9% 12%;
+  --surface-muted: 24 9% 14%;
+  --popover: 24 8% 16%;
+  --popover-foreground: 30 12% 93%;
+
+  /* 品牌与次要色 */
+  --primary: 20 97% 53%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 24 9% 20%;
+  --secondary-foreground: 30 12% 93%;
+  --muted: 28 10% 63%;
+  --muted-foreground: 28 10% 63%;
+  --accent: 24 9% 20%;
+  --accent-foreground: 20 97% 62%;
+
+  /* 状态色 */
+  --success-soft: 150 30% 16%;
+  --success-border: 150 35% 28%;
+  --success: 150 60% 62%;
+  --success-strong: 150 65% 72%;
+  --warning-soft: 40 35% 16%;
+  --warning-border: 40 40% 30%;
+  --warning: 42 85% 64%;
+  --warning-strong: 42 90% 74%;
+  --danger-soft: 0 30% 17%;
+  --danger-border: 0 35% 30%;
+  --danger: 0 75% 70%;
+  --danger-strong: 0 80% 78%;
+  --danger-solid: 0 65% 50%;
+  --danger-solid-foreground: 0 0% 100%;
+  --info-soft: 215 35% 17%;
+  --info-border: 215 35% 32%;
+  --info: 215 80% 72%;
+  --info-strong: 215 85% 80%;
+  --cyan-soft: 186 35% 16%;
+  --cyan-border: 186 35% 30%;
+  --cyan: 186 70% 64%;
+  --sky-soft: 201 35% 16%;
+  --sky-border: 201 35% 30%;
+  --sky: 201 80% 68%;
+  --purple-soft: 270 30% 18%;
+  --purple-border: 270 30% 32%;
+  --purple: 270 70% 76%;
+  --star: 48 90% 62%;
+
+  /* 描边与焦点 */
+  --border: 24 8% 24%;
+  --input: 24 8% 24%;
+  --ring: 20 97% 60%;
+
+  /* 滚动条 */
+  --scrollbar-track: 24 8% 14%;
+  --scrollbar-thumb: 24 8% 28%;
+  --scrollbar-thumb-hover: 20 97% 53%;
 }
 
 * {
@@ -30,8 +137,8 @@
 }
 
 body {
-  background-color: #FFF7F0;
-  color: #1F1F1F;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
 
@@ -41,12 +148,12 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #FFF0E5;
+  background: hsl(var(--scrollbar-track));
 }
 ::-webkit-scrollbar-thumb {
-  background: #F2C7AA;
+  background: hsl(var(--scrollbar-thumb));
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #FB6511;
+  background: hsl(var(--scrollbar-thumb-hover));
 }

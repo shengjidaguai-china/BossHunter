@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | [@yuppiez99999](https://github.com/yuppiez99999) | 正式维护者 | 平台采集、城市数据与测试 | 2026-08-29 起 | 在任（Write） |
 | [@yukinoshi](https://github.com/yukinoshi) | 正式维护者 | AI、错误恢复与产品流程 | 2026-08-29 起 | 在任（Write） |
-| [@bianshilong0604](https://github.com/bianshilong0604) | 正式维护者 | Web、产品流程与隐私边界 | 2026-08-30 起 | 在任（Write；审核团队邀请待接受） |
+| [@bianshilong0604](https://github.com/bianshilong0604) | 正式维护者 | Web、产品流程与隐私边界 | 2026-08-30 起 | 在任（Write） |
 | [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 正式维护者 | 运行时、发送安全与监测链路 | 2026-08-30 起 | 在任（Write） |
 | [@powerycy](https://github.com/powerycy) 跑跑蹦蹦跳跳 | 项目负责人兼正式技术维护者 | 全仓技术审核、安全复核与合并；两类贡献文档与维护贡献评分 | 项目发起至今；2026-08-28 起正式建档；2026-09-06 起计入技术审核池 | 在任（Admin） |
 

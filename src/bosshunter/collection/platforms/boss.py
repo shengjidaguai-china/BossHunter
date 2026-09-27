@@ -7,14 +7,22 @@ import json
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
+
+import httpx
 
 from bosshunter.ai.prefilter import quick_score
 from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, wait_for_load
 from bosshunter.collection.base import CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
+from bosshunter.collection.platforms.boss_font import (
+    JS_COLLECT_FONT_SOURCES,
+    build_boss_digit_map,
+    collect_font_sources,
+    parse_font_face_urls,
+)
 from bosshunter.config import CITY_CODES
 from bosshunter.db import add_risk_event
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
@@ -56,15 +64,55 @@ _FILTER_SEPARATOR = re.compile(r"[,，、;；]")
 # textContent retains these glyph codes even though Chrome shows normal digits.
 _BOSS_DIGITS = str.maketrans({chr(0xE031 + n): str(n) for n in range(10)})
 _PRIVATE_GLYPH = re.compile(r"[\ue000-\uf8ff]")
+# Digit mapping rebuilt from the font the page actually loaded: BOSS reshuffles
+# the PUA mapping on every font load, so the static table above goes stale and
+# silently decodes wrong digits. Rebuilt lazily per loaded font file.
+_BOSS_DYNAMIC_DIGITS: dict[str, str] = {}
+_FONT_FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    "Referer": "https://www.zhipin.com/",
+}
+
+
+def install_boss_digit_map(mapping: dict[str, str]) -> bool:
+    """Install a font-derived digit mapping; True when it replaces the previous one."""
+    fresh = {code: digit for code, digit in (mapping or {}).items()
+             if (isinstance(code, str) and len(code) == 1
+                     and isinstance(digit, str) and len(digit) == 1 and digit in "0123456789")}
+    if not fresh or fresh == _BOSS_DYNAMIC_DIGITS:
+        return False
+    _BOSS_DYNAMIC_DIGITS.clear()
+    _BOSS_DYNAMIC_DIGITS.update(fresh)
+    return True
 
 
 def decode_boss_text(value: Any) -> str:
-    return str(value or "").translate(_BOSS_DIGITS).strip()
+    text = str(value or "")
+    if _BOSS_DYNAMIC_DIGITS:
+        text = text.translate({ord(code): digit for code, digit in _BOSS_DYNAMIC_DIGITS.items()})
+    return text.translate(_BOSS_DIGITS).strip()
 
 
 def _decode_fields(raw: dict) -> dict:
     return {key: decode_boss_text(value) if isinstance(value, str) else value
             for key, value in raw.items()}
+
+
+_SALARY_DECODE_ACTIONS = ("stop", "skip_job")
+
+
+def _salary_decode_failure_action(config: Any) -> str:
+    """How to treat a BOSS salary font the decoder cannot map.
+
+    BOSS remaps digits onto private-use codepoints and reshuffles that mapping
+    on every font load, so an unknown font can never be guessed safely:
+    ``stop`` (default) aborts the run instead of judging jobs by a salary we
+    cannot read, while ``skip_job`` keeps collecting and leaves the salary
+    empty so ``profile.filter_unparsed_salary`` decides as usual.
+    """
+    collection = config.get("collection") if isinstance(config, dict) else None
+    value = collection.get("boss_salary_decode_failure") if isinstance(collection, dict) else None
+    return value if value in _SALARY_DECODE_ACTIONS else "stop"
 
 
 JS_IS_SCROLL_LIST = "Boolean(document.querySelector('.page-jobs .job-list-container .rec-job-list'))"
@@ -189,7 +237,15 @@ JS_DETECT_COLLECTION_RISK = """
     if (captcha) return JSON.stringify({risk: 'captcha', evidence: 'captcha_element'});
     if (/captcha|security-check|\\/verify/i.test(url)) return JSON.stringify({risk: 'captcha', evidence: 'captcha_url'});
     if (/\\/web\\/user\\/(?:login|\\?ka=header-login)/i.test(url)) return JSON.stringify({risk: 'login_required', evidence: 'login_url'});
-    if (/(?:^|[\\/?#=_-])(?:403|forbidden|access-denied)(?:$|[\\/?#=&_-])/i.test(url)) {
+    // Search filters may legitimately contain 403 or other error words.
+    // Only explicit error paths and status parameters indicate a blocked URL.
+    const pageUrl = new URL(url);
+    const blockedPath = /(?:^|\\/)(?:403|forbidden|access-denied)(?:\\/|$)/i.test(pageUrl.pathname);
+    const blockedStatus = Array.from(pageUrl.searchParams).some(([key, value]) =>
+        /^(?:code|status|error|error_code|status_code)$/i.test(key)
+        && /^(?:403|forbidden|access-denied)$/i.test(value)
+    );
+    if (blockedPath || blockedStatus) {
         return JSON.stringify({risk: 'blocked', evidence: 'blocked_url'});
     }
     if (/^(?:403(?:\\s+forbidden)?|forbidden|access denied|访问被拒绝|账号异常|账号受限)/i.test(title.trim())) {
@@ -285,7 +341,7 @@ class BossCollector:
         )
         guard = PlatformAccessGuard(self.safety_conn, self.config, "collection", "boss") if self.safety_conn is not None else None
         search_limit = _positive_int(collection_cfg.get("daily_search_page_limit", 60), 60)
-        detail_limit = _positive_int(collection_cfg.get("daily_detail_page_limit", 150), 150)
+        detail_limit = _positive_int(collection_cfg.get("daily_detail_page_limit", 900), 900)
         failure_limit = _positive_int(collection_cfg.get("max_consecutive_page_failures", 3), 3)
         risk_pause_min = _positive_int(collection_cfg.get("risk_pause_min_minutes", 5), 5)
         risk_pause_max = max(
@@ -297,11 +353,17 @@ class BossCollector:
         page_failures = 0
         seen_jobs = 0
         incomplete_combos = 0
+        undecodable_salary: set[str] = set()
+        salary_decode_action = _salary_decode_failure_action(self.config)
 
         def limited(reason: str) -> PlatformCollectionResult:
             return PlatformCollectionResult(
                 self.platform, "completed_with_shortage", reason,
-                f"BOSS 采集已达安全上限：{reason}",
+                (
+                    "BOSS 采集暂时暂停：此前检测到风险提示，请稍后重试。"
+                    if reason == "persistent_risk_lock"
+                    else f"BOSS 采集已达安全上限：{reason}"
+                ),
             )
 
         def risk(kind: str, evidence: str = "") -> PlatformCollectionResult:
@@ -484,6 +546,7 @@ class BossCollector:
                             if signal and signal["kind"] == "user_stopped":
                                 return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                             if signal: return risk(signal["kind"], signal["evidence"])
+                            self._refresh_font_digits(worker_target)
                             scroll_list = self.browser.evaluate(worker_target, JS_IS_SCROLL_LIST) is True
                             jobs = read_list()
                             if scroll_list and jobs:
@@ -523,7 +586,12 @@ class BossCollector:
                     for raw in jobs:
                         if hooks.stop_event is not None and hooks.stop_event.is_set():
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
+                        salary_source = str(raw.get("salary") or "") if isinstance(raw, dict) else ""
                         raw = _decode_fields(raw) if isinstance(raw, dict) else raw
+                        if (isinstance(raw, dict) and salary_source
+                                and _PRIVATE_GLYPH.search(str(raw.get("salary") or ""))
+                                and self._refresh_font_digits(worker_target)):
+                            raw["salary"] = decode_boss_text(salary_source)
                         candidate = self._list_candidate(raw, city, city_code, keyword)
                         if not candidate:
                             combo_complete = False
@@ -531,10 +599,20 @@ class BossCollector:
                             continue
                         if not hooks.on_list_candidate(candidate): continue
                         if _PRIVATE_GLYPH.search(candidate.salary):
-                            hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
-                            return PlatformCollectionResult(
-                                self.platform, "completed_with_shortage", "salary_decode_failed",
-                                "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
+                            if salary_decode_action != "skip_job":
+                                hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
+                                return PlatformCollectionResult(
+                                    self.platform, "completed_with_shortage", "salary_decode_failed",
+                                    "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
+                                )
+                            # Never keep a number we could not decode: an empty
+                            # salary lets filter_unparsed_salary decide instead
+                            # of dropping the whole run or storing garbage.
+                            undecodable_salary.add(candidate.source_job_id)
+                            raw["salary"] = ""
+                            candidate = replace(candidate, salary="")
+                            hooks.on_event(
+                                message="BOSS 薪资字体无法解析，已按配置保留该岗位（薪资留空）"
                             )
                         score, filter_reason = quick_score(raw, self.config) if self.config else (100, "")
                         if score <= 0:
@@ -581,6 +659,9 @@ class BossCollector:
                             continue
                         page_failures = 0
                         merged = self._merge_detail(candidate, detail, detail_url)
+                        if (merged.source_job_id in undecodable_salary
+                                and _PRIVATE_GLYPH.search(merged.salary)):
+                            merged = replace(merged, salary="")
                         if not merged.title or not merged.company or not merged.url or not merged.jd:
                             combo_complete = False
                             hooks.on_parse_failed("BOSS 详情缺少职位、公司、链接或 JD")
@@ -611,6 +692,35 @@ class BossCollector:
                 f"BOSS 本轮搜索结束，{incomplete_combos} 个搜索组合未完整读取，可再次采集",
             )
         return PlatformCollectionResult(self.platform, "completed", "search_exhausted", "BOSS 本轮搜索已结束")
+
+    def _refresh_font_digits(self, target_id: str) -> bool:
+        """Rebuild the digit mapping from the font the tab actually loaded.
+
+        Never raises and never interrupts collection: on any failure the
+        previous static-table behavior stands and residual PUA glyphs keep
+        flowing into the existing salary_decode_failed handling."""
+        try:
+            urls, css_sources = collect_font_sources(self.browser.evaluate(target_id, JS_COLLECT_FONT_SOURCES))
+            css = chr(10).join(source for source in css_sources if not source.startswith("http"))
+            for href in [source for source in css_sources if source.startswith("http")][:3]:
+                try:
+                    response = httpx.get(href, timeout=10, trust_env=False, headers=_FONT_FETCH_HEADERS)
+                    if response.status_code == 200:
+                        css += chr(10) + response.text
+                except httpx.HTTPError:
+                    continue
+            for url in (urls + [found for found in parse_font_face_urls(css) if found not in urls])[:3]:
+                try:
+                    response = httpx.get(url, timeout=10, trust_env=False, headers=_FONT_FETCH_HEADERS)
+                except httpx.HTTPError:
+                    continue
+                if response.status_code != 200 or not response.content:
+                    continue
+                if install_boss_digit_map(build_boss_digit_map(response.content)):
+                    return True
+        except Exception:
+            return False
+        return False
 
     @staticmethod
     def _list_candidate(raw: Any, city: str, city_code: str, keyword: str) -> JobCandidate | None:

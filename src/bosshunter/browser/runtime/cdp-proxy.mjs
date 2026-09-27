@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import { randomBytes } from 'node:crypto';
 
 const PORT = parseInt(process.env.BOSSHUNTER_BROWSER_PROXY_PORT || process.env.CDP_PROXY_PORT || '3456', 10);
 const ENABLE_PORT_GUARD = !['0', 'false', 'no'].includes(String(process.env.BOSSHUNTER_ENABLE_PORT_GUARD || 'true').toLowerCase());
@@ -87,21 +88,88 @@ async function getChromeVersion(port) {
   }
 }
 
+function browserNameFromProduct(product) {
+  if (!product) return null;
+  if (product.startsWith('Edg/')) return 'Microsoft Edge';
+  if (product.startsWith('Chrome/')) return 'Google Chrome';
+  return product;
+}
+
+function normalizeDevtoolsWsPath(wsPath) {
+  if (typeof wsPath !== 'string') return null;
+  // Only accept a plain absolute DevTools path; this also keeps stray CR/LF from
+  // a corrupted DevToolsActivePort file out of the handshake request below.
+  if (!wsPath.startsWith('/') || /[\r\n]/.test(wsPath)) return null;
+  return wsPath;
+}
+
+function probeDevtoolsWsPath(port, wsPath, timeoutMs = 5000) {
+  // Chrome's default-profile "Allow remote debugging" toggle
+  // (chrome://inspect/#remote-debugging) serves the browser DevTools endpoint
+  // over WebSocket only: every /json/* request answers 404 while the path
+  // recorded in DevToolsActivePort still speaks CDP. Prove that path really
+  // upgrades before trusting it, so a stale file whose port got recycled by an
+  // unrelated process is still skipped instead of connected to.
+  // Real Chrome took ~1.5s to answer the upgrade on a busy profile, so the
+  // budget is deliberately well above the 2s used for the HTTP probe.
+  return new Promise((resolve) => {
+    const socket = net.createConnection(port, '127.0.0.1');
+    let head = '';
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('error', () => finish(false));
+    socket.once('close', () => finish(false));
+    socket.once('connect', () => {
+      socket.write(
+        `GET ${wsPath} HTTP/1.1\r\n`
+          + `Host: 127.0.0.1:${port}\r\n`
+          + 'Upgrade: websocket\r\n'
+          + 'Connection: Upgrade\r\n'
+          + `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\n`
+          + 'Sec-WebSocket-Version: 13\r\n\r\n'
+      );
+    });
+    socket.on('data', (chunk) => {
+      head += chunk.toString('latin1');
+      const status = /^HTTP\/1\.[01] (\d{3})/.exec(head);
+      if (status) finish(status[1] === '101');
+      else if (head.length > 4096) finish(false);
+    });
+  });
+}
+
 async function discoverChromePort() {
   for (const filePath of activePortFiles()) {
     try {
       const lines = fs.readFileSync(filePath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
       const port = parseInt(lines[0], 10);
       if (port > 0 && port < 65536 && await checkPort(port)) {
-        const wsPath = lines[1] || null;
+        const wsPath = normalizeDevtoolsWsPath(lines[1] || null);
         const version = await getChromeVersion(port);
+        // A stale DevToolsActivePort can leave a port that accepts TCP but no
+        // longer speaks CDP; require real CDP proof before trusting it,
+        // otherwise fall through to the COMMON_PORTS probe below. Chrome does not
+        // always expose /json/version, so a recorded path that actually upgrades
+        // to a DevTools socket counts as proof too.
+        const wsUrl = version?.webSocketDebuggerUrl
+          || (wsPath && await probeDevtoolsWsPath(port, wsPath) ? `ws://127.0.0.1:${port}${wsPath}` : null);
+        if (!wsUrl) {
+          continue;
+        }
         const browserName = filePath.includes('Chromium')
           ? 'Chromium'
           : filePath.includes('Chrome Canary')
             ? 'Google Chrome Canary'
             : 'Google Chrome';
         console.log(`[BossHunter Browser Runtime] DevToolsActivePort: ${port}${wsPath ? ' with wsPath' : ''}`);
-        return { port, wsPath, product: version?.Browser || null, browserName };
+        return { port, wsPath, wsUrl, product: version?.Browser || null, browserName };
       }
     } catch {}
   }
@@ -111,11 +179,7 @@ async function discoverChromePort() {
       const version = await getChromeVersion(port);
       if (version?.webSocketDebuggerUrl) {
         const product = version.Browser || null;
-        const browserName = product?.startsWith('Edg/')
-          ? 'Microsoft Edge'
-          : product?.startsWith('Chrome/')
-            ? 'Google Chrome'
-            : product || '未知浏览器';
+        const browserName = browserNameFromProduct(product) || '未知浏览器';
         console.log(`[BossHunter Browser Runtime] Found Chrome debug port: ${port}`);
         return { port, wsUrl: version.webSocketDebuggerUrl, product, browserName };
       }
@@ -155,6 +219,20 @@ async function connect() {
       cleanup();
       connectingPromise = null;
       console.log(`[BossHunter Browser Runtime] Connected to Chrome port ${chromePort}`);
+      // When Chrome only exposes the browser WebSocket there is no /json/version
+      // to read the browser identity from, so ask CDP for what it would report.
+      // The name may already be known from the profile path; the product is not.
+      if (!chromeProduct) {
+        sendCDP('Browser.getVersion')
+          .then((resp) => {
+            const product = resp.result?.product;
+            if (product) {
+              chromeProduct = product;
+              chromeName = chromeName || browserNameFromProduct(product);
+            }
+          })
+          .catch(() => {});
+      }
       resolve();
     };
     const onError = (event) => {
@@ -256,12 +334,25 @@ async function enablePortGuard(sessionId) {
 
 async function ensureSession(targetId) {
   if (sessions.has(targetId)) return sessions.get(targetId);
-  const resp = await sendCDP('Target.attachToTarget', { targetId, flatten: true });
-  const sessionId = resp.result?.sessionId;
-  if (!sessionId) throw new Error(`attach failed: ${JSON.stringify(resp.error)}`);
-  sessions.set(targetId, sessionId);
-  await enablePortGuard(sessionId);
-  return sessionId;
+  // Newly created background tabs can be briefly un-attachable (Chrome may
+  // freeze/discard them right after creation), so retry attach a few times.
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await sendCDP('Target.attachToTarget', { targetId, flatten: true });
+      const sessionId = resp.result?.sessionId;
+      if (sessionId) {
+        sessions.set(targetId, sessionId);
+        await enablePortGuard(sessionId);
+        return sessionId;
+      }
+      lastError = new Error(`attach failed: ${JSON.stringify(resp.error)}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw lastError;
 }
 
 async function waitForLoad(sessionId, timeoutMs = 15000) {
@@ -322,11 +413,11 @@ const server = http.createServer(async (req, res) => {
       const background = q.background === '1' || q.background === 'true';
       const resp = await sendCDP('Target.createTarget', { url: targetUrl, background });
       const targetId = resp.result.targetId;
-      if (targetUrl !== 'about:blank') {
-        try {
-          await ensureSession(targetId);
-        } catch {}
-      }
+      // Bind the CDP session eagerly (including about:blank tabs) so a later
+      // navigate cannot race against Chrome freezing the fresh background tab.
+      try {
+        await ensureSession(targetId);
+      } catch {}
       sendJson(res, { targetId });
     } else if (pathname === '/close') {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });

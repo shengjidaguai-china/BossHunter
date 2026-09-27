@@ -57,10 +57,23 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('version = "2.3.2"', pyproject)
-        self.assertEqual(bosshunter.__version__, "2.3.2")
-        self.assertEqual(json.loads(health())["version"], "2.3.2")
-        self.assertIn("v2.3.2 · 本地控制台", sidebar_source)
+        version = "2.4.0"
+        frontend = ROOT / "src" / "bosshunter" / "web" / "frontend"
+        package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((frontend / "package-lock.json").read_text(encoding="utf-8"))
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        self.assertIn(f'version = "{version}"', pyproject)
+        self.assertEqual(bosshunter.__version__, version)
+        self.assertEqual(json.loads(health())["version"], version)
+        self.assertEqual(package["version"], version)
+        self.assertEqual(lock["version"], version)
+        self.assertEqual(lock["packages"][""]["version"], version)
+        self.assertIn(f"v{version} · 本地控制台", sidebar_source)
+        self.assertIn(f"BossHunter v{version}</h1>", readme)
+        self.assertIn(f"version-v{version}-", readme)
+        self.assertIn(f"## v{version}\n", changelog)
         self.assertNotIn("v1.1.0", sidebar_source)
 
 
@@ -445,9 +458,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("最后刷新：", self.source)
         self.assertIn("refreshing && 'animate-spin'", self.source)
 
-    def test_dashboard_shows_detailed_greeting_queue_progress(self):
-        self.assertIn("if (log.includes('招呼语进度')) return log", self.source)
-        self.assertIn("whitespace-pre-line text-lg", self.source)
+    # Greeting queue progress is covered by rendered component assertions in
+    # DashboardPage.test.tsx; the task panel no longer uses collapsed details.
 
     def test_dashboard_falls_back_to_concrete_task_status(self):
         self.assertNotIn("return '等待后端返回阶段'", self.source)
@@ -721,7 +733,7 @@ class DashboardPageTests(unittest.TestCase):
         )
 
     def test_dashboard_shows_automatic_task_deadline_and_stop_reason(self):
-        self.assertIn("自动截止：", self.source)
+        self.assertIn("截止 ", self.source)
         self.assertIn("visibleTask.deadline_at", self.source)
         self.assertIn("visibleTask.stop_reason", self.source)
 
@@ -744,10 +756,11 @@ class SidebarTests(unittest.TestCase):
     def test_sidebar_star_link_places_github_icon_left_and_centers_star_label(self):
         # Act / Assert
         self.assertIn("relative flex items-center", self.source)
-        self.assertIn("absolute left-3", self.source)
-        self.assertIn("mx-auto flex items-center justify-center", self.source)
+        self.assertIn('aria-label="BossHunter GitHub"', self.source)
+        self.assertIn("md:absolute md:left-3", self.source)
+        self.assertIn("mx-auto hidden items-center justify-center gap-2 md:flex", self.source)
         self.assertIn("text-xl", self.source)
-        self.assertIn("text-yellow-400", self.source)
+        self.assertIn("text-star", self.source)
 
     def test_sidebar_fetches_unresolved_reply_count(self):
         # Act / Assert

@@ -50,13 +50,16 @@ def resolve_active_resume_path(raw_path: str | None, base_dir: Path | None = Non
 
 	When config still points at a companion PDF, prefer the sibling ``.md`` path
 	so a replace upload overwrites the same stem instead of creating ``*-2.md``.
+
+	Relative paths resolve against ``base_dir`` when it is given, never against
+	the process working directory.
 	"""
 	if not raw_path or not str(raw_path).strip():
 		return None
 	path = Path(str(raw_path).strip())
-	candidates = [path]
 	if base_dir is not None and not path.is_absolute():
-		candidates.append(Path(base_dir) / path)
+		path = Path(base_dir) / path
+	candidates = [path]
 	for candidate in candidates:
 		try:
 			resolved = candidate.resolve()

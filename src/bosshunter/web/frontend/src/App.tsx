@@ -19,7 +19,7 @@ export default function App() {
         <Sidebar />
         <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
           <Header />
-          <main className="min-w-0 flex-1 overflow-y-auto p-6">
+          <main className="min-w-0 flex-1 overflow-y-auto p-3 md:p-6">
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/jobs" element={<JobsPage />} />

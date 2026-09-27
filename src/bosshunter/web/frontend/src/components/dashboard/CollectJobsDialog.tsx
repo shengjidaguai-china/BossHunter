@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowUp, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { WorkbenchTask } from '@/hooks/useDashboard'
+import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
-type PlatformId = 'boss' | 'zhilian' | '51job'
+type PlatformId = 'boss' | 'zhilian' | '51job' | 'liepin'
 
 interface PlatformDraft {
   enabled: boolean
@@ -37,13 +38,15 @@ interface CollectJobsDialogProps {
   mode?: 'collect' | 'full'
   activeTask: WorkbenchTask | null
   onClose: () => void
-  onStart: (options: Record<string, unknown>) => void
+  /** 返回启动结果：成功返回 ok:true（弹窗自动关闭），失败返回错误信息（弹窗保留并展示）。 */
+  onStart: (options: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
 }
 
 const initialDrafts: Record<PlatformId, PlatformDraft> = {
   boss: { enabled: true, keywords: '', cities: '', cityCodes: '', maxPages: '3', sort: 'default' },
   zhilian: { enabled: false, keywords: '', cities: '', cityCodes: '', maxPages: '1', sort: 'default' },
   '51job': { enabled: false, keywords: '', cities: '上海', cityCodes: '上海=020000', maxPages: '1', sort: 'default' },
+  liepin: { enabled: false, keywords: '', cities: '', cityCodes: '', maxPages: '1', sort: 'default' },
 }
 
 function splitValues(value: string) {
@@ -103,10 +106,12 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [order, setOrder] = useState<PlatformId[]>(['boss'])
   const [autoScore, setAutoScore] = useState(false)
   const [error, setError] = useState('')
+  const [starting, setStarting] = useState(false)
   const [resumableRuns, setResumableRuns] = useState<ResumableRun[]>([])
   const [resumeRunId, setResumeRunId] = useState('')
   const [zhilianCities, setZhilianCities] = useState<PlatformCityOption[]>([])
   const [job51Cities, setJob51Cities] = useState<PlatformCityOption[]>([])
+  const [liepinCities, setLiepinCities] = useState<PlatformCityOption[]>([])
 
   useEffect(() => {
     if (!open) return
@@ -136,16 +141,18 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         const nextBoss = draftFromConfig(config, 'boss')
         const nextZhilian = draftFromConfig(config, 'zhilian')
         const nextJob51 = draftFromConfig(config, '51job')
+        const nextLiepin = draftFromConfig(config, 'liepin')
         if (mode === 'full') {
           nextZhilian.enabled = false
           nextJob51.enabled = false
+          nextLiepin.enabled = false
         }
         const configuredOrder = Array.isArray(config?.collection?.default_order) ? config.collection.default_order : ['boss']
-        const enabledFromConfig = (['boss', 'zhilian', '51job'] as PlatformId[]).filter(platform => config?.platforms?.[platform]?.enabled === true)
+        const enabledFromConfig = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).filter(platform => config?.platforms?.[platform]?.enabled === true)
         const nextOrder = [...configuredOrder, ...enabledFromConfig].filter((item: unknown, index, values): item is PlatformId =>
-          (item === 'boss' || item === 'zhilian' || item === '51job') && values.indexOf(item) === index,
+          (item === 'boss' || item === 'zhilian' || item === '51job' || item === 'liepin') && values.indexOf(item) === index,
         )
-        setDrafts({ boss: nextBoss, zhilian: nextZhilian, '51job': nextJob51 })
+        setDrafts({ boss: nextBoss, zhilian: nextZhilian, '51job': nextJob51, liepin: nextLiepin })
         setOrder(mode === 'full' ? ['boss'] : (nextOrder.length ? nextOrder : ['boss']))
         setAutoScore(mode === 'full' || config?.collection?.auto_score_default === true)
       })
@@ -171,6 +178,16 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
       })
       .catch(() => {
         if (!cancelled) setError('读取 51job 城市目录失败，可稍后重试。')
+      })
+    fetch('/api/cities?platform=liepin', { cache: 'no-store' })
+      .then(response => response.json())
+      .then(data => {
+        if (cancelled) return
+        if (Array.isArray(data.cities)) setLiepinCities(data.cities)
+        if (!data.ok) setError(data.error || '读取猎聘城市目录失败。')
+      })
+      .catch(() => {
+        if (!cancelled) setError('读取猎聘城市目录失败，可稍后重试。')
       })
     return () => { cancelled = true }
   }, [open, mode])
@@ -206,6 +223,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   }
 
   const start = () => {
+    if (starting) return
     if (!enabledOrder.length) {
       setError('至少勾选一个平台。')
       return
@@ -216,18 +234,17 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
       const keywords = splitValues(draft.keywords)
       const cities = splitValues(draft.cities)
       if (!keywords.length || !cities.length) {
-        const label = platform === 'boss' ? 'BOSS 直聘' : platform === 'zhilian' ? '智联招聘' : '前程无忧'
-        setError(`${label} 需要至少一个关键词和城市。`)
+        setError(`${PLATFORM_LABELS[platform]} 需要至少一个关键词和城市。`)
         return
       }
       const configuredCodes = parseCityCodes(draft.cityCodes)
-      const platformCities = platform === 'zhilian' ? zhilianCities : platform === '51job' ? job51Cities : []
+      const platformCities = platform === 'zhilian' ? zhilianCities : platform === '51job' ? job51Cities : platform === 'liepin' ? liepinCities : []
       const cityCodes = platform !== 'boss'
         ? Object.fromEntries(cities.map(city => [city, findPlatformCity(city, platformCities)?.code || configuredCodes[city] || '']).filter(([, code]) => code))
         : configuredCodes
       if (platform !== 'boss' && cities.some(city => !cityCodes[city])) {
         const missing = cities.filter(city => !cityCodes[city]).join('、')
-        setError(`${platform === 'zhilian' ? '智联' : '51job'} 内置城市目录暂未收录：${missing}。请选择已验证城市。`)
+        setError(`${PLATFORM_SHORT_LABELS[platform]} 内置城市目录暂未收录：${missing}。请选择已验证城市。`)
         return
       }
       platforms[platform] = {
@@ -238,22 +255,40 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         sort: draft.sort,
       }
     }
-    onStart({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms })
+    void submit({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms })
+  }
+
+  const submit = async (options: Record<string, unknown>) => {
+    if (starting) return
+    setStarting(true)
+    setError('')
+    try {
+      const result = await onStart(options)
+      if (result.ok) {
+        onClose()
+        return
+      }
+      setError(result.error || '启动失败，请稍后重试。')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '启动失败，请稍后重试。')
+    } finally {
+      setStarting(false)
+    }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label="岗位采集">
-      <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-card-border bg-white p-6 shadow-2xl">
+      <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">COLLECT JOBS</div>
             <h2 className="mt-1 text-2xl font-black">{mode === 'full' ? '全流程采集设置' : '岗位采集'}</h2>
             <p className="mt-1 text-sm leading-6 text-muted">平台会按队列严格串行执行；每个平台只设置最大页数和排序。</p>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="关闭"><X className="h-5 w-5" /></Button>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={starting} aria-label="关闭"><X className="h-5 w-5" /></Button>
         </div>
 
-        {mode === 'collect' && <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        {mode === 'collect' && <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">继续未完成的 BOSS 采集</div>
           <p className="mt-1 text-xs leading-5 text-muted">沿用原任务的搜索条件，从中断页恢复；已完成的组合不再重复搜索。想查看最新岗位，请使用下方“重新采集”。</p>
           {resumableRuns.length > 0 ? <>
@@ -263,19 +298,19 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                   {new Date(run.created_at.replace(' ', 'T') + 'Z').toLocaleString()} · {run.options.platforms.boss.cities.join('、')} · {run.options.platforms.boss.keywords.join('、')} · 每组 {run.options.platforms.boss.max_pages} 页
                 </option>)}
               </Select>
-              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId} onClick={() => onStart({ resume_run_id: resumeRunId })}>继续采集</Button>
+              <Button variant="secondary" disabled={Boolean(activeTask) || !resumeRunId || starting} onClick={() => void submit({ resume_run_id: resumeRunId })}>继续采集</Button>
             </div>
             <p className="mt-2 text-xs text-muted">{resumableRuns.find(run => run.id === resumeRunId)?.options.auto_score ? '原任务已开启采集后自动评分，继续采集后也会执行评分。' : '原任务未开启自动评分，继续采集后结束。'}</p>
           </> : <p className="mt-2 text-xs text-muted">暂无可恢复任务。新版本开始的 BOSS 单平台采集会保存进度；旧版本记录需重新采集。</p>}
         </div>}
 
         {activeTask?.progress?.platforms && (
-          <div className="mt-4 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
+          <div className="mt-4 rounded-2xl border border-primary/20 bg-secondary p-4">
             <div className="text-sm font-black text-primary">采集进行中</div>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
               {Object.entries(activeTask.progress.platforms).map(([platform, state]) => (
-                <div key={platform} className="rounded-xl border border-card-border bg-white p-3 text-sm">
-                  <div className="flex items-center justify-between font-black"><span>{platform === 'boss' ? 'BOSS 直聘' : platform === 'zhilian' ? '智联招聘' : '前程无忧'}</span><span>新增 {state.new}</span></div>
+                <div key={platform} className="rounded-xl border border-card-border bg-card p-3 text-sm">
+                  <div className="flex items-center justify-between font-black"><span>{PLATFORM_LABELS[platform] || platform}</span><span>新增 {state.new}</span></div>
                   <div className="mt-1 text-xs text-muted">{state.status} · {state.city || '等待'} · {state.keyword || ''} · 第 {state.page || 0}/{state.max_pages || 0} 页</div>
                   <div className="mt-1 text-xs text-muted">扫描 {state.seen || 0} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</div>
                   {state.message && <div className="mt-1 text-xs text-primary">{state.message}</div>}
@@ -286,12 +321,12 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         )}
 
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          {(['boss', 'zhilian', '51job'] as PlatformId[]).map(platform => {
+          {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
             const draft = drafts[platform]
-            const label = platform === 'boss' ? 'BOSS 直聘' : platform === 'zhilian' ? '智联招聘' : '前程无忧'
-            const platformCities = platform === 'zhilian' ? zhilianCities : job51Cities
+            const label = PLATFORM_LABELS[platform]
+            const platformCities = platform === 'zhilian' ? zhilianCities : platform === '51job' ? job51Cities : liepinCities
             return (
-              <section key={platform} className={`rounded-2xl border p-4 ${draft.enabled ? 'border-primary/30 bg-[#FFFCFA]' : 'border-card-border bg-white opacity-70'}`}>
+              <section key={platform} className={`rounded-2xl border p-4 ${draft.enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
                 <div className="flex items-center justify-between gap-3">
                   <label className="flex items-center gap-2 text-lg font-black"><input type="checkbox" checked={draft.enabled} disabled={mode === 'full' && platform !== 'boss'} onChange={event => togglePlatform(platform, event.target.checked)} className="h-4 w-4 accent-primary" />{label}</label>
                   {draft.enabled && <div className="text-xs font-bold text-primary">队列 {enabledOrder.indexOf(platform) + 1}</div>}
@@ -301,16 +336,16 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                   <label className="block text-xs font-bold text-muted">城市（逗号或换行分隔）<Input list={platform !== 'boss' ? `${platform}-city-options` : undefined} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : '北京'} /></label>
                   {platform !== 'boss' ? <>
                     <datalist id={`${platform}-city-options`}>{platformCities.map(city => <option key={city.code} value={city.name} />)}</datalist>
-                    <div className="rounded-xl border border-card-border bg-white px-3 py-2 text-xs text-muted">
+                    <div className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">
                       <div className="font-bold text-foreground">平台城市编码</div>
-                      <p className="mt-1">系统只使用已验证的{platform === 'zhilian' ? '智联' : '51job'}城市编码，不会猜测。</p>
+                      <p className="mt-1">系统只使用已验证的{PLATFORM_SHORT_LABELS[platform]}城市编码，不会猜测。</p>
                       {!!splitValues(draft.cities).length && <div className="mt-2 flex flex-wrap gap-1">
-                        {splitValues(draft.cities).map(city => <span key={city} className={`rounded-full px-2 py-1 ${findPlatformCity(city, platformCities) ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                        {splitValues(draft.cities).map(city => <span key={city} className={`rounded-full px-2 py-1 ${findPlatformCity(city, platformCities) ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>
                           {city} · {findPlatformCity(city, platformCities) ? '已自动识别' : '暂未收录'}
                         </span>)}
                       </div>}
                     </div>
-                  </> : <p className="rounded-xl border border-card-border bg-white px-3 py-2 text-xs text-muted">BOSS 城市编码由系统内置匹配，无需填写。</p>}
+                  </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编码由系统内置匹配，无需填写。</p>}
                   <div className="grid grid-cols-2 gap-2">
                     <label className="text-xs font-bold text-muted">最大页数<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
                     <label className="text-xs font-bold text-muted">排序<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
@@ -322,13 +357,13 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           })}
         </div>
 
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
-          <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">执行顺序</div><p className="mt-1 text-xs text-muted">平台串行采集；智联和前程无忧暂不执行发送或监听。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {platform === 'boss' ? 'BOSS' : platform === 'zhilian' ? '智联' : '51job'}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="上移"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="下移"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
+          <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">执行顺序</div><p className="mt-1 text-xs text-muted">平台串行采集；智联、前程无忧和猎聘暂不执行发送或监听。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="上移"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="下移"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
         </div>
 
-        <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-white p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程必须先评分；评分后进入人工确认，再按平台适配器执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
-        {error && <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-danger">{error}</div>}
-        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={start} disabled={Boolean(activeTask)}>{mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
+        <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-card p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程必须先评分；评分后进入人工确认，再按平台适配器执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
+        {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
+        <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />启动中…</span> : mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
       </div>
     </div>
   )

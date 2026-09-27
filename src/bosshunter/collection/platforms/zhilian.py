@@ -1362,6 +1362,16 @@ class ZhilianCollector:
                                     self.browser.evaluate(target_id, _build_click_card_script(int(card_index)))
                                 )
                                 if clicked.get("ok") is not True:
+                                    # 卡片懒加载或列表重渲染时可能瞬时未命中，重试后再判定结构变化
+                                    for _ in range(2):
+                                        self.sleep(1.5)
+                                        self.browser.scroll(target_id, y=2600)
+                                        clicked = self._parse_payload(
+                                            self.browser.evaluate(target_id, _build_click_card_script(int(card_index)))
+                                        )
+                                        if clicked.get("ok") is True:
+                                            break
+                                if clicked.get("ok") is not True:
                                     return PlatformCollectionResult(
                                         self.platform, "blocked", "selector_changed", "智联职位卡结构变化，已安全停止"
                                     )

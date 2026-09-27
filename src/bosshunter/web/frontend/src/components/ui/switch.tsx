@@ -5,14 +5,16 @@ interface SwitchProps {
   onChange: (checked: boolean) => void
   className?: string
   disabled?: boolean
+  'aria-label'?: string
 }
 
-export function Switch({ checked, onChange, className, disabled }: SwitchProps) {
+export function Switch({ checked, onChange, className, disabled, 'aria-label': ariaLabel }: SwitchProps) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
@@ -23,7 +25,7 @@ export function Switch({ checked, onChange, className, disabled }: SwitchProps) 
     >
       <span
         className={cn(
-          'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-lg transition-transform',
+          'pointer-events-none block h-4 w-4 rounded-full bg-card shadow-lg transition-transform',
           checked ? 'translate-x-4' : 'translate-x-0'
         )}
       />

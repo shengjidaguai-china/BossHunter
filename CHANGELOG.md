@@ -4,6 +4,7 @@
 
 | 日期 | 版本号 | 类型 | 更新内容 |
 | --- | --- | --- | --- |
+| 2026-09-09 | v2.4.0 | 采集、AI、简历与工作台 | 汇总近期多平台断点续采、完整简历评分与评分依据、失败重试、定制简历预览确认、首页数据概览和紧凑布局，以及 AI 连接、macOS 面板、前端构建和文档维护改进。 |
 | 2026-09-01 | v2.3.2 | 采集与简历稳定性 | 完成 51job API 只读采集的安全整合和真实环境验证；修复智联详情页被误判为需重新登录、单平台登录问题阻断后续平台以及中文 PDF 简历乱码，并调整页数上限提示位置。 |
 | 2026-08-29 | v2.3.2 | 稳定性与平台适配 | 合入猎聘只读采集后端（前端入口待接入）、BOSS 搜索筛选和安全岗位链接；修复 AI 凭据、错误提示、评分恢复与监测回复，并补齐采集器和运行边界测试。 |
 | 2026-08-25 | v2.3.1 | 多平台与安全整合 | 合入智联/51job 只读采集、外部平台人工投递闭环、岗位池与筛选增强、Windows 兼容、招呼语与消息判定修复，并重整 BOSS 页面访问保护设置。 |
@@ -13,6 +14,52 @@
 | 2026-07-30 | v2.1.0 | 体验优化 | 支持中文名 Markdown 与 Word（`.docx`）简历；新增 DeepSeek、豆包和自定义兼容 API；启动前可明确诊断 Chrome、远程调试与 AI 配置问题。 |
 | 2026-07-27 | v2.0.0 | 功能改进 | 优化定制简历投递和监测恢复流程，并整理公开文档中的隐私内容。 |
 | 2026-06-29 | v2.0.0 | 稳定性 | 修复工作台任务可能卡住的问题；自动跟进默认关闭，把发送决定留给用户。 |
+
+## v2.4.0
+
+本节汇总 2026-09-01 上次记录之后的功能、修复与维护改动，以及本次工作台更新。
+
+### 岗位采集与任务恢复
+
+- 猎聘只读采集接入 Web 面板，可在采集窗口选择猎聘并设置关键词、城市和页数；配置页、岗位筛选、平台标签和导出同步支持猎聘，仍不开放自动投递或消息监测。([#139](https://github.com/shengjidaguai-china/BossHunter/pull/139))
+- BOSS 明确区分“重新采集”和“继续采集”：重新采集从各城市、关键词组合的第一页开始发现新岗位，按岗位 ID 去重；只有继续采集才复用原任务参数和断点。整页保存成功后才推进断点，保存失败保留重试位置，支持恢复未完成的 BOSS 单平台采集任务。采集结束区分无新增、空结果、未完成和解析或保存失败，避免把部分失败显示为全部完成。([#170](https://github.com/shengjidaguai-china/BossHunter/pull/170)、[#196](https://github.com/shengjidaguai-china/BossHunter/pull/196))
+- 改进 BOSS 滚动加载和搜索页保留；先还原薪资字体编码再筛选，无法解析时明确记录原因。采集后自动评分只处理本次新增岗位，实时显示 AI 阶段、完成、通过、过滤与失败数量。([#196](https://github.com/shengjidaguai-china/BossHunter/pull/196))
+- 智联和猎聘只读采集后端支持带有效期的断点，续采可跳过已完成的城市、关键词组合；失败页保留重试位置。智联补齐配置校验、时间窗口、屏蔽公司、一票否决词、JD 和实习岗位过滤。([#155](https://github.com/shengjidaguai-china/BossHunter/pull/155)、[#158](https://github.com/shengjidaguai-china/BossHunter/pull/158)、[#159](https://github.com/shengjidaguai-china/BossHunter/pull/159))
+- 恢复并更新 51job、猎聘、智联的离线城市快照。智联增加默认关闭的实验性只读 API 采集框架，可通过 `platforms.zhilian.search.api_fetch` 开启；接口不可用时回退页面采集，真实响应字段仍需登录环境校准，验证码或风控信号仍停止任务。([#156](https://github.com/shengjidaguai-china/BossHunter/pull/156)、[#162](https://github.com/shengjidaguai-china/BossHunter/pull/162))
+
+### AI 评分、筛选与连接诊断
+
+- 评分使用完整简历和清理后的完整 JD，结合城市、薪资区间以及直接经验、相近经验、待确认信息和必备条件判断匹配度，减少重复扣分；上下文不足时不再静默截断简历，无法完成时明确报错。全量、自动和恢复评分不再被内部 1000 条上限截断，手动勾选仍保留 1000 条限制。([#203](https://github.com/shengjidaguai-china/BossHunter/pull/203))
+- 保存成功评分的依据快照，并提供只读查询接口；历史岗位没有快照、预筛失败或评分错误时分别返回明确状态。本次提供后端查询能力，不追溯重算旧岗位，也不新增评分分析页面。([#77](https://github.com/shengjidaguai-china/BossHunter/pull/77))
+- 薪资过滤改进区间重叠判断，支持薪资上界比例和无法解析薪资的过滤配置；AI 评分纳入期望薪资。招呼语优先使用有依据的正向经历，增加检查和重试，毕业届别根据教育日期判断。([#172](https://github.com/shengjidaguai-china/BossHunter/pull/172))
+- AI 请求与启动检查避免继承系统代理；无效 Base URL 给出明确提示，DeepSeek 模型别名可解析为实际模型，也可关闭自动解析。区分客户端初始化失败与服务请求失败，诊断信息只包含安全的运行环境版本信息。([#172](https://github.com/shengjidaguai-china/BossHunter/pull/172)、[#179](https://github.com/shengjidaguai-china/BossHunter/pull/179))
+- 将启动校验、配置保存和任务创建纳入同一受保护流程：已有任务或截止时间导致启动被拒绝时，不覆盖配置；配置保存失败时，不创建后台任务。([#203](https://github.com/shengjidaguai-china/BossHunter/pull/203))
+
+### 投递、HR 回复与简历
+
+- 发送失败保留具体原因，包括岗位关闭、已经投递、缺少招呼语、尚未评分或未确认；成功后清除旧失败信息。失败招呼语可重试，点击后立即显示处理中并防止重复操作；改进 HR 沟通意向和简历请求识别。([#145](https://github.com/shengjidaguai-china/BossHunter/pull/145)、[#152](https://github.com/shengjidaguai-china/BossHunter/pull/152)、[#161](https://github.com/shengjidaguai-china/BossHunter/pull/161))
+- 简历生成失败的待办支持重新生成或忽略，同步待办和简历请求状态，并保留失败历史，避免错误覆盖已推进的状态。([#92](https://github.com/shengjidaguai-china/BossHunter/pull/92))
+- 定制简历后端增加预览、编辑和显式确认流程：保留母版中的全部项目、教育、联系方式和事实数据，不编造、合并或删减经历；同一份 Markdown 生成 PDF 和完整 PNG 预览，并检查截图是否完整。预览与确认通过接口完成，本次不新增前端编辑器；生成后不会自动发送。([#143](https://github.com/shengjidaguai-china/BossHunter/pull/143))
+- 配置页支持在指定区域拖入简历，原始 PDF 与转换后的 Markdown 可折叠对照预览；上传路径统一为绝对路径，修复后续读取失败和异常 PDF 难以清除的问题。([#176](https://github.com/shengjidaguai-china/BossHunter/pull/176))
+
+### 工作台首页与操作体验
+
+- 增加最近 7 日发送和回复趋势、高分公司 TOP5，最近活动显示 3 条；各统计独立加载，单个接口失败不阻塞其他区域，空数据提供操作引导。([#202](https://github.com/shengjidaguai-china/BossHunter/pull/202))
+- 保持原有配色，突出“运行全流程”、采集和监测入口；启动检查、运行状态、失败原因和普通通知默认只占一行，详情按需展开，合并重复提示。今日待确认的筛选默认收起，展开后使用紧凑控件；保留生效条件数、结果数、重置和薪资校验。无 HR 简历待办时缩为一行，兼容窄窗口导航。([#202](https://github.com/shengjidaguai-china/BossHunter/pull/202))
+- 增加独立启动检查入口，在创建任务前展示需处理的问题；补充 BOSS 关键词输入的回车和逗号提示。([#171](https://github.com/shengjidaguai-china/BossHunter/pull/171))
+
+### 安装、文档与维护
+
+- 修复 macOS 隐私权限环境下静态资源被误报为 403、导致面板无法加载的问题。([#175](https://github.com/shengjidaguai-china/BossHunter/pull/175))
+- 前端构建产物改为按需生成，打包时纳入安装包；CI 增加前端构建，缺少产物时提供明确提示。完整上手指南及本次首页快速开始均补齐“先构建前端、再安装 Python 包”的步骤。([#147](https://github.com/shengjidaguai-china/BossHunter/pull/147)、[#197](https://github.com/shengjidaguai-china/BossHunter/pull/197))
+- 增加可缩放、搜索、追踪关系和导出图片的交互结构图，支持深浅主题；补充跨平台编排、51job 和 BOSS 边界条件的回归测试。([#151](https://github.com/shengjidaguai-china/BossHunter/pull/151)、[#153](https://github.com/shengjidaguai-china/BossHunter/pull/153)、[#157](https://github.com/shengjidaguai-china/BossHunter/pull/157)、[#183](https://github.com/shengjidaguai-china/BossHunter/pull/183))
+- 更新贡献记录、维护者候选记录与共同维护规则，明确参与编写者不计入自己的技术批准，高风险改动需两名独立维护者批准；恢复非商业许可证文件。([#149](https://github.com/shengjidaguai-china/BossHunter/pull/149)、[#150](https://github.com/shengjidaguai-china/BossHunter/pull/150)、[#165](https://github.com/shengjidaguai-china/BossHunter/pull/165)、[#182](https://github.com/shengjidaguai-china/BossHunter/pull/182)、[#184](https://github.com/shengjidaguai-china/BossHunter/pull/184)、[#194](https://github.com/shengjidaguai-china/BossHunter/pull/194))
+
+### 升级说明
+
+- 从源码安装或更新时，先按[完整上手指南](docs/QUICKSTART.md#2-安装)重新构建前端，再安装 Python 包；前端、程序版本、健康检查和首页统一为 **v2.4.0**。
+- BOSS 旧任务若没有可靠断点，需要重新采集；希望查找新岗位时选择“重新采集”，仅恢复中断任务时选择“继续采集”。
+- 猎聘已提供 Web 面板只读采集入口，不支持自动投递或消息监测；智联实验性 API 默认关闭。所有发送仍须人工确认，原有时间窗口、额度和异常停止保护继续生效。
 
 ## v2.3.2
 

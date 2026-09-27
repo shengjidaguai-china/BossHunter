@@ -1,5 +1,5 @@
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
@@ -7,8 +7,14 @@ import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
+import { TrendChart } from '@/components/dashboard/TrendChart'
+import { TopCompanies } from '@/components/dashboard/TopCompanies'
+import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
+import { RecentActivity } from '@/components/dashboard/RecentActivity'
+import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { parseHistoryDetail } from '@/lib/historyDetail'
+import { PLATFORM_LABELS } from '@/lib/platforms'
 import {
   EMPTY_JOB_FILTERS,
   filterJobs,
@@ -17,18 +23,22 @@ import {
   type JobFilters,
 } from '@/lib/jobFilters'
 import { getActionLabel, getStatusLabel } from '@/lib/status'
+import { describeGreetTaskOutcome, greetPauseReasonLabel } from '@/lib/greetTask'
 import { cn } from '@/lib/utils'
 import {
   AlertTriangle,
   BriefcaseBusiness,
+  ChevronDown,
   Download,
   ExternalLink,
   Eye,
   MessageCircle,
+  Pencil,
   Play,
   RefreshCw,
   ShieldCheck,
   Send,
+  Sparkles,
   Square,
   Trash2,
   XCircle,
@@ -63,7 +73,8 @@ function currentTaskStage(task: WorkbenchTask) {
     if (log.includes('招呼语进度')) return log
     if (log.includes('招呼语发送结果')) return log
     if (log.includes('发送招呼语')) return '发送招呼语'
-    if (log.includes('生成招呼语')) return '生成招呼语'
+    if (log.includes('招呼语生成结果')) return log
+    if (log.includes('生成招呼语')) return log
     if (log.includes('本轮监测完成')) return log
     const stage = TASK_STAGE_LABELS.find(label => log.includes(label))
     if (stage) return stage
@@ -85,9 +96,9 @@ function taskStatusText(status: string) {
 }
 
 function taskStatusClass(status: string) {
-  if (status === 'failed') return 'border-red-100 bg-red-50'
-  if (status === 'completed' || status === 'stopped') return 'border-card-border bg-white'
-  return 'border-primary/20 bg-[#FFF0E5]'
+  if (status === 'failed') return 'border-danger-border bg-danger-soft'
+  if (status === 'completed' || status === 'stopped') return 'border-card-border bg-card'
+  return 'border-primary/20 bg-secondary'
 }
 
 function taskStatusTitle(status: string) {
@@ -126,7 +137,7 @@ function taskErrorFeedback(error: string) {
   ) {
     return {
       title: 'Google Chrome 连接中断',
-      detail: '请确认 Google Chrome 正在运行且已开启远程调试，再点击上方“重新检查”。',
+      detail: '请确认 Chrome 已启动并开启远程调试，再点击上方“全流程预检”。',
     }
   }
   if (normalized.includes('zhipin') || normalized.includes('登录') || normalized.includes('login')) {
@@ -158,17 +169,17 @@ const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> 
   {
     mode: 'full',
     title: '运行全流程',
-    description: '采集 → AI评分 → 确认投递 → 打招呼 → 持续监测，一次跑完整流程。',
+    description: '采集、评分、监测，投递前由你确认',
   },
   {
     mode: 'collect',
     title: '单独采集',
-    description: '打开岗位采集窗口，选择 BOSS/智联/51job、最大页数、排序和执行顺序；默认只采集不评分。',
+    description: '按平台和条件搜索岗位',
   },
   {
     mode: 'monitor',
     title: '单独监测',
-    description: '只监测过往已投递项目；发现 HR 要简历或问题后进入对应处理。',
+    description: '跟进已投递岗位的 HR 回复',
   },
 ]
 
@@ -193,7 +204,29 @@ const taskMetricItems = [
   { key: 'send_success', label: '发送成功' },
   { key: 'send_deferred', label: '待下次发送' },
   { key: 'send_remaining_quota', label: '今日剩余额度' },
+  { key: 'greet_generated', label: '新生成' },
+  { key: 'greet_preserved', label: '保留现有' },
+  { key: 'greet_failed', label: '生成失败' },
+  { key: 'greet_paused', label: '提前暂停' },
 ]
+
+const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'stopped']
+
+async function waitForGreetTask(taskId: string, timeoutMs = 300000): Promise<WorkbenchTask | null> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const res = await fetch('/api/workbench')
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}) as { task?: WorkbenchTask | null; last_task?: WorkbenchTask | null })
+      const task = data.task?.id === taskId
+        ? data.task
+        : data.last_task?.id === taskId ? data.last_task : null
+      if (task && TERMINAL_TASK_STATUSES.includes(task.status)) return task
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  }
+  return null
+}
 
 function jobSubtitle(job: Job) {
   return [job.score ? `匹配 ${job.score}` : '', job.salary, job.hr_active || '活跃度未知', getStatusLabel(job.status)].filter(Boolean).join(' · ')
@@ -208,7 +241,9 @@ function safeExternalUrl(value: string | undefined, platform: string) {
 			? 'zhaopin.com'
 			: platform === '51job'
 				? '51job.com'
-				: ''
+				: platform === 'liepin'
+					? 'liepin.com'
+					: ''
 		if (!allowedDomain) return ''
 		return url.hostname === allowedDomain || url.hostname.endsWith(`.${allowedDomain}`) ? url.href : ''
 	} catch {
@@ -239,7 +274,7 @@ async function parsePreflightResponse(res: Response) {
       checks: [{ id: 'preflight_api', title: '启动检查', status: 'error', message, detail: '请重启 BossHunter 后重试。' }] as PreflightCheck[],
     }
   }
-  const messages = Array.isArray(data.messages) ? data.messages.map(String).filter(Boolean) : []
+  const messages = Array.isArray(data.messages) ? [...new Set(data.messages.map(String).filter(Boolean))] : []
   const checks = Array.isArray(data.checks)
     ? data.checks.filter((item): item is PreflightCheck => Boolean(
       item
@@ -249,19 +284,32 @@ async function parsePreflightResponse(res: Response) {
       && 'message' in item
     ))
     : []
-  if (data.error) messages.push(String(data.error))
-  if (!res.ok) messages.push(`预检接口返回 ${res.status}`)
-  if (!data.ok && messages.length === 0) messages.push('后端未返回具体原因')
-  if (checks.length === 0 && messages.length > 0) {
+  if (data.error && !messages.includes(String(data.error))) messages.push(String(data.error))
+  const hasActionableChecks = checks.some(check => check.status !== 'pass')
+  if (!res.ok && !hasActionableChecks && messages.length === 0) messages.push(`预检接口返回 ${res.status}`)
+  if (!data.ok && !hasActionableChecks && messages.length === 0) messages.push('后端未返回具体原因')
+  if ((!res.ok || !data.ok) && !hasActionableChecks && messages.length > 0) {
     checks.push(...messages.map((message, index) => ({
       id: `legacy-${index}`,
       title: '启动检查',
       status: 'error' as const,
       message,
-      detail: '请按提示修复后重新检测。',
+      detail: !res.ok ? `接口状态：HTTP ${res.status}。请修复后重新检查。` : '',
     })))
   }
   return { ok: Boolean(res.ok && data.ok), messages, checks }
+}
+
+function CompactNotice({ message, danger = false }: { message: string; danger?: boolean }) {
+  return (
+    <details className={cn('group mt-2 rounded-lg px-2 text-xs', danger ? 'bg-danger-soft text-danger' : 'bg-secondary text-primary')}>
+      <summary className="flex h-8 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+        <span role="status" className="min-w-0 flex-1 truncate" title={message}>{message}</span>
+        <ChevronDown className="h-3 w-3 shrink-0 group-open:rotate-180" />
+      </summary>
+      <p className="break-words border-t border-current/10 py-2 leading-5">{message}</p>
+    </details>
+  )
 }
 
 function PreflightPanel({
@@ -273,58 +321,44 @@ function PreflightPanel({
   checking: boolean
   onRetry: () => void
 }) {
+  const [expanded, setExpanded] = useState(false)
   const actionableChecks = checks.filter(check => check.status !== 'pass')
   if (actionableChecks.length === 0) return null
 
   const errors = actionableChecks.filter(check => check.status === 'error').length
-  const warnings = actionableChecks.filter(check => check.status === 'warning').length
   const needsConfig = actionableChecks.some(check => check.action === 'config')
-  const heading = errors ? `启动检查发现 ${errors} 个问题` : `启动检查有 ${warnings} 项提醒`
+  const heading = `${actionableChecks.length} 项${errors ? '待处理' : '提醒'}`
+  const summary = `${heading} · ${actionableChecks[0].message}`
 
   return (
-    <div className={`mt-3 rounded-3xl border p-4 ${
-      errors ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'
+    <div role="region" aria-label="启动检查结果" className={`mt-2 rounded-lg border px-2 text-xs ${
+      errors ? 'border-danger-border bg-danger-soft' : 'border-warning-border bg-warning-soft'
     }`}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          {errors
-            ? <XCircle className="h-5 w-5 text-danger" />
-            : <AlertTriangle className="h-5 w-5 text-amber-600" />}
-          <div className="text-sm font-black text-foreground">{heading}</div>
-        </div>
-        <div className="flex items-center gap-2">
-          {needsConfig && (
-            <Button variant="secondary" size="sm" onClick={() => window.location.assign('/config')}>
-              打开配置
-            </Button>
-          )}
-          <Button variant="secondary" size="sm" onClick={onRetry} disabled={checking}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${checking ? 'animate-spin' : ''}`} />
-            {checking ? '检查中' : '重新检查'}
+      <div className="flex h-8 min-w-0 items-center gap-2">
+        {errors
+          ? <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />
+          : <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />}
+        <span role="status" title={summary} className="min-w-0 flex-1 truncate text-foreground">{summary}</span>
+        <button type="button" aria-expanded={expanded} aria-controls="preflight-details" onClick={() => setExpanded(value => !value)} className="flex h-7 shrink-0 items-center gap-1 rounded px-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+          {expanded ? '收起' : '详情'}<ChevronDown className={cn('h-3 w-3', expanded && 'rotate-180')} />
+        </button>
+        {needsConfig && (
+          <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={() => window.location.assign('/config')}>
+            配置
           </Button>
-        </div>
+        )}
+        <Button variant="ghost" size="sm" className="h-7 shrink-0 px-1" onClick={onRetry} disabled={checking}>
+          <RefreshCw className={`mr-1 h-3 w-3 ${checking ? 'animate-spin' : ''}`} />
+          {checking ? '检查中' : '重新检查'}
+        </Button>
       </div>
-      <div className="mt-3 grid gap-2 lg:grid-cols-2">
-        {actionableChecks.map(check => {
-          const isError = check.status === 'error'
-          return (
-            <div
-              key={`${check.id}-${check.title}`}
-              className={`rounded-2xl border bg-white px-3 py-3 ${isError ? 'border-red-200' : 'border-amber-200'}`}
-            >
-              <div className="flex items-start gap-2">
-                {isError
-                  ? <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
-                  : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />}
-                <div>
-                  <div className="text-xs font-black text-muted">{check.title}</div>
-                  <div className="mt-0.5 text-sm font-black text-foreground">{check.message}</div>
-                  <p className="mt-1 text-xs leading-5 text-muted">{check.detail}</p>
-                </div>
-              </div>
-            </div>
-          )
-        })}
+      <div id="preflight-details" hidden={!expanded} className="space-y-2 border-t border-current/10 py-2 text-xs leading-5">
+        {actionableChecks.map(check => (
+          <div key={`${check.id}-${check.title}`} className="break-words">
+            <p className="text-foreground"><span className="font-semibold">{check.title}：</span>{check.message}</p>
+            {check.detail && <p className="text-muted">{check.detail}</p>}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -339,28 +373,46 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     refreshing,
     lastRefreshedAt,
     refresh,
+    updateGreetingJob,
     startTask,
     stopTask,
   } = useDashboard(view)
   const [selected, setSelected] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+
+  // Dashboard visualization state
+  const [activityData, setActivityData] = useState<ActivityData[]>([])
+  const [topCompanies, setTopCompanies] = useState<TopCompany[]>([])
+  const [recentActivity, setRecentActivity] = useState<HistoryItem[]>([])
   const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[]>([])
   const [preflightMode, setPreflightMode] = useState<WorkbenchMode>('full')
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [modePending, setModePending] = useState<WorkbenchMode | null>(null)
   const [sendingGreetingIds, setSendingGreetingIds] = useState<Set<string>>(new Set())
+  const [busyGreetingIds, setBusyGreetingIds] = useState<Set<string>>(new Set())
+  const onGreetingBusyChange = useCallback((id: string, busy: boolean) => {
+    setBusyGreetingIds(previous => {
+      const next = new Set(previous)
+      if (busy) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
   const [confirmedDeliveryIds, setConfirmedDeliveryIds] = useState<Set<string>>(new Set())
   const [todayFilters, setTodayFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
   const [statsScope, setStatsScope] = useState<StatsScope>('today')
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
   const [preflightRunning, setPreflightRunning] = useState(false)
+  const [generatingGreetings, setGeneratingGreetings] = useState(false)
+  const startedGreetTaskIdRef = useRef<string | null>(null)
 
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
     [workbench.pending_confirmation, confirmedDeliveryIds]
   )
   const debouncedTodayQuery = useDebouncedValue(todayFilters.query, 250)
+  const activeTodayFilterCount = Object.values(todayFilters).filter(value => value !== '').length
   const effectiveTodayFilters = useMemo(
     () => ({ ...todayFilters, query: debouncedTodayQuery }),
     [todayFilters, debouncedTodayQuery]
@@ -385,10 +437,58 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     return () => window.removeEventListener('bosshunter-config-saved', handleConfigSaved)
   }, [refresh])
 
+  // Keep the homepage overview separate from the monitor's conversation history.
+  useEffect(() => {
+    if (view !== 'workbench') return
+    const controller = new AbortController()
+    const fetchOverview = async <T,>(url: string, update: (data: T) => void) => {
+      const response = await fetch(url, { cache: 'no-store', signal: controller.signal })
+      if (!response.ok) return
+      const data: T = await response.json()
+      if (!controller.signal.aborted) update(data)
+    }
+    const fetchVisualizationData = async () => {
+      // One unavailable chart must not prevent the other overview cards loading.
+      await Promise.allSettled([
+        fetchOverview('/api/activity?days=7', setActivityData),
+        fetchOverview('/api/top-companies?limit=5', setTopCompanies),
+        fetchOverview('/api/history?limit=3', setRecentActivity),
+      ])
+    }
+    void fetchVisualizationData()
+    const interval = window.setInterval(fetchVisualizationData, 60000)
+    return () => {
+      controller.abort()
+      window.clearInterval(interval)
+    }
+  }, [view])
+
   const pendingGreetingJobs = workbench.pending_greetings
+  const reviewedGreetingJobs = pendingGreetingJobs.filter(job => job.greeting_selection !== 'pending')
+  const pendingGreetingReviewCount = pendingGreetingJobs.length - reviewedGreetingJobs.length
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
+  const greetTaskRunning = activeTask != null && activeTask.mode === 'greet'
+    && (activeTask.status === 'running' || activeTask.status === 'stopping')
+
+  useEffect(() => {
+    const startedId = startedGreetTaskIdRef.current
+    if (!startedId) return
+    const greetTask = activeTask?.id === startedId
+      ? activeTask
+      : workbench.last_task?.id === startedId ? workbench.last_task : null
+    if (!greetTask || !TERMINAL_TASK_STATUSES.includes(greetTask.status)) return
+    startedGreetTaskIdRef.current = null
+    if (greetTask.status === 'completed') {
+      setNotice(describeGreetTaskOutcome(greetTask))
+    }
+    void refresh()
+  }, [activeTask, workbench.last_task, refresh])
+
+  const taskSummary = visibleTask
+    ? visibleTaskError?.title || taskStopReasonLabel(visibleTask.stop_reason) || currentTaskStage(visibleTask)
+    : ''
   const pendingReplies = history.filter(item => item.action === 'reply_pending')
 
   const toggleJob = (id: string) => {
@@ -407,7 +507,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     const data = await parsePreflightResponse(res)
     setPreflightChecks(data.checks)
     if (!data.ok) {
-      setNotice('请按提示处理后再启动')
+      setNotice('')
       return false
     }
     return true
@@ -429,7 +529,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         setNotice(
           activeTask.status === 'stopping'
             ? `当前${activeTask.label}正在停止，请等待后台完全结束后再启动其他模式。`
-            : `当前正在运行${activeTask.label}，请先点击橙色卡片停止后再启动其他模式。`
+            : `当前正在运行${activeTask.label}，请先点击正在运行的卡片停止后再启动其他模式。`
         )
         return
       }
@@ -457,8 +557,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     try {
       setModePending(preflightMode)
       setNotice('正在重新检查运行环境...')
-      const ok = await runPreflight(preflightMode)
-      setNotice(ok ? '' : '仍有问题需要处理，请查看检查结果。')
+      await runPreflight(preflightMode)
+      setNotice('')
     } catch {
       setNotice('重新检查失败，请确认 BossHunter 后端仍在运行。')
     } finally {
@@ -472,7 +572,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       setPreflightRunning(true)
       setNotice('正在检查全流程运行环境...')
       const ok = await runPreflight('full')
-      setNotice(ok ? '全流程预检通过，可以开始任务。' : '仍有问题需要处理，请查看检查结果。')
+      setNotice(ok ? '全流程预检通过，可以开始任务。' : '')
     } catch {
       setNotice('预检失败，请确认 BossHunter 后端仍在运行。')
     } finally {
@@ -480,17 +580,23 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
-  const startCollection = async (options: Record<string, unknown>) => {
+  const startCollection = async (options: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
     const mode = collectDialogMode
     setModePending(mode)
     setNotice(mode === 'full' ? '全流程启动前预检中...' : '岗位采集启动前预检中...')
     try {
-      if (!(await runPreflight(mode, options))) return
+      if (!(await runPreflight(mode, options))) {
+        setNotice('启动前预检未通过：请按下方检查提示修复后，再重新启动。')
+        return { ok: false, error: '启动前预检未通过：请关闭弹窗后按检查提示修复，再重新启动。' }
+      }
+      setNotice('启动前预检通过，正在启动任务...')
       await startTask(mode, options)
-      setCollectDialogOpen(false)
       setNotice(mode === 'full' ? '全流程已启动，进度会在下方更新。' : '岗位采集已启动，进度会在下方更新。')
+      return { ok: true }
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : '岗位采集启动失败')
+      const message = err instanceof Error ? err.message : '岗位采集启动失败'
+      setNotice(message)
+      return { ok: false, error: message }
     } finally {
       setModePending(null)
     }
@@ -552,9 +658,34 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }
 
+  const generateGreetings = async (ids: string[]) => {
+    if (!ids.length) return
+    setGeneratingGreetings(true)
+    try {
+      const res = await fetch('/api/workbench/greetings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: ids }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || '生成招呼语失败')
+      }
+      startedGreetTaskIdRef.current = data.task?.id ?? null
+      await refresh()
+      setNotice(`已开始为 ${ids.length} 个岗位生成招呼语，可在任务面板查看进度并随时停止。`)
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '生成招呼语失败')
+    } finally {
+      setGeneratingGreetings(false)
+    }
+  }
+
   const sendReadyGreetings = async (ids: string[]) => {
-    if (!ids.length || ids.some(id => sendingGreetingIds.has(id))) return
+    if (!ids.length || ids.some(id => sendingGreetingIds.has(id) || busyGreetingIds.has(id) || pendingGreetingJobs.find(job => job.id === id)?.greeting_activity)) return
     const count = ids.length
+    // 人工确认门控：直接发送前必须显式确认，防止误触批量联系招聘方。
+    if (!window.confirm(`确认向所选 ${count} 个岗位发送招呼语？\n发送将立即开始并受每日额度与发送时间窗口限制。`)) return
     setSendingGreetingIds(prev => new Set([...prev, ...ids]))
     setNotice(`正在将 ${count} 个岗位加入发送队列...`)
     try {
@@ -581,6 +712,29 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     } finally {
       setSendingGreetingIds(prev => new Set([...prev].filter(id => !ids.includes(id))))
     }
+  }
+
+  const selectGreeting = async (
+    job: Job,
+    selection: 'original' | 'optimized' | 'edited',
+    greeting = '',
+  ) => {
+    const res = await fetch(`/api/jobs/${job.id}/greeting-selection`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selection, greeting, confirmed: true }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || '保存招呼语选择失败')
+    updateGreetingJob(data)
+    await refresh()
+    setNotice(
+      selection === 'original'
+        ? '已保留原文，后续生成不会覆盖。'
+        : selection === 'optimized'
+          ? '已采用优化版，后续生成不会覆盖。'
+          : '已保存手动编辑版本，后续生成不会覆盖。'
+    )
   }
 
   const openJobDetail = async (job: Job) => {
@@ -631,37 +785,24 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }
 
   return (
-    <div className="space-y-5">
-      <section id="today-workbench" className="scroll-mt-6 rounded-3xl border border-card-border bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div>
-            <div className="text-xs font-black tracking-[0.18em] text-primary">TODAY WORKBENCH</div>
-            <h2 className="mt-1 text-3xl font-black tracking-tight">今日求职行动</h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="text-right">
-              <Button variant="secondary" size="sm" onClick={refresh} disabled={refreshing}>
-                <RefreshCw className={cn('mr-2 h-4 w-4', refreshing && 'animate-spin')} />
-                {refreshing ? '刷新中' : '刷新'}
-              </Button>
-              {lastRefreshedAt && (
-                <div className="mt-1 text-[10px] text-muted">
-                  最后刷新：{lastRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })}
-                </div>
-              )}
-            </div>
-            <Button variant="secondary" size="sm" onClick={runStandalonePreflight} disabled={refreshing || Boolean(modePending) || preflightRunning}>
-              <ShieldCheck className={cn('mr-2 h-4 w-4', preflightRunning && 'animate-spin')} />
+    <div className="space-y-4">
+      <section id="today-workbench" className="scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <h2 className="text-lg font-bold tracking-tight">今日求职行动</h2>
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <span className="mr-1 hidden sm:inline">{activeTask ? `${activeTask.label}中` : '当前空闲'}</span>
+            <Button variant="ghost" size="sm" className="h-7 px-1" onClick={runStandalonePreflight} disabled={refreshing || Boolean(modePending) || preflightRunning}>
+              <ShieldCheck className={cn('mr-1 h-3.5 w-3.5', preflightRunning && 'animate-spin')} />
               {preflightRunning ? '预检中' : '全流程预检'}
             </Button>
-            <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">
-              {activeTask ? `${activeTask.label}中` : '当前空闲'}
-            </span>
+            <Button variant="ghost" size="sm" className="h-7 px-1" onClick={refresh} disabled={refreshing} title={lastRefreshedAt ? `最后刷新：${lastRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : undefined}>
+              <RefreshCw className={cn('mr-1 h-3.5 w-3.5', refreshing && 'animate-spin')} />
+              {refreshing ? '刷新中' : '刷新'}
+            </Button>
           </div>
         </div>
 
-
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
           {modes.map(item => {
             const isActive = activeTask?.mode === item.mode
             const disabled = Boolean(activeTask && !isActive)
@@ -684,76 +825,113 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   else void handleModeClick(item.mode)
                 }}
                 aria-disabled={disabled}
-                className={`min-h-[126px] rounded-3xl p-5 text-left transition ${
+                className={cn(
+                  'min-w-0 rounded-xl border p-4 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-32 md:p-5',
+                  item.mode === 'full' ? 'col-span-2 min-h-28 md:col-span-1' : 'min-h-24',
                   isActive
-                    ? 'border-2 border-primary bg-primary text-white shadow-xl shadow-primary/20'
+                    ? 'border-primary bg-primary text-primary-foreground'
                     : disabled
-                      ? 'cursor-not-allowed border border-card-border bg-white text-muted opacity-45'
-                      : 'border border-card-border bg-[#FFFCFA] text-foreground hover:border-primary/60 hover:shadow-md'
-                }`}
+                      ? 'cursor-not-allowed border-card-border bg-card text-muted opacity-45'
+                      : 'border-card-border bg-surface text-foreground hover:border-primary/60 hover:shadow-md'
+                )}
               >
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="text-lg font-black">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className={cn('font-bold tracking-tight', item.mode === 'full' ? 'text-2xl' : 'text-xl')}>
                     {modePending === item.mode
                       ? isActive ? '任务停止中' : '任务启动中'
                       : isActive ? `${item.title}中` : item.title}
                   </div>
-                  {isActive ? <Square className="h-5 w-5 fill-current" /> : <Play className="h-5 w-5" />}
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center">
+                    {isActive ? <Square className="h-4 w-4 fill-current" /> : <Play className="h-5 w-5 fill-current" />}
+                  </span>
                 </div>
-                <p className={`text-xs leading-6 ${isActive ? 'text-white/85' : 'text-muted'}`}>{item.description}</p>
+                <p className={`text-xs leading-5 ${isActive ? 'text-primary-foreground/85' : 'text-muted'}`}>{item.description}</p>
               </button>
             )
           })}
         </div>
-        {notice && <div className="mt-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+        {notice && <CompactNotice message={notice} />}
         {preflightChecks.some(check => check.status !== 'pass') && (
           <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} />
         )}
-        {error && <div className="mt-3 rounded-2xl bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
+        {error && <CompactNotice message={error} danger />}
         {visibleTask && (
-          <div className="mt-3 rounded-3xl border border-card-border bg-[#FFFCFA] p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-black">任务运行状态</div>
-                <p className="mt-1 text-xs leading-5 text-muted">如果点击后浏览器没有反应，请先打开 BOSS 直聘并确认已登录；常见失败原因是 BOSS 未登录或 Chrome 调试连接不可用。</p>
-              </div>
-              <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
-                {visibleTask.label}
-              </span>
-            </div>
-            <div className={`mt-3 rounded-2xl border px-4 py-3 ${taskStatusClass(visibleTask.status)}`}>
-              <div className="text-xs font-black text-primary">{taskStatusTitle(visibleTask.status)}</div>
-              <div className="mt-1 whitespace-pre-line text-lg font-black leading-7 text-foreground">{currentTaskStage(visibleTask)}</div>
-              <div className="mt-1 text-xs font-bold text-muted">任务状态：{taskStatusText(visibleTask.status)}</div>
-              {visibleTask.deadline_at && (
-                <div className="mt-1 text-xs font-bold text-muted">
-                  自动截止：{new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}
-                </div>
+          <div className="mt-3 border-t border-card-border pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold">{visibleTask.label}</div>
+            <div className="flex flex-wrap items-center gap-2">
+              {activeTask && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={activeTask.status !== 'running'}
+                  onClick={() => {
+                    if (!window.confirm(`是否停止当前${activeTask.label}任务？已入库数据会保留。`)) return
+                    setNotice(`正在停止${activeTask.label}...`)
+                    void stopTask(activeTask.id)
+                      .then(() => setNotice(`${activeTask.label}已请求停止。`))
+                      .catch(err => setNotice(
+                        err instanceof Error
+                          ? `${activeTask.label}停止失败：${err.message}`
+                          : `${activeTask.label}停止失败，请稍后重试。`
+                      ))
+                  }}
+                >
+                  {activeTask.status === 'stopping' ? '正在停止...' : '停止任务'}
+                </Button>
               )}
-              {visibleTask.metrics && taskMetricItems.some(item => item.key in visibleTask.metrics!) && (
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                  {taskMetricItems.map(item => (
-                    <div key={item.key} className="rounded-xl border border-card-border bg-white px-3 py-2">
-                      <div className="text-[10px] font-bold text-muted">{item.label}</div>
-                      <div className="mt-0.5 text-lg font-black text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</div>
-                    </div>
+            </div>
+            </div>
+            <div className={`mt-3 rounded-xl border px-3 py-2.5 ${taskStatusClass(visibleTask.status)}`}>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs" aria-label="任务状态摘要">
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="font-semibold text-foreground">{taskStatusTitle(visibleTask.status)}</span>
+                  <span className="text-muted">{taskStatusText(visibleTask.status)}</span>
+                </div>
+                <p className="min-w-0 flex-[1_1_12rem] truncate leading-5 text-foreground" title={currentTaskStage(visibleTask)}>{currentTaskStage(visibleTask).split('\n')[0]}</p>
+                {visibleTask.metrics && (
+                  <div className="flex max-w-full flex-wrap items-center gap-x-4 gap-y-1" aria-label="任务关键统计">
+                    {taskMetricItems.filter(item => ['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
+                      <span key={item.key} className="whitespace-nowrap text-muted">{item.label} <strong className="font-semibold tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
+                    ))}
+                    {taskMetricItems.filter(item => item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
+                      <span key={item.key} className="whitespace-nowrap text-danger">{item.label} {visibleTask.metrics?.[item.key]}</span>
+                    ))}
+                  </div>
+                )}
+                {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
+              </div>
+              <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
+                <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
+                </summary>
+                <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{currentTaskStage(visibleTask)}</p>
+                <p className="mt-2 leading-5 text-muted">浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。</p>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
+                  {taskMetricItems.filter(item => item.key in (visibleTask.metrics || {})).map(item => (
+                    <span key={item.key} className="text-muted">{item.label} <strong className="font-medium tabular-nums text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</strong></span>
                   ))}
+                </div>
+              </details>
+              {Boolean(visibleTask.metrics?.greet_paused) && (
+                <div className="mt-2 rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-xs font-bold leading-5 text-warning-strong">
+                  提前暂停原因：{greetPauseReasonLabel(visibleTask.metrics?.greet_pause_reason) || 'AI 服务异常'}。已生成内容已保存，剩余岗位下次运行会继续处理。
                 </div>
               )}
             </div>
             {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} />}
             {visibleTask.error && visibleTaskError && (
-              <div className="mt-3 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">
+              <div className="mt-3 rounded-2xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">
                 <div className="font-black">{visibleTaskError.title}</div>
                 <p className="mt-1 text-xs leading-5">{visibleTaskError.detail}</p>
                 <details className="mt-2 text-xs text-muted">
                   <summary className="cursor-pointer font-bold">查看原始错误</summary>
-                  <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-white p-2">{visibleTask.error}</pre>
+                  <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-card p-2">{visibleTask.error}</pre>
                 </details>
               </div>
             )}
             {visibleTask.stop_reason && (
-              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-amber-200 bg-amber-50 text-amber-800' : 'bg-[#FFF0E5] text-primary'}`}>
+              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-warning-border bg-warning-soft text-warning-strong' : 'bg-secondary text-primary'}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="font-black">{visibleTask.stop_reason === 'daily_limit' ? '本次未发送' : '任务说明'}</div>
@@ -772,11 +950,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       </section>
 
       {workbench.send_quota?.exhausted && (
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-amber-800">
+        <section className="rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-warning-strong">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-lg font-black">今日发送额度已用完</h3>
-              <p className="mt-1 text-sm leading-6">
+              <h3 className="text-sm font-bold">今日发送额度已用完</h3>
+              <p className="mt-0.5 text-xs leading-5">
                 今日已发送 {workbench.send_quota.sent}/{workbench.send_quota.daily_limit} 条，未发送岗位已保留在“待发送招呼语”；明日额度恢复后再重试。
               </p>
             </div>
@@ -791,9 +969,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-black">求职数据</h3>
-            <p className="mt-0.5 text-xs text-muted">今日看行动节奏，累计看岗位池沉淀。</p>
           </div>
-          <div className="inline-flex rounded-full border border-card-border bg-white p-1">
+          <div className="inline-flex rounded-full border border-card-border bg-card p-1">
             {([
               { value: 'today' as const, label: '今日数据' },
               { value: 'total' as const, label: '累计数据' },
@@ -803,7 +980,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 type="button"
                 onClick={() => setStatsScope(option.value)}
                 className={`rounded-full px-3 py-1.5 text-xs font-black transition ${
-                  statsScope === option.value ? 'bg-primary text-white shadow-sm' : 'text-muted hover:text-primary'
+                  statsScope === option.value ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-primary'
                 }`}
               >
                 {option.label}
@@ -821,7 +998,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               ? '实时待处理数量'
               : `${statsScope === 'today' ? '累计' : '今日'} ${alternateFunnel[item.key] || 0}`
             return (
-              <div key={item.key} className="rounded-2xl border border-card-border bg-white p-4">
+              <div key={item.key} className="rounded-2xl border border-card-border bg-card p-4">
                 <div className="text-xs text-muted">{statsScope === 'today' ? item.todayLabel : item.totalLabel}</div>
                 <div className={`mt-1 text-2xl font-black ${item.highlight ? 'text-primary' : 'text-foreground'}`}>
                   {value}
@@ -833,37 +1010,59 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </div>
       </section>
 
-      <section className="rounded-3xl border border-card-border bg-white p-5">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-black">优先处理：HR 要简历 / 定制简历下载</h3>
-            <p className="mt-1 text-xs text-muted">首页只展示需要你手动下载并自行发给 HR 的定制简历事项。</p>
+
+      {/* 数据可视化概览：7日趋势 + 高分公司 + 最近活动 */}
+      {(activityData.length > 0 || topCompanies.length > 0 || recentActivity.length > 0) ? (
+        <section>
+          <div className="mb-3">
+            <h3 className="text-lg font-black">求职数据概览</h3>
           </div>
-          <Button variant="secondary" size="sm">查看全部简历事项</Button>
-        </div>
-        {workbench.needs_resume.length ? (
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <TrendChart data={activityData} />
+            </div>
+            <TopCompanies data={topCompanies} />
+          </div>
+          <div className="mt-3">
+            <RecentActivity data={recentActivity} />
+          </div>
+        </section>
+      ) : (
+        <section>
+          <div className="mb-3">
+            <h3 className="text-lg font-black">开始你的求职之旅</h3>
+            <p className="mt-0.5 text-xs text-muted">配置好简历和 AI 接口后，点击上方按钮启动岗位采集</p>
+          </div>
+          <PipelineFlow />
+        </section>
+      )}
+      <section className="rounded-xl border border-card-border bg-card px-3 py-2">
+        <details className="group">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-1 text-sm [&::-webkit-details-marker]:hidden">
+            <span className="font-semibold">HR 简历待办 <span className="ml-2 text-xs font-normal text-muted">{workbench.needs_resume.length ? `${workbench.needs_resume.length} 项待处理` : '暂无待办'}</span></span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="mt-2 flex items-center justify-between gap-2 border-t border-card-border pt-2">
+            <p className="text-xs text-muted">下载后手动发给 HR，再标记已发送。</p>
+            <Button variant="ghost" size="sm" onClick={() => { window.location.href = '/monitor' }}>查看全部</Button>
+          </div>
+          <div className="divide-y divide-card-border">
             {workbench.needs_resume.slice(0, 4).map(job => (
-              <div key={job.id} className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex flex-wrap items-center gap-2 font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发简历</span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-muted">HR 已请求简历，系统已准备定制化简历下载入口。</p>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" onClick={() => downloadResume(job)}><Download className="mr-2 h-4 w-4" />下载定制简历</Button>
+              <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span className="flex min-w-0 flex-wrap items-center gap-2 break-words text-sm"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></span>
+                <div className="flex max-w-full flex-wrap items-center gap-1">
+                  <Button variant="ghost" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />跳转岗位链接</Button>
+                  <Button variant="ghost" size="sm" onClick={() => downloadResume(job)}><Download className="mr-1 h-3.5 w-3.5" />下载简历</Button>
                   <Button variant="secondary" size="sm" onClick={() => markResumeSent(job)}>标记已发送</Button>
                 </div>
               </div>
             ))}
           </div>
-        ) : (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">当前没有 HR 要简历事项。</div>
-        )}
+        </details>
       </section>
 
       {workbench.send_errors.length > 0 && (
-        <section className="rounded-3xl border border-red-100 bg-red-50 p-5">
+        <section className="rounded-3xl border border-danger-border bg-danger-soft p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black text-danger">发送失败待处理</h3>
@@ -878,13 +1077,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {workbench.send_errors.map(job => (
-              <div key={job.id} className="rounded-2xl border border-red-100 bg-white p-4">
+              <div key={job.id} className="rounded-2xl border border-danger-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2 font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></div>
                     <div className="mt-1 text-xs text-danger">最近失败原因：{job.last_error || '发送失败，等待重试'}</div>
                   </div>
-                  <span className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
+                  <span className="rounded-full bg-danger-soft px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
                 </div>
                 <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待重新发送。'}</p>
                 <div className="mt-3 flex gap-2">
@@ -902,61 +1101,84 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       )}
 
       {pendingGreetingJobs.length > 0 && (
-        <section className="rounded-3xl border border-primary/20 bg-[#FFF0E5] p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+        <section className="rounded-xl border border-card-border bg-card p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="text-lg font-black">待发送招呼语</h3>
-              <p className="mt-1 text-xs text-muted">这些岗位已确认并生成招呼语，点击后会直接进入发送流程。</p>
+              <h3 className="text-sm font-semibold">待发送招呼语 <span className="ml-1 text-xs font-normal text-muted">{pendingGreetingJobs.length} 条</span></h3>
+              <p className="mt-1 text-xs text-muted">选择只保存版本，发送需另行确认。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => sendReadyGreetings(pendingGreetingJobs.map(job => job.id))}>发送全部 {pendingGreetingJobs.length} 个</Button>
+              {pendingGreetingReviewCount > 0 && (
+                <span className="rounded-full bg-warning-soft px-2 py-1 text-xs font-medium text-warning">
+                  {pendingGreetingReviewCount} 个待选择
+                </span>
+              )}
+              <Button
+                size="sm"
+                disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id) || Boolean(job.greeting_activity))}
+                onClick={() => sendReadyGreetings(reviewedGreetingJobs.map(job => job.id))}
+              >
+                发送已确认 {reviewedGreetingJobs.length} 个
+              </Button>
               <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(pendingGreetingJobs.map(job => job.id))}>放弃全部</Button>
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="divide-y divide-card-border border-t border-card-border">
             {pendingGreetingJobs.map(job => (
-              <div key={job.id} className="rounded-2xl border border-primary/20 bg-white p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2 font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></div>
-                    <div className="mt-1 text-xs text-primary">已生成招呼语，等待发送</div>
-                  </div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发送</span>
-                </div>
-                <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待发送。'}</p>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" onClick={() => sendReadyGreetings([job.id])}>发送招呼语</Button>
-                  <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs([job.id])}>放弃</Button>
-                  <Button variant="secondary" size="sm" onClick={() => openJobDetail(job)}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
-                  <Button variant="secondary" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />跳转岗位链接</Button>
-                </div>
-              </div>
+              <GreetingReviewCard
+                key={job.id}
+                job={job}
+                busy={sendingGreetingIds.has(job.id) || Boolean(job.greeting_activity)}
+                onBusyChange={onGreetingBusyChange}
+                onSelect={(selection, greeting) => selectGreeting(job, selection, greeting)}
+                onSend={() => sendReadyGreetings([job.id])}
+                onReject={() => rejectSelectedJobs([job.id])}
+                onDetail={() => openJobDetail(job)}
+              />
             ))}
           </div>
         </section>
       )}
 
-      <section className="rounded-3xl border border-card-border bg-white p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+      <section className="rounded-2xl border border-card-border bg-card p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-black">今日待确认</h3>
-            <p className="mt-1 text-xs text-muted">展示需要你人工确认是否推进投递的岗位，支持全选、部分选择、一键投递。</p>
+            <p className="mt-0.5 text-xs text-muted">选中岗位，确认后投递。</p>
           </div>
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" onClick={() => setSelected(filteredTodayJobs.map(job => job.id))}>全选</Button>
-            <Button variant="secondary" size="sm" onClick={() => setSelected([])}>清空</Button>
-            <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(actionableSelected)}>放弃已选 {actionableSelected.length} 个</Button>
-            <Button size="sm" onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" disabled={!filteredTodayJobs.length} onClick={() => setSelected(filteredTodayJobs.map(job => job.id))}>全选</Button>
+            <Button variant="secondary" size="sm" disabled={!selected.length} onClick={() => setSelected([])}>清空</Button>
+            <Button variant="secondary" size="sm" disabled={generatingGreetings || greetTaskRunning || !actionableSelected.length} onClick={() => generateGreetings(actionableSelected)}>
+              {generatingGreetings || greetTaskRunning ? '生成中...' : `生成打招呼用语 ${actionableSelected.length} 个`}
+            </Button>
+            <Button variant="secondary" size="sm" disabled={!actionableSelected.length} onClick={() => rejectSelectedJobs(actionableSelected)}>放弃已选 {actionableSelected.length} 个</Button>
+            <Button size="sm" disabled={!actionableSelected.length} onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
           </div>
         </div>
-        <JobFilterBar
-          filters={todayFilters}
-          onChange={setTodayFilters}
-          onReset={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}
-          resultCount={filteredTodayJobs.length}
-          totalCount={todayJobs.length}
-          invalidSalary={hasInvalidSalaryRange(todayFilters)}
-        />
+        <details className="group mb-3 rounded-xl border border-card-border bg-surface">
+          <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs [&::-webkit-details-marker]:hidden">
+            <span className="flex items-center gap-2 font-bold">
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+              筛选条件
+              {activeTodayFilterCount > 0 && <span className="font-normal text-primary">已启用 {activeTodayFilterCount} 项</span>}
+            </span>
+            <span className={hasInvalidSalaryRange(todayFilters) ? 'text-danger' : 'text-muted'}>
+              {hasInvalidSalaryRange(todayFilters) ? '薪资范围有误，请展开调整' : `${filteredTodayJobs.length} / ${todayJobs.length} 个岗位`}
+            </span>
+          </summary>
+          <div className="px-2 pb-2">
+            <JobFilterBar
+              compact
+              filters={todayFilters}
+              onChange={setTodayFilters}
+              onReset={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}
+              resultCount={filteredTodayJobs.length}
+              totalCount={todayJobs.length}
+              invalidSalary={hasInvalidSalaryRange(todayFilters)}
+            />
+          </div>
+        </details>
         {filteredTodayJobs.length ? (
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {filteredTodayJobs.map(job => (
@@ -971,56 +1193,225 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             ))}
           </div>
         ) : todayJobs.length ? (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-center text-sm text-muted">
+          <div className="rounded-2xl border border-dashed border-card-border bg-surface p-5 text-center text-sm text-muted">
             <p>没有符合当前条件的岗位</p>
             <Button className="mt-3" variant="secondary" size="sm" onClick={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}>重置筛选</Button>
           </div>
         ) : (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">今天暂时没有待确认岗位。</div>
+          <p className="py-2 text-xs text-muted">今天暂时没有待确认岗位。</p>
         )}
       </section>
 
-      {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} />}
+      {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} onChanged={() => void refresh()} />}
       <CollectJobsDialog
         open={collectDialogOpen}
         mode={collectDialogMode}
         activeTask={activeTask && (activeTask.mode === 'collect' || activeTask.mode === 'full') ? activeTask : null}
         onClose={() => setCollectDialogOpen(false)}
-        onStart={options => void startCollection(options)}
+        onStart={startCollection}
       />
     </div>
   )
 }
 
+function collectionReasonLabel(reason = '') {
+  if (reason.includes('daily_detail_page_limit')) return '今日详情页次数已用完'
+  if (reason.includes('daily_platform_page_limit')) return '今日页面访问次数已用完'
+  if (reason.includes('daily_search_page_limit')) return '今日搜索页次数已用完'
+  return ''
+}
+
 function CollectionProgressPanel({ progress }: { progress: CollectionProgress }) {
+  const outcome = ({ running: '采集中', scoring: '正在评分', completed: '已完成', completed_with_shortage: '采集已结束，数量不足', completed_with_errors: '采集结束，有异常', failed: '采集失败', stopped: '已停止', cancelled: '已取消' } as Record<string, string>)[progress.outcome || ''] || '状态待确认'
+  const platforms = Object.entries(progress.platforms || {})
   return (
-    <div className="mt-3 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-black text-primary">多平台采集进度</div>
-        <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '采集中' : progress.outcome === 'scoring' ? '正在自动评分' : progress.outcome || '已结束'}</div>
-      </div>
-      <div className="mt-3 grid gap-2 md:grid-cols-2">
-        {Object.entries(progress.platforms || {}).map(([platform, state]) => (
-          <div key={platform} className="rounded-xl border border-card-border bg-white p-3">
-            <div className="flex items-center justify-between text-sm font-black">
-              <span>{platform === 'boss' ? 'BOSS 直聘' : platform === 'zhilian' ? '智联招聘' : '前程无忧'}</span>
-              <span>新增 {state.new}</span>
+    <details className="group mt-2 rounded-xl border border-card-border bg-card px-3 py-2 text-xs">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 [&::-webkit-details-marker]:hidden">
+        <span className="flex items-center gap-1.5 font-semibold"><ChevronDown className="h-3.5 w-3.5 text-muted transition-transform group-open:rotate-180" />采集详情</span>
+        <span className="text-muted">{outcome}</span>
+        {platforms.map(([platform, state]) => (
+          <span key={platform} className="text-muted">{PLATFORM_LABELS[platform] || platform} · 新增 {state.new}
+            {collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`) && <span className="ml-2 text-warning">{collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`)}</span>}
+          </span>
+        ))}
+      </summary>
+      <div className="mt-2 divide-y divide-card-border border-t border-card-border">
+        {platforms.map(([platform, state]) => (
+          <div key={platform} className="py-2 leading-5">
+            <div className="flex flex-wrap justify-between gap-x-3">
+              <span className="font-medium">{PLATFORM_LABELS[platform] || platform}</span>
+              <span className="text-muted">{state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}</span>
             </div>
-            <div className="mt-1 text-xs text-muted">
-              {state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}
-            </div>
-            <div className="mt-1 text-xs text-muted">扫描 {state.seen || 0} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</div>
-            {(state.message || state.reason_code) && <div className="mt-1 text-xs font-bold text-primary">{state.message || state.reason_code}</div>}
+            <p className="text-muted">扫描 {state.seen || 0} · 新增 {state.new} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</p>
+            {(state.message || state.reason_code) && <p className="mt-1 break-words text-muted">{state.message || state.reason_code}</p>}
           </div>
         ))}
       </div>
+    </details>
+  )
+}
+
+function GreetingReviewCard({
+  job,
+  busy = false,
+  onBusyChange,
+  onSelect,
+  onSend,
+  onReject,
+  onDetail,
+}: {
+  job: Job
+  busy?: boolean
+  onBusyChange?: (id: string, busy: boolean) => void
+  onSelect: (selection: 'original' | 'optimized' | 'edited', greeting?: string) => Promise<void>
+  onSend: () => void
+  onReject: () => void
+  onDetail: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(job.greeting || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    onBusyChange?.(job.id, editing || saving)
+    return () => onBusyChange?.(job.id, false)
+  }, [job.id, editing, saving, onBusyChange])
+  const original = job.greeting_original || job.greeting || ''
+  const optimized = job.greeting_optimized || ''
+  const hasPreview = Boolean(optimized && optimized !== original)
+  const needsSelection = job.greeting_selection === 'pending'
+  const issues = Array.isArray(job.greeting_style_issues) ? job.greeting_style_issues : []
+  const selectionLabel = needsSelection
+    ? '待选择'
+    : job.greeting_selection === 'auto_optimized'
+      ? '已自动采用，可调整'
+      : job.greeting_reviewed_at
+        ? '已人工确认'
+        : '待发送'
+
+  const saveSelection = async (selection: 'original' | 'optimized' | 'edited', greeting = '') => {
+    setSaving(true)
+    setError('')
+    try {
+      await onSelect(selection, greeting)
+      setEditing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="py-2.5">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={`greeting-review-${job.id}`}
+        aria-label={`${expanded ? '收起' : '展开'}招呼语：${job.company}｜${job.title}`}
+        disabled={editing || saving}
+        onClick={() => setExpanded(value => !value)}
+        className="w-full rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`min-w-0 flex-1 text-sm font-medium ${expanded ? 'break-words' : 'truncate'}`}>{job.company}｜{job.title}</span>
+          <OutsourcingBadge job={job} />
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${needsSelection ? 'bg-warning-soft text-warning' : 'text-muted'}`}>{selectionLabel}</span>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-muted transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </span>
+        {!expanded && <span className="mt-1 block truncate text-xs leading-5 text-muted">{job.greeting || original || '展开查看招呼语'}</span>}
+      </button>
+      {job.greeting_activity && (
+        <p className="mt-1 text-xs text-muted" role="status">
+          {job.greeting_activity === 'sending' ? '这条正在发送，暂不可修改。'
+            : job.greeting_activity === 'generating' ? '这条正在生成，完成后即可选择。'
+              : '这条正在保存，请稍后。'}
+        </p>
+      )}
+      {expanded && <div id={`greeting-review-${job.id}`}>
+
+        {issues.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted" aria-label="招呼语优化原因">
+            {issues.map(issue => (
+              <span key={issue} className="leading-5">
+                {issue}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {hasPreview ? (
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <div className={`rounded-xl border p-3 ${job.greeting_selection === 'original' || needsSelection ? 'border-card-border bg-surface' : 'border-card-border/70 bg-card'}`}>
+              <div className="text-[11px] font-semibold text-muted">原始版本</div>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{original}</p>
+              <Button className="mt-3" variant="secondary" size="sm" disabled={saving || busy} onClick={() => void saveSelection('original')}>
+                保留原文
+              </Button>
+            </div>
+            <div className={`rounded-xl border p-3 ${job.greeting_selection === 'optimized' || job.greeting_selection === 'auto_optimized' ? 'border-primary/30 bg-surface-muted' : 'border-primary/20 bg-card'}`}>
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary">
+                <Sparkles className="h-3.5 w-3.5" />优化预览
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{optimized}</p>
+              <Button className="mt-3" size="sm" disabled={saving || busy} onClick={() => void saveSelection('optimized')}>
+                采用优化版
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 rounded-xl border border-card-border bg-surface p-3">
+            <div className="text-[11px] font-semibold text-muted">当前版本</div>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting || '招呼语已生成，等待发送。'}</p>
+          </div>
+        )}
+
+        {hasPreview && !needsSelection && (
+          <div className="mt-3 rounded-xl border border-primary/30 bg-surface-muted p-3" aria-label="最终发送版本">
+            <div className="text-[11px] font-semibold text-primary">最终发送版本</div>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{job.greeting}</p>
+          </div>
+        )}
+
+        {editing && (
+          <div className="mt-3 rounded-xl border border-card-border bg-surface p-3">
+            <label className="text-xs font-black text-foreground" htmlFor={`greeting-edit-${job.id}`}>手动编辑最终版本</label>
+            <textarea
+              id={`greeting-edit-${job.id}`}
+              value={draft}
+              maxLength={300}
+              onChange={event => setDraft(event.target.value)}
+              className="mt-2 min-h-28 w-full resize-y rounded-xl border border-card-border bg-card p-3 text-sm leading-6 outline-none focus:border-primary"
+            />
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-xs text-muted">{draft.length}/300</span>
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" disabled={saving} onClick={() => setEditing(false)}>取消</Button>
+                <Button size="sm" disabled={saving || busy || !draft.trim()} onClick={() => void saveSelection('edited', draft)}>保存编辑版</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {error && <p className="mt-3 rounded-lg bg-danger-soft px-3 py-2 text-xs font-bold text-danger">{error}</p>}
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="sm" disabled={needsSelection || editing || saving || busy} onClick={onSend}>发送招呼语</Button>
+          <Button variant="secondary" size="sm" disabled={saving || busy} onClick={() => { setDraft(job.greeting || original); setEditing(true) }}>
+            <Pencil className="mr-2 h-4 w-4" />手动编辑
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onDetail}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
+          <Button variant="ghost" size="sm" disabled={saving || busy} onClick={onReject}>放弃</Button>
+        </div>
+      </div>}
     </div>
   )
 }
 
 function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: Job; selected: boolean; onToggle: () => void; onDetail: () => void; onReject: () => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-[#FFFCFA]' : 'border-card-border bg-[#FFFCFA]'}`}>
+    <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-surface' : 'border-card-border bg-surface'}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2 font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></div>
@@ -1038,10 +1429,106 @@ function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: J
   )
 }
 
-function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
+function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => void; onChanged?: () => void }) {
+  const [greeting, setGreeting] = useState(job.greeting || '')
+  const [savedGreeting, setSavedGreeting] = useState(job.greeting || '')
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [reviewed, setReviewed] = useState(Boolean(job.greeting_reviewed_at))
+  const [selectionPending, setSelectionPending] = useState(job.greeting_selection === 'pending')
+
+  const saveGreeting = async () => {
+    const text = greeting.trim()
+    if (!text) {
+      setNotice('招呼语不能为空')
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/greeting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ greeting: text, confirmed: true }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '保存失败')
+      }
+      setEditing(false)
+      setSavedGreeting(text)
+      setReviewed(true)
+      setSelectionPending(false)
+      setNotice('最终发送版本已确认，后台生成不会覆盖。')
+      onChanged?.()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const regenerateGreeting = async () => {
+    setRegenerating(true)
+    setNotice('')
+    try {
+      const res = await fetch('/api/workbench/greetings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: [job.id], regenerate: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || '重新生成失败')
+      }
+      const taskId = data.task?.id
+      const finished = taskId ? await waitForGreetTask(taskId) : null
+      if (!finished) {
+        const detailRes = await fetch(`/api/jobs/${job.id}`)
+        if (detailRes.ok) {
+          const detail = await detailRes.json()
+          setGreeting(detail.greeting || '')
+          setSavedGreeting(detail.greeting || '')
+          setReviewed(Boolean(detail.greeting_reviewed_at))
+          setSelectionPending(detail.greeting_selection === 'pending')
+        }
+        onChanged?.()
+        setNotice('生成时间较长，任务仍在后台运行，稍后刷新查看结果。')
+        return
+      }
+      if (finished.status === 'stopped') {
+        throw new Error('重新生成已停止，岗位保留原有招呼语')
+      }
+      if (finished.status === 'failed') {
+        throw new Error(finished.error ? `重新生成失败：${finished.error}` : '重新生成失败')
+      }
+      if ((finished.progress?.conflict_ids ?? []).includes(job.id)) {
+        throw new Error('岗位状态已变更，招呼语未保存，请刷新后重试')
+      }
+      if (!finished.metrics?.greet_generated) {
+        throw new Error('AI 未返回完整招呼语，岗位保留为待生成，可稍后重试')
+      }
+      const detailRes = await fetch(`/api/jobs/${job.id}`)
+      if (detailRes.ok) {
+        const detail = await detailRes.json()
+        setGreeting(detail.greeting || '')
+        setSavedGreeting(detail.greeting || '')
+        setReviewed(Boolean(detail.greeting_reviewed_at))
+        setSelectionPending(detail.greeting_selection === 'pending')
+      }
+      setNotice('已重新生成招呼语')
+      onChanged?.()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '重新生成失败')
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
-      <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-white p-6 shadow-2xl">
+      <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">岗位详情</div>
@@ -1054,19 +1541,49 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
           <InfoBlock label="招聘者活跃" value={job.hr_active || '活跃度未知'} />
           <InfoBlock label="公司" value={[job.company_size, job.company_industry].filter(Boolean).join(' · ') || '-'} />
-          <InfoBlock label="来源平台" value={job.source_platform === 'zhilian' ? '智联招聘｜当前只开放采集' : job.source_platform === '51job' ? '前程无忧｜当前只开放采集' : 'BOSS 直聘'} />
+          <InfoBlock label="来源平台" value={job.source_platform && job.source_platform !== 'boss' && PLATFORM_LABELS[job.source_platform] ? `${PLATFORM_LABELS[job.source_platform]}｜当前只开放采集` : 'BOSS 直聘'} />
           <InfoBlock label="匹配分" value={String(job.score || '-')} />
           <InfoBlock label="定制简历" value={job.resume_path || '未生成'} />
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">评分理由</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.score_reason || '-'}</p>
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
-          <div className="text-sm font-black">招呼语</div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.greeting || '未生成'}</p>
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-black">招呼语</div>
+            <div className="flex gap-2">
+              {editing ? (
+                <>
+                  <Button size="sm" disabled={saving} onClick={saveGreeting}>{saving ? '保存中...' : '保存'}</Button>
+                  <Button size="sm" variant="secondary" disabled={saving} onClick={() => { setEditing(false); setGreeting(savedGreeting) }}>取消</Button>
+                </>
+              ) : (
+                <>
+                  <Button size="sm" variant="secondary" disabled={regenerating} onClick={() => { setEditing(true); setNotice('') }}>编辑</Button>
+                  <Button size="sm" variant="secondary" disabled={regenerating || reviewed} onClick={regenerateGreeting}>
+                    {regenerating ? '生成中...' : 'AI 重新生成'}
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+          {reviewed && <p className="mt-2 text-xs text-muted">最终发送版本已人工确认；如需调整，请手动编辑。</p>}
+          {selectionPending && <p className="mt-2 text-xs text-warning">已有优化预览，请返回待发送列表选择最终版本，或手动编辑并保存。</p>}
+          {editing ? (
+            <textarea
+              className="mt-2 w-full rounded-xl border border-card-border bg-card p-3 text-sm leading-6 text-foreground focus:border-primary focus:outline-none"
+              rows={4}
+              maxLength={300}
+              value={greeting}
+              onChange={e => setGreeting(e.target.value)}
+            />
+          ) : (
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{greeting || '未生成'}</p>
+          )}
+          {notice && <div className="mt-2 text-xs font-bold text-primary">{notice}</div>}
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">JD</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.jd || '-'}</p>
         </div>
@@ -1077,7 +1594,7 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
 
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+    <div className="rounded-2xl border border-card-border bg-surface p-4">
       <div className="text-xs text-muted">{label}</div>
       <div className="mt-1 font-bold text-foreground">{value}</div>
     </div>
@@ -1192,8 +1709,8 @@ function JobsPoolView() {
   }
 
   const markManuallySent = async (job: Job) => {
-    if (job.source_platform !== 'zhilian' && job.source_platform !== '51job') return
-    const platformLabel = job.source_platform === 'zhilian' ? '智联招聘' : '前程无忧'
+    if (job.source_platform !== 'zhilian' && job.source_platform !== '51job' && job.source_platform !== 'liepin') return
+    const platformLabel = PLATFORM_LABELS[job.source_platform]
     if (!window.confirm(`请确认：你已经在${platformLabel}完成了这个岗位的投递。此操作只更新 BossHunter 本地记录，不会向平台发送任何内容。`)) return
     try {
       const result = await postJobAction('/api/jobs/manual-sent', {
@@ -1314,7 +1831,7 @@ function JobsPoolView() {
     job_ids: string[]
     force_rescore: boolean
     force?: boolean
-  }) => {
+  }): Promise<{ ok: boolean; error?: string }> => {
     const res = await fetch('/api/scoring/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1327,21 +1844,22 @@ function JobsPoolView() {
           `已有等待恢复的评分任务：${data.error || ''}\n是否结束该任务并强制开始新评分任务？（已完成的评分结果会保留）`,
         )
         if (confirmed) {
-          await startScoring({ ...options, force: true })
-          return
+          return await startScoring({ ...options, force: true })
         }
       }
       const checks = Array.isArray(data.messages) ? data.messages.join('；') : ''
-      throw new Error([data.error || '启动评分失败', checks].filter(Boolean).join('：'))
+      return { ok: false, error: [data.error || '启动评分失败', checks].filter(Boolean).join('：') }
     }
     setNotice(`独立评分已启动，共 ${data.run?.remaining_job_ids?.length || 0} 个岗位。`)
+    return { ok: true }
   }
 
   const startQuickScoring = async () => {
     if (!window.confirm('将对岗位池中所有未评分或评分失败的岗位启动 AI 评分，可能产生模型费用，是否继续？')) return
     setQuickScoring(true)
     try {
-      await startScoring({ scope: 'pending', limit: null, job_ids: [], force_rescore: false })
+      const result = await startScoring({ scope: 'pending', limit: null, job_ids: [], force_rescore: false })
+      if (!result.ok) setNotice(result.error || '启动 AI 评分失败')
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '启动 AI 评分失败')
     } finally {
@@ -1356,7 +1874,7 @@ function JobsPoolView() {
           <Button variant="ghost" size="sm" onClick={() => setShowRecycleBin(false)}>返回岗位池</Button>
           <Button variant="secondary" size="sm" onClick={() => void loadRecycleBin()} disabled={recycleLoading}>刷新回收站</Button>
         </div>
-        {notice && <div className="rounded-xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+        {notice && <div className="rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
         <RecycleBinPanel
           jobs={recycleJobs}
           selectedIds={recycleSelectedIds}
@@ -1368,9 +1886,9 @@ function JobsPoolView() {
         />
         {permanentDeleteIds.length > 0 && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true">
-            <div className="w-full max-w-lg rounded-3xl border border-red-200 bg-white p-6 shadow-2xl">
+            <div className="w-full max-w-lg rounded-3xl border border-danger-border bg-card p-6 shadow-2xl">
               <div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-danger" /><div><h3 className="text-xl font-black">确认永久删除</h3><p className="mt-2 text-sm leading-6 text-muted">将永久删除 {permanentDeleteIds.length} 条岗位及其历史，无法恢复。存在发送或回复证据的岗位会被后端拒绝删除。</p></div></div>
-              <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-red-100 bg-red-50 p-3 text-sm font-bold"><input type="checkbox" checked={permanentDeleteAcknowledged} onChange={event => setPermanentDeleteAcknowledged(event.target.checked)} className="mt-0.5 h-4 w-4 accent-danger" /><span>我确认永久删除，并了解此操作无法撤销。</span></label>
+              <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-danger-border bg-danger-soft p-3 text-sm font-bold"><input type="checkbox" checked={permanentDeleteAcknowledged} onChange={event => setPermanentDeleteAcknowledged(event.target.checked)} className="mt-0.5 h-4 w-4 accent-danger" /><span>我确认永久删除，并了解此操作无法撤销。</span></label>
               <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" size="sm" onClick={() => setPermanentDeleteIds([])}>取消</Button><Button variant="destructive" size="sm" disabled={!permanentDeleteAcknowledged} onClick={() => void confirmPermanentDelete()}>永久删除</Button></div>
             </div>
           </div>
@@ -1380,7 +1898,7 @@ function JobsPoolView() {
   }
 
   return (
-    <div className="rounded-3xl border border-card-border bg-white p-5">
+    <div className="rounded-3xl border border-card-border bg-card p-5">
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-black">岗位池</h2>
@@ -1405,7 +1923,7 @@ function JobsPoolView() {
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '取消选择本页' : '选择本页'}
         </Button>
-        <span className="rounded-full bg-[#FFF0E5] px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
+        <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
         <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
@@ -1417,25 +1935,25 @@ function JobsPoolView() {
         <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>评分选项</Button>
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
-      {notice && <div className="mb-4 rounded-xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+      {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
       {deliveryTask && (
-        <div className="mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mb-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-black">投递队列</div>
               <p className="mt-1 text-xs text-muted">只展示已人工确认的 BOSS 发送任务；智联和 51job 不会进入此队列。</p>
             </div>
-            <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
+            <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">
               {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}
             </span>
           </div>
-          <div className="mt-3 rounded-xl border border-card-border bg-white px-3 py-2 text-sm">
+          <div className="mt-3 rounded-xl border border-card-border bg-card px-3 py-2 text-sm">
             <div className="font-bold">{deliveryTask.logs?.[deliveryTask.logs.length - 1] || '队列已创建，等待执行'}</div>
             <div className="mt-1 text-xs text-muted">任务 ID：{deliveryTask.id}</div>
           </div>
         </div>
       )}
-      {error && <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
+      {error && <div className="mb-4 rounded-xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">{error}</div>}
       <JobsTable
         jobs={items}
         page={page}
@@ -1476,7 +1994,7 @@ function ExportMenu({
       <select
         value={format}
         onChange={event => setFormat(event.target.value as 'xlsx' | 'csv')}
-        className="rounded-xl border border-card-border bg-white px-2 py-2 text-xs outline-none focus:border-primary"
+        className="rounded-xl border border-card-border bg-card px-2 py-2 text-xs outline-none focus:border-primary"
       >
         <option value="xlsx">XLSX</option>
         <option value="csv">CSV</option>
@@ -1752,7 +2270,7 @@ function MonitorExecutionView({
   }
 
   return (
-    <div className="rounded-3xl border border-card-border bg-white p-5">
+    <div className="rounded-3xl border border-card-border bg-card p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-black">监测执行</h2>
@@ -1766,7 +2284,7 @@ function MonitorExecutionView({
             <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             {refreshing ? '刷新中' : '立即刷新'}
           </Button>
-          <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">待处理 {pendingItems.length}</span>
+          <span className="rounded-full bg-secondary px-3 py-2 text-xs font-black text-primary">待处理 {pendingItems.length}</span>
         </div>
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
@@ -1782,14 +2300,14 @@ function MonitorExecutionView({
               key={item.key}
               type="button"
               onClick={() => setActiveMonitorFilter(item.key)}
-              className={`rounded-full px-3 py-1 text-xs font-bold transition ${active ? 'bg-primary text-white' : 'border border-card-border text-muted hover:border-primary/60 hover:text-primary'}`}
+              className={`rounded-full px-3 py-1 text-xs font-bold transition ${active ? 'bg-primary text-primary-foreground' : 'border border-card-border text-muted hover:border-primary/60 hover:text-primary'}`}
             >
               {item.label} {item.count}
             </button>
           )
         })}
       </div>
-      {notice && <div className="mb-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+      {notice && <div className="mb-3 rounded-2xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
       <div className="space-y-3">
         {displayedHistory.map((item, index) => {
           const canReply = item.action === 'reply_pending'
@@ -1809,10 +2327,10 @@ function MonitorExecutionView({
           const preparingReply = preparingReplyId === item.id
           const canOpenChat = (item.source_platform || 'boss') === 'boss' ? Boolean(item.id) : Boolean(targetUrl)
           return (
-            <div key={item.id || `${item.created_at}-${index}`} className="grid gap-3 rounded-2xl border border-card-border bg-[#FFFCFA] p-4 lg:grid-cols-[130px_1fr_160px]">
+            <div key={item.id || `${item.created_at}-${index}`} className="grid gap-3 rounded-2xl border border-card-border bg-surface p-4 lg:grid-cols-[130px_1fr_160px]">
               <div className="text-xs text-muted">
                 <div>{item.created_at}</div>
-                <div className="mt-2 rounded-full bg-white px-2 py-1 text-center font-bold text-primary">{getActionLabel(item.action)}</div>
+                <div className="mt-2 rounded-full bg-card px-2 py-1 text-center font-bold text-primary">{getActionLabel(item.action)}</div>
               </div>
               <div>
                 <div className="font-black">{item.company || '岗位'}｜{item.title || '监测记录'}</div>
@@ -1829,7 +2347,7 @@ function MonitorExecutionView({
                       </div>
                     )}
                     {conversationMessages.length > 0 && (
-                      <div className="overflow-hidden rounded-2xl border border-card-border bg-white">
+                      <div className="overflow-hidden rounded-2xl border border-card-border bg-card">
                         <div className="flex items-center justify-between border-b border-card-border px-3 py-1.5">
                           <span className="text-xs font-black text-foreground">聊天记录</span>
                         </div>
@@ -1838,7 +2356,7 @@ function MonitorExecutionView({
                             const fromHr = message.sender === 'hr'
                             return (
                               <div key={`${item.id}-${messageIndex}-${message.sender}`} className="grid grid-cols-[28px_minmax(0,1fr)] items-start gap-2 px-3 py-1.5">
-                                <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-black ${fromHr ? 'bg-[#FFF0E5] text-primary' : 'bg-emerald-50 text-emerald-700'}`}>
+                                <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-black ${fromHr ? 'bg-secondary text-primary' : 'bg-success-soft text-success'}`}>
                                   {fromHr ? 'HR' : 'AI'}
                                 </div>
                                 <p className="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-5 text-foreground">{message.text}</p>
@@ -1849,7 +2367,7 @@ function MonitorExecutionView({
                       </div>
                     )}
                     {isResumeFailure && (
-                      <div className="rounded-2xl border border-danger/30 bg-red-50 p-3">
+                      <div className="rounded-2xl border border-danger/30 bg-danger-soft p-3">
                         <div className="text-xs font-black text-danger">系统失败原因</div>
                         <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-danger">{systemFailureReason}</p>
                       </div>
@@ -1861,7 +2379,7 @@ function MonitorExecutionView({
                           id={`reply-draft-${item.id}`}
                           value={draftFor(item)}
                           onChange={event => setReplyDrafts(prev => ({ ...prev, [item.id]: event.target.value }))}
-                          className="min-h-[92px] w-full rounded-2xl border border-card-border bg-white p-3 text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                          className="min-h-[92px] w-full rounded-2xl border border-card-border bg-card p-3 text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                         />
                       </div>
                     ) : null}
@@ -1917,7 +2435,7 @@ function MonitorExecutionView({
           )
         })}
         {!visibleHistory.length && (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">
+          <div className="rounded-2xl border border-dashed border-card-border bg-surface p-5 text-sm text-muted">
             {activeMonitorFilter === 'replied' ? '暂无近 7 天已回复对话。' : '暂无待处理 HR 问题。'}
           </div>
         )}

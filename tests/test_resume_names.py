@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from itertools import islice
@@ -110,6 +111,20 @@ class ResolveActiveResumePathTests(unittest.TestCase):
 			resume = root / "resume.md"
 			resume.write_text("# x\n", encoding="utf-8")
 			self.assertEqual(resolve_active_resume_path("./resume.md", root), resume.resolve())
+
+	def test_relative_path_ignores_cwd_when_base_dir_given(self):
+		with tempfile.TemporaryDirectory() as cwd_dir, tempfile.TemporaryDirectory() as tmp:
+			(Path(cwd_dir) / "resume.md").write_text("# leftover in cwd\n", encoding="utf-8")
+			root = Path(tmp)
+			previous_cwd = os.getcwd()
+			os.chdir(cwd_dir)
+			try:
+				self.assertIsNone(resolve_active_resume_path("./resume.md", root))
+				resume = root / "resume.md"
+				resume.write_text("# base\n", encoding="utf-8")
+				self.assertEqual(resolve_active_resume_path("./resume.md", root), resume.resolve())
+			finally:
+				os.chdir(previous_cwd)
 
 	def test_pdf_config_resolves_to_sibling_markdown(self):
 		with tempfile.TemporaryDirectory() as tmp:

@@ -13,16 +13,22 @@ interface TagsInputProps {
 export function TagsInput({ value, onChange, placeholder = '输入后按回车添加', className, onAdd }: TagsInputProps) {
   const [input, setInput] = useState('')
 
+  const commitInput = () => {
+    const tags = input.split(/[,，、;；]/).map(tag => tag.trim()).filter(Boolean)
+    if (!tags.length) return
+    if (onAdd) {
+      tags.forEach(onAdd)
+    } else {
+      onChange([...new Set([...value, ...tags])])
+    }
+    setInput('')
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && input.trim() && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+    if (e.key === 'Enter') {
       e.preventDefault()
-      const tags = input.split(/[,，、;；]/).map(tag => tag.trim()).filter(Boolean)
-      if (onAdd) {
-        tags.forEach(onAdd)
-      } else {
-        onChange([...new Set([...value, ...tags])])
-      }
-      setInput('')
+      commitInput()
     } else if (e.key === 'Backspace' && !input && value.length > 0) {
       onChange(value.slice(0, -1))
     }
@@ -34,13 +40,13 @@ export function TagsInput({ value, onChange, placeholder = '输入后按回车�
 
   return (
     <div className={cn(
-      'flex flex-wrap gap-1.5 min-h-[36px] p-2 rounded-md border border-card-border bg-white focus-within:ring-2 focus-within:ring-primary/30 focus-within:border-primary',
+      'flex flex-wrap gap-1.5 min-h-[36px] p-2 rounded-md border border-card-border bg-card focus-within:ring-2 focus-within:ring-primary/30 focus-within:border-primary',
       className
     )}>
       {value.map((tag, i) => (
         <span
           key={i}
-          className="inline-flex items-center gap-1 rounded-md bg-[#FFF0E5] px-2 py-0.5 text-xs font-bold text-primary"
+          className="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5 text-xs font-bold text-primary"
         >
           {tag}
           <button
@@ -56,6 +62,7 @@ export function TagsInput({ value, onChange, placeholder = '输入后按回车�
         value={input}
         onChange={e => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
+        onBlur={commitInput}
         placeholder={value.length === 0 ? placeholder : ''}
         className="flex-1 min-w-[80px] bg-transparent text-sm text-foreground placeholder:text-muted/60 outline-none"
       />

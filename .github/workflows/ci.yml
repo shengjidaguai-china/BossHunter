@@ -76,5 +76,8 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Test greeting workflow and preview
+        run: npm test
+
       - name: Verify build output
         run: test -f dist/index.html
