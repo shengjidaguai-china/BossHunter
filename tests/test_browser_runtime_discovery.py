@@ -7,12 +7,19 @@ that entry as soon as the TCP connect succeeded, so it never fell back to the
 configured ``chrome_ports`` and every request failed, even when a healthy Chrome
 was listening on 9222.
 
+The runtime also has to accept the opposite shape: Chrome's default-profile
+"Allow remote debugging" toggle (``chrome://inspect/#remote-debugging``) serves
+the browser DevTools endpoint over WebSocket only and answers every ``/json/*``
+request with 404. There the ``DevToolsActivePort`` path is the one piece of
+usable information, so the runtime must use it - but only after proving it really
+speaks CDP, otherwise the stale-port protection above is lost.
+
 The test does not need Chrome:
 
 * a decoy TCP listener holds the port named by ``DevToolsActivePort`` and replies
   with a body that is not a DevTools JSON document;
 * a tiny fake DevTools endpoint (HTTP + WebSocket) stands in for Chrome on the
-  configured ``chrome_ports``;
+  configured ``chrome_ports``, optionally in WebSocket-only mode;
 * the runtime has to skip the decoy and reach the fake endpoint.
 
 Requires Node.js 22+ (same floor as the runtime); skipped otherwise.
@@ -118,9 +125,16 @@ def _text_frame(payload):
 
 
 class _FakeCdp:
-    """Minimal DevTools endpoint: ``/json/version`` plus a WebSocket that answers CDP."""
+    """Minimal DevTools endpoint: ``/json/version`` plus a WebSocket that answers CDP.
 
-    def __init__(self):
+    With ``ws_only=True`` it mimics the default-profile "Allow remote debugging"
+    toggle from ``chrome://inspect``: ``/json/*`` answers 404 and only the browser
+    WebSocket path recorded in ``DevToolsActivePort`` speaks CDP.
+    """
+
+    def __init__(self, ws_only=False):
+        self.ws_path = "/devtools/browser/fake"
+        self._ws_only = ws_only
         self._server = socket.socket()
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind(("127.0.0.1", 0))
@@ -151,10 +165,13 @@ class _FakeCdp:
             target = parts[1] if len(parts) > 1 else "/"
 
             if target.startswith("/json/version"):
+                if self._ws_only:
+                    conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    return
                 body = json.dumps({
                     "Browser": "Chrome/124.0.0.0",
                     "Protocol-Version": "1.3",
-                    "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.port}/devtools/browser/fake",
+                    "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.port}{self.ws_path}",
                 }).encode()
                 conn.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
@@ -176,15 +193,17 @@ class _FakeCdp:
                 ).encode()
             )
             payload = _read_ws_frame(conn, rest)
-            if payload is None:
-                return
-            request = json.loads(payload.decode("utf-8"))
-            reply = json.dumps({
-                "id": request.get("id"),
-                "result": {"targetInfos": [{"targetId": "1", "type": "page", "url": "https://example.test/"}]},
-            }).encode()
-            conn.sendall(_text_frame(reply))
-            time.sleep(0.3)
+            # Keep serving the session like Chrome does; closing after one reply
+            # would reset the runtime's cached connection state under the client.
+            while payload is not None:
+                request = json.loads(payload.decode("utf-8"))
+                if request.get("method") == "Browser.getVersion":
+                    result = {"product": "Chrome/124.0.0.0"}
+                else:
+                    result = {"targetInfos": [{"targetId": "1", "type": "page", "url": "https://example.test/"}]}
+                reply = json.dumps({"id": request.get("id"), "result": result}).encode()
+                conn.sendall(_text_frame(reply))
+                payload = _read_ws_frame(conn)
         with contextlib.suppress(OSError):
             conn.close()
 
@@ -264,17 +283,16 @@ class BrowserRuntimeDiscoveryTests(unittest.TestCase):
         self.decoy.close()
         self.tmp.cleanup()
 
-    def _start_proxy_with_stale_port_file(self):
+    def _start_proxy_with_active_port_file(self, content, chrome_ports=None):
         port_file = _devtools_active_port_path(self.home)
         port_file.parent.mkdir(parents=True, exist_ok=True)
-        # What a stale file looks like: a live port that does not speak CDP.
-        port_file.write_text(f"{self.decoy.port}\n/devtools/browser/stale\n", encoding="utf-8")
+        port_file.write_text(content, encoding="utf-8")
 
         env = os.environ.copy()
         env["HOME"] = str(self.home)
         env["LOCALAPPDATA"] = str(self.home)
         env["BOSSHUNTER_BROWSER_PROXY_PORT"] = str(self.proxy_port)
-        env["BOSSHUNTER_CHROME_PORTS"] = str(self.fake.port)
+        env["BOSSHUNTER_CHROME_PORTS"] = str(chrome_ports if chrome_ports is not None else self.fake.port)
         env["BOSSHUNTER_ENABLE_PORT_GUARD"] = "false"
         self.process = subprocess.Popen(
             [self.node, str(PROXY_SCRIPT)],
@@ -284,13 +302,19 @@ class BrowserRuntimeDiscoveryTests(unittest.TestCase):
             stdin=subprocess.DEVNULL,
         )
 
-    def test_stale_devtools_active_port_is_skipped(self):
-        self._start_proxy_with_stale_port_file()
-        base = f"http://127.0.0.1:{self.proxy_port}"
+    def _start_proxy_with_stale_port_file(self):
+        # What a stale file looks like: a live port that does not speak CDP.
+        self._start_proxy_with_active_port_file(
+            f"{self.decoy.port}\n/devtools/browser/stale\n",
+            chrome_ports=self.fake.port,
+        )
 
+    def _wait_for_targets(self):
+        base = f"http://127.0.0.1:{self.proxy_port}"
         deadline = time.time() + 25
         status = None
         last_error = None
+        targets = None
         while time.time() < deadline:
             try:
                 status, targets = _http_json(base + "/targets")
@@ -303,10 +327,39 @@ class BrowserRuntimeDiscoveryTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0]["url"], "https://example.test/")
+        return base
+
+    def test_stale_devtools_active_port_is_skipped(self):
+        self._start_proxy_with_stale_port_file()
+        base = self._wait_for_targets()
 
         _, health = _http_json(base + "/health")
         self.assertEqual(health["runtime"], "bosshunter")
         self.assertEqual(health["chromePort"], self.fake.port)
+
+    def test_ws_only_devtools_active_port_is_used(self):
+        """`chrome://inspect`'s "Allow remote debugging" exposes only the browser WebSocket."""
+        self.fake.close()
+        self.fake = _FakeCdp(ws_only=True)
+        self._start_proxy_with_active_port_file(
+            f"{self.fake.port}\n{self.fake.ws_path}\n",
+            # The configured chrome_ports point at the decoy, so the WebSocket-only
+            # entry is the only way discovery can succeed.
+            chrome_ports=self.decoy.port,
+        )
+        base = self._wait_for_targets()
+
+        deadline = time.time() + 10
+        health = {}
+        while time.time() < deadline:
+            _, health = _http_json(base + "/health")
+            if health.get("browserProduct"):
+                break
+            time.sleep(0.3)
+        self.assertEqual(health["runtime"], "bosshunter")
+        self.assertEqual(health["chromePort"], self.fake.port)
+        self.assertEqual(health["connected"], True)
+        self.assertEqual(health["browserProduct"], "Chrome/124.0.0.0")
 
     def test_decoy_port_is_not_a_devtools_endpoint(self):
         """Keep the fixture honest: the decoy must fail the /json/version probe."""
