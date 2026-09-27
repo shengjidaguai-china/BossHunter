@@ -253,7 +253,10 @@ JS_EXTRACT_LIST = """
   const strongLoginWallText = /登录查看更多|登录查看全部|立即登录/.test(text);
   const loginWallText = /请先登录|请登录|登录后(?:查看|继续|获取)|登录失效|账号登录|扫码登录/.test(text);
   const loginDialog = Boolean(document.querySelector('[role="dialog"], .login-dialog, [class*="login-modal"], [class*="login-dialog"]'));
-  const loginRequired = strongLoginWallText || (loginWallText && (!searchInput || loginDialog || !items.length));
+  const loginPage = /(?:^|\\/)(?:passport|login)(?:\\/|$)/i.test(window.location.pathname);
+  // A sidebar login CTA is not a wall when job cards remain readable.
+  const loginRequired = loginPage || /登录失效/.test(text)
+    || ((strongLoginWallText || loginWallText) && (loginDialog || !items.length));
   const status = blockedMatch ? 'blocked' : loginRequired ? 'login_required' : items.length ? 'ready' : hasListRegion ? 'empty' : 'selector_changed';
   return JSON.stringify({status, blocked_code: blockedMatch ? blockedMatch[0] : '', items, has_search_input: Boolean(searchInput)});
 })()
@@ -655,15 +658,24 @@ def _detail_href(node: _Node) -> str:
 def parse_zhilian_list_html(html: str, *, city: str = "", source_keyword: str = "") -> list[dict[str, str]]:
     """Parse a saved search-page fixture without opening a browser."""
     blocked = _blocked_reason(html)
-    if blocked:
+    if blocked and (blocked[0] != "login_required" or "账号异常" in html or "登录失效" in html):
         raise CollectionBlockedError(*blocked)
     root = _parse_tree(html)
+    login_dialog = any(
+        node.attrs.get("role") == "dialog"
+        or any(name in node.attrs.get("class", "") for name in ("login-dialog", "login-modal"))
+        for node in root.descendants()
+    )
+    if blocked and login_dialog:
+        raise CollectionBlockedError(*blocked)
     nodes = [
         node for node in root.descendants()
         if any(node.has_class(name) for name in LIST_ITEM_CLASSES)
         and not any(node.parent and node.parent.has_class(name) for name in LIST_ITEM_CLASSES)
     ]
     if not nodes:
+        if blocked:
+            raise CollectionBlockedError(*blocked)
         visible = root.text()
         if visible and len(visible) > 40:
             raise CollectionError("selector_changed", "智联列表选择器未命中，可能是页面结构变化")
@@ -690,6 +702,8 @@ def parse_zhilian_list_html(html: str, *, city: str = "", source_keyword: str = 
             "url": detail_url,
             "source_keyword": source_keyword,
         })
+    if blocked and not result:
+        raise CollectionBlockedError(*blocked)
     return result
 
 
