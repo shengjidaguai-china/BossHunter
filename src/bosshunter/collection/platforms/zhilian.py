@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urljoin, urlparse
 
+from bosshunter.ai.prefilter import salary_filter_result
 from bosshunter.browser import (
     click as browser_click,
     close_tab,
@@ -814,6 +815,12 @@ class ZhilianCollector:
             return False
         return True
 
+    def _salary_block_reason(self, candidate: JobCandidate) -> str | None:
+        """薪资硬过滤（与 quick_score 同规则）；返回拦截原因，None 表示通过。"""
+        profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
+        score, reason = salary_filter_result(candidate.salary, profile)
+        return None if score > 0 else reason
+
     def _resume_ttl_hours(self) -> int:
         """断点续采有效期（默认 24h），与 51job/liepin 同规则。"""
         search_cfg: dict[str, Any] = {}
@@ -1205,6 +1212,10 @@ class ZhilianCollector:
                 cand = self._item_to_candidate(item, city, city_id, kw)
                 if cand is None:
                     continue
+                salary_reason = self._salary_block_reason(cand)
+                if salary_reason:
+                    hooks.on_event(message=f"智联 列表预筛：{salary_reason}", increment_filtered=True)
+                    continue
                 if not self._passes_filters(cand):
                     continue
                 if not hooks.on_list_candidate(cand):
@@ -1405,6 +1416,10 @@ class ZhilianCollector:
                                 continue
                             candidate = self._candidate_from_list(raw_item, city, keyword)
                             if candidate is None:
+                                continue
+                            salary_reason = self._salary_block_reason(candidate)
+                            if salary_reason:
+                                hooks.on_event(message=f"智联 列表预筛：{salary_reason}", increment_filtered=True)
                                 continue
                             if not self._passes_filters(candidate):
                                 continue
