@@ -79,6 +79,7 @@ class LiepinCollectorTests(TestCase):
         list_payload = json.dumps({"status": "ready", "jobs": [
             {
                 "source_job_id": "job-1",
+                "salary": "15-25K",
                 "title": "AI 产品经理",
                 "company": "示例公司",
                 "city": "上海",
@@ -86,6 +87,7 @@ class LiepinCollectorTests(TestCase):
             },
             {
                 "source_job_id": "job-2",
+                "salary": "15-25K",
                 "title": "AI 产品运营",
                 "company": "示例公司",
                 "city": "上海",
@@ -167,6 +169,7 @@ class LiepinCollectorTests(TestCase):
                     return json.dumps({"status": "waiting", "jobs": []})
                 return json.dumps({"status": "ready", "jobs": [{
                     "source_job_id": "job-spa",
+                    "salary": "15-25K",
                     "title": "AI 运营",
                     "company": "示例公司",
                     "city": "上海",
@@ -212,6 +215,7 @@ class LiepinCollectorTests(TestCase):
                 if list_calls["n"] == 1:
                     return json.dumps({"status": "ready", "jobs": [{
                         "source_job_id": "job-p1",
+                        "salary": "15-25K",
                         "title": "AI 资深工程师",
                         "company": "示例公司",
                         "city": "上海",
@@ -219,6 +223,7 @@ class LiepinCollectorTests(TestCase):
                     }]})
                 return json.dumps({"status": "ready", "jobs": [{
                     "source_job_id": "job-p2",
+                    "salary": "15-25K",
                     "title": "AI 数据工程师",
                     "company": "示例公司",
                     "city": "上海",
@@ -274,6 +279,7 @@ class LiepinCollectorTests(TestCase):
                     return json.dumps({"status": "empty", "jobs": []})
                 return json.dumps({"status": "ready", "jobs": [{
                     "source_job_id": f"job-{list_calls['n']}",
+                    "salary": "15-25K",
                     "title": "AI 工程师",
                     "company": "示例公司",
                     "city": "上海",
@@ -316,6 +322,7 @@ class LiepinCollectorTests(TestCase):
     def test_login_required_detail_keeps_list_info(self):
         list_payload = json.dumps({"status": "ready", "jobs": [{
             "source_job_id": "job-login",
+            "salary": "15-25K",
             "title": "AI 架构师",
             "company": "示例公司",
             "city": "上海",
@@ -515,7 +522,7 @@ class LiepinEnhancedTests(TestCase):
 
     def test_internship_allowed_when_explicitly_enabled(self):
         jobs = [{"source_job_id": "1", "title": "AI实习工程师", "company": "公司", "city": "上海",
-                 "url": "https://www.liepin.com/job/1001.shtml"}]
+                 "salary": "15-25K", "url": "https://www.liepin.com/job/1001.shtml"}]
         browser = self._browser_with_list(jobs)
         collected = []
         collector = LiepinCollector(
@@ -534,11 +541,60 @@ class LiepinEnhancedTests(TestCase):
 
     def test_no_filter_config_passes_all(self):
         jobs = [{"source_job_id": "1", "title": "AI工程师", "company": "公司", "city": "上海",
-                 "url": "https://www.liepin.com/job/1001.shtml"}]
+                 "salary": "15-25K", "url": "https://www.liepin.com/job/1001.shtml"}]
         browser = self._browser_with_list(jobs)
         collected = []
         collector = LiepinCollector(
             browser=browser, sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
+        )
+        with (
+            patch("bosshunter.collection.platforms.liepin.SendWindowChecker.is_active", return_value=True),
+            patch("bosshunter.collection.platforms.liepin.should_take_day_off", return_value=False),
+        ):
+            collector.collect(
+                PlatformCollectionRequest("liepin", ["AI"], ["上海"], {"上海": "020"}, max_pages=1),
+                self._hooks(collected),
+            )
+        self.assertEqual(len(collected), 1)
+
+    def test_salary_below_min_filtered_with_event(self):
+        jobs = [{"source_job_id": "1", "title": "AI工程师", "company": "公司", "city": "上海",
+                 "salary": "5-8K", "url": "https://www.liepin.com/job/1001.shtml"}]
+        browser = self._browser_with_list(jobs)
+        collected = []
+        events = []
+        hooks = CollectorHooks(
+            stop_event=None,
+            on_list_candidate=lambda _c: True,
+            on_candidate=lambda c: collected.append(c) or True,
+            on_parse_failed=lambda _r: None,
+            on_event=lambda **kw: events.append(kw),
+        )
+        collector = LiepinCollector(
+            browser=browser, sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
+            config={"profile": {"salary_min": 10, "salary_max": 20}},
+        )
+        with (
+            patch("bosshunter.collection.platforms.liepin.SendWindowChecker.is_active", return_value=True),
+            patch("bosshunter.collection.platforms.liepin.should_take_day_off", return_value=False),
+        ):
+            collector.collect(
+                PlatformCollectionRequest("liepin", ["AI"], ["上海"], {"上海": "020"}, max_pages=1),
+                hooks,
+            )
+        self.assertEqual(len(collected), 0)
+        filtered_events = [e for e in events if e.get("increment_filtered")]
+        self.assertEqual(len(filtered_events), 1)
+        self.assertIn("薪资低于硬性要求", filtered_events[0].get("message", ""))
+
+    def test_salary_within_range_collected(self):
+        jobs = [{"source_job_id": "1", "title": "AI工程师", "company": "公司", "city": "上海",
+                 "salary": "1-2万", "url": "https://www.liepin.com/job/1001.shtml"}]
+        browser = self._browser_with_list(jobs)
+        collected = []
+        collector = LiepinCollector(
+            browser=browser, sleep=lambda _s: None, uniform=lambda _a, _b: 10.0,
+            config={"profile": {"salary_min": 10, "salary_max": 20}},
         )
         with (
             patch("bosshunter.collection.platforms.liepin.SendWindowChecker.is_active", return_value=True),

@@ -129,13 +129,13 @@ bosshunter run
 
 | GitHub | 身份 | 贡献占比 | 擅长方向 | 任期 |
 |---|---|---|---|---|
-| [@yukinoshi](https://github.com/yukinoshi) | 正式维护者（Write） | 26.2%（试算） | AI、错误恢复与产品流程 | 2026-08-29 起 |
-| [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 正式维护者（Write） | 25.4%（试算） | 运行时、发送安全与监测链路 | 2026-08-30 起 |
-| [@yuppiez99999](https://github.com/yuppiez99999) | 正式维护者（Write） | 25.4%（试算） | 平台采集、城市数据与测试 | 2026-08-29 起 |
-| [@bianshilong0604](https://github.com/bianshilong0604) | 正式维护者（Write） | 23.0%（试算） | Web、产品流程与隐私边界 | 2026-08-30 起 |
+| [@yukinoshi](https://github.com/yukinoshi) | 正式维护者（Write） | 25.5% | AI、错误恢复与产品流程 | 2026-08-29 起 |
+| [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 正式维护者（Write） | 24.2%（试算） | 运行时、发送安全与监测链路 | 2026-08-30 起 |
+| [@yuppiez99999](https://github.com/yuppiez99999) | 正式维护者（Write） | 25.5% | 平台采集、城市数据与测试 | 2026-08-29 起 |
+| [@bianshilong0604](https://github.com/bianshilong0604) | 正式维护者（Write） | 24.8%（试算） | Web、产品流程与隐私边界 | 2026-08-30 起 |
 | [@powerycy](https://github.com/powerycy) 跑跑蹦蹦跳跳 | 项目负责人兼正式技术维护者（Admin） | 不参评 | 全仓技术审核、安全复核与合并；贡献文档与评分 | 项目发起至今；2026-09-06 起计入技术审核池 |
 
-截至 **2026-09-07 14:00（Asia/Shanghai）**，以上为经项目负责人确认的试算结果。维护贡献与项目贡献分别记录；0604 的审核团队邀请尚待接受。
+截至 **2026-09-28 10:38（Asia/Shanghai）**，以上为经项目负责人确认的结果；任职未满 30 天者仍标注试算。维护贡献按任期累计，与项目贡献分别记录；0604 的审核团队邀请已接受，见 [#200](https://github.com/shengjidaguai-china/BossHunter/pull/200)。
 
 [查看维护者任期](MAINTAINERS.md) · [查看维护贡献及评分](MAINTENANCE_CONTRIBUTIONS.md) · [查看技术审核规则](GOVERNANCE.md)
 
@@ -143,39 +143,39 @@ bosshunter run
 
 ## 🔥 近 30 天贡献榜 Top 10
 
-统计窗口：**2026-08-09 至 2026-09-07（Asia/Shanghai）**；实际核对截至 **9 月 7 日 14:00**。只计算该窗口内被主线采纳的部分，同分并列。
+统计窗口：**2026-08-30 至 2026-09-28（Asia/Shanghai）**；实际核对截至 **9 月 28 日 10:38**。只计算窗口内被主线采纳的部分，同分并列。
 
 | 排名 | 贡献者 | 本期主要贡献 |
 |:---:|---|---|
-| 🥇 | [@yuppiez99999](https://github.com/yuppiez99999) | BOSS、51job 与猎聘采集回归；智联 API 与过滤链；三平台续采、城市快照及前端构建交付 |
-| 🥈 | [@shuaigechz-cloud](https://github.com/shuaigechz-cloud) | 会话送达、消息方向与招呼语约束；母版项目保留、PNG/PDF 定制简历预览和显式人工确认 |
-| 🥈 | [@zhenian-666](https://github.com/zhenian-666) | 多范围岗位导出、城市目录、回收站与独立 AI 评分；统一平台采集架构和智联只读采集 |
-| 4 | [@yukinoshi](https://github.com/yukinoshi) | 多 AI 兼容、评分 JSON、错误恢复、凭据优先级与批次删除保护 |
-| 5 | [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 监测回复轮次、安全操作、本地凭据与面板交互；猎聘临时失败/保存失败保留断点的共同实现 |
-| 6 | [@haohao-fly](https://github.com/haohao-fly) | 岗位筛选、分页与统计；结构化评分、失败重试、投递队列和任务保护 |
-| 7 | [@hdfhssg](https://github.com/hdfhssg) | 学历与招聘类型筛选、评分上下文、岗位池排序、投递队列和额度提示 |
-| 7 | [@meixiaoxie](https://github.com/meixiaoxie) | 配置原子写入与无凭据下载；公司屏蔽、城市查询与 Windows 回归测试 |
-| 9 | [@Hebuyu688](https://github.com/Hebuyu688) | AI 诊断和模型别名解析、薪资区间过滤、招呼语正向依据与毕业届别校验 |
-| 10 | [@yuj-029](https://github.com/yuj-029) | 51job 页面研究、只读采集核心、API 采样与断点续采实现 |
+| 🥇 | [@yuppiez99999](https://github.com/yuppiez99999) | 多平台续采、智联 API 与过滤、城市快照和构建交付；薪资失败策略、任务弹窗与招呼语面板适配 |
+| 🥈 | [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | 安全操作与本地凭据；猎聘断点保护、重试反馈；Agent API 人工确认与访问安全共同实现 |
+| 🥉 | [@shuaigechz-cloud](https://github.com/shuaigechz-cloud) | 定制简历预览和显式确认；招呼语原文/优化版选择；标题规范、建议提示与运行时探测边界 |
+| 4 | [@pikachuprogrammer01](https://github.com/pikachuprogrammer01) | 简历拖放上传、原件 PDF/MD 双预览与安全读取；macOS 启动器、安装指南和含空格路径回归 |
+| 5 | [@bactdt](https://github.com/bactdt) | 招呼语后台生成、编辑、重新生成及确认工作流 |
+| 5 | [@kai04072911-sudo](https://github.com/kai04072911-sudo) | 本机 Agent Tool API、受控配置/采集/评分工作流、接口文档与基础测试 |
+| 7 | [@1028huli](https://github.com/1028huli) | 配置页发现与选择 AI 模型；草稿查询不保存、URL 凭据边界和分页保护 |
+| 8 | [@Rainmemery](https://github.com/Rainmemery) | 按实际字体重建薪资映射；评分弹窗反馈；恢复测试对 Python 3.10 的兼容 |
+| 9 | [@Spades6](https://github.com/Spades6) | 猎聘面板配置、采集/岗位筛选与导出入口；简历相对路径按配置目录解析 |
+| 10 | [@zepengfan145-netizen](https://github.com/zepengfan145-netizen) | 招呼语队列进度、任务状态与网址白名单；失败招呼语重试复用原发送通道 |
 
 ## 🏆 贡献总榜 Top 10
 
-数据快照：**2026-09-07 14:00（Asia/Shanghai）**。只统计实际进入主线的外部人类贡献，按完整榜的四维影响评分归一化；同分并列，不按提交次数或代码行数排名。
+截至 **2026-09-28 10:38（Asia/Shanghai）**，完整总榜共 **41 位**贡献者，贡献度合计 **100.0%**。
 
-| 排名 | 贡献者 | 贡献度 | 主要贡献方向 |
+| 排名 | 贡献者 | 贡献度 | 主要贡献 |
 |:---:|---|:---:|---|
-| 🥇 | [@yuppiez99999](https://github.com/yuppiez99999) | **10.0%** | BOSS、51job 与猎聘采集回归；智联 API 与过滤链；三平台续采、城市快照及前端构建交付 |
-| 🥈 | [@shuaigechz-cloud](https://github.com/shuaigechz-cloud) | **7.9%** | 会话送达、消息方向与招呼语约束；母版项目保留、PNG/PDF 定制简历预览和显式人工确认 |
-| 🥈 | [@yukinoshi](https://github.com/yukinoshi) | **7.9%** | Thinking 与多 AI 兼容；评分 JSON、错误传播、暂停恢复和凭据优先级；评分期间删除岗位不中断批次 |
-| 🥈 | [@zhenian-666](https://github.com/zhenian-666) | **7.9%** | 多范围岗位导出、城市目录、回收站与独立 AI 评分；统一平台采集架构和智联只读采集 |
-| 5 | [@GioiaZheng](https://github.com/GioiaZheng) | **6.8%** | API Key 脱敏与安全读取；PDF 依赖降级；人工确认、招呼语和发送选择修复 |
-| 6 | [@atticus-zhou](https://github.com/atticus-zhou) | **6.5%** | AI 评分与招呼语重试、前台浏览器交互、送达验证和防重复发送 |
-| 7 | [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | **6.4%** | 监测回复轮次、安全操作、本地凭据与面板交互；猎聘临时失败/保存失败保留断点的共同实现 |
-| 8 | [@haohao-fly](https://github.com/haohao-fly) | **5.4%** | 岗位筛选、分页与统计；结构化评分、失败重试、投递队列和任务保护 |
-| 9 | [@hdfhssg](https://github.com/hdfhssg) | **4.6%** | 学历与招聘类型筛选、评分上下文、岗位池排序、投递队列和额度提示 |
-| 9 | [@meixiaoxie](https://github.com/meixiaoxie) | **4.6%** | 配置原子写入与无凭据下载；公司屏蔽、城市查询与 Windows 回归测试 |
+| 🥇 | [@yuppiez99999](https://github.com/yuppiez99999) | **6.0%** | 多平台采集、续采与构建交付；薪资解析失败可选跳过、任务启动反馈及招呼语任务面板兼容；测试和维护状态文档修正 |
+| 🥈 | [@shuaigechz-cloud](https://github.com/shuaigechz-cloud) | **5.4%** | 会话送达与招呼语约束、定制简历预览及人工确认；原文/优化版显式选择；简历标题规范、建议提示与运行时探测边界 |
+| 🥉 | [@fengziliang43-cmyk](https://github.com/fengziliang43-cmyk) | **5.1%** | 监测、本地凭据与猎聘断点保护；失败重试反馈和回归；Agent API 回环访问、人工确认、任务互斥及队列行为测试 |
+| 4 | [@yukinoshi](https://github.com/yukinoshi) | **4.6%** | Thinking 与多 AI 兼容、评分恢复和凭据优先级；批次删除保护；招呼语生成流程的既有回归测试适配 |
+| 5 | [@zhenian-666](https://github.com/zhenian-666) | **4.6%** | 多范围岗位导出、城市目录、回收站与独立 AI 评分；统一平台采集架构和智联只读采集 |
+| 6 | [@pikachuprogrammer01](https://github.com/pikachuprogrammer01) | **4.3%** | 简历拖放上传、原件 PDF/MD 双预览与安全读取；macOS 启动器、安装指南和含空格路径回归 |
+| 7 | [@GioiaZheng](https://github.com/GioiaZheng) | **3.9%** | API Key 脱敏与安全读取；PDF 依赖降级；人工确认、招呼语和发送选择修复 |
+| 8 | [@atticus-zhou](https://github.com/atticus-zhou) | **3.7%** | AI 评分与招呼语重试、前台浏览器交互、送达验证和防重复发送 |
+| 9 | [@bactdt](https://github.com/bactdt) | **3.7%** | 招呼语后台生成、编辑、重新生成及确认工作流 |
+| 9 | [@kai04072911-sudo](https://github.com/kai04072911-sudo) | **3.7%** | 本机 Agent Tool API、受控配置/采集/评分工作流、接口文档与基础测试 |
 
-[查看完整榜单、证据链接、历月快照与计算口径](CONTRIBUTORS.md)
+[查看完整榜单、证据链接与历月快照](CONTRIBUTORS.md)
 
 ## 许可证
 
