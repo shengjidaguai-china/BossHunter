@@ -64,7 +64,7 @@ class BossCollectorUnitTests(TestCase):
             "industry": ["100001", "100002"],
         }))
 
-        self.assertEqual(query["jobType"], ["0"])
+        self.assertEqual(query["jobType"], ["1901"])
         self.assertEqual(query["experience"], ["102,104"])
         self.assertEqual(query["degree"], ["203"])
         self.assertEqual(query["scale"], ["303"])

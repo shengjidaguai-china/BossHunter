@@ -173,7 +173,8 @@ platforms:
         self.assertGreaterEqual(lock_call.kwargs["minutes"], 5)
         self.assertLessEqual(lock_call.kwargs["minutes"], 10)
 
-    def test_transient_collection_risk_is_ignored_without_locking(self):
+    @patch("bosshunter.collection.platforms.boss.BossCollector._refresh_font_digits", return_value=False)
+    def test_transient_collection_risk_is_ignored_without_locking(self, _font_probe):
         db = MagicMock()
         progress = MagicMock()
         progress.add_task.return_value = "task"

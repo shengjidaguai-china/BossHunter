@@ -25,6 +25,7 @@ from bosshunter.collection_run_store import (
     save_boss_checkpoint, update_collection_run,
 )
 from bosshunter.db import get_db, insert_job_if_new, job_identity_exists
+from bosshunter.employment import internship_config_error
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 
 
@@ -124,7 +125,14 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
     }
     if supplied.get("resume_run_id"):
         options["resume_run_id"] = supplied["resume_run_id"]
-    return validate_collection_options(options)
+    normalized = validate_collection_options(options)
+    if "boss" in normalized["platform_order"]:
+        effective = {"profile": config.get("profile", {}), "platforms": {
+            "boss": {"search": {"filters": normalized["platforms"]["boss"]["filters"]}},
+        }}
+        if conflict := internship_config_error(effective):
+            raise ValueError(conflict)
+    return normalized
 
 
 def validate_collection_options(options: dict[str, Any]) -> dict[str, Any]:

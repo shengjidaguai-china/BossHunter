@@ -110,7 +110,8 @@ class ScraperBackgroundTests(unittest.TestCase):
         self.assertEqual(task.metrics["ai_failed"], 0)
         self.assertEqual(task.snapshot()["metrics"], task.metrics)
 
-    def test_scraper_reports_seen_new_and_duplicate_counts(self):
+    @patch("bosshunter.collection.platforms.boss.BossCollector._refresh_font_digits", return_value=False)
+    def test_scraper_reports_seen_new_and_duplicate_counts(self, _font_probe):
         db = MagicMock()
         progress = MagicMock()
         progress.add_task.return_value = "task-1"
@@ -158,7 +159,8 @@ class ScraperBackgroundTests(unittest.TestCase):
             "parse_failed": 0, "save_failed": 0, "search_pages": 1,
         })
 
-    def test_search_and_detail_pages_reuse_one_background_worker_tab(self):
+    @patch("bosshunter.collection.platforms.boss.BossCollector._refresh_font_digits", return_value=False)
+    def test_search_and_detail_pages_reuse_one_background_worker_tab(self, _font_probe):
         db = MagicMock()
         progress = MagicMock()
         progress.add_task.return_value = "task-1"
