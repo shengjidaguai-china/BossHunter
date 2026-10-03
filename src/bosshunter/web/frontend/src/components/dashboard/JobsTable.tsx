@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Trash2 } from 'lucide-react'
@@ -166,6 +167,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${job.source_platform === 'boss' || !job.source_platform ? 'bg-secondary text-primary' : 'bg-info-soft text-info'}`}>
                             {PLATFORM_SHORT_LABELS[job.source_platform || 'boss'] || 'BOSS'}
                           </span>
+                          <OutsourcingBadge job={job} />
                           {job.company_size && (
                             <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-bold text-muted">{job.company_size}</span>
                           )}

@@ -1,3 +1,4 @@
+import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
@@ -1049,7 +1050,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <div className="divide-y divide-card-border">
             {workbench.needs_resume.slice(0, 4).map(job => (
               <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span className="min-w-0 break-words text-sm">{job.company}｜{job.title}</span>
+                <span className="flex min-w-0 flex-wrap items-center gap-2 break-words text-sm"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></span>
                 <div className="flex max-w-full flex-wrap items-center gap-1">
                   <Button variant="ghost" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />跳转岗位链接</Button>
                   <Button variant="ghost" size="sm" onClick={() => downloadResume(job)}><Download className="mr-1 h-3.5 w-3.5" />下载简历</Button>
@@ -1080,7 +1081,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               <div key={job.id} className="rounded-2xl border border-danger-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="font-black">{job.company}｜{job.title}</div>
+                    <div className="flex flex-wrap items-center gap-2 font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></div>
                     <div className="mt-1 text-xs text-danger">最近失败原因：{job.last_error || '发送失败，等待重试'}</div>
                   </div>
                   <span className="rounded-full bg-danger-soft px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
@@ -1316,6 +1317,7 @@ function GreetingReviewCard({
       >
         <span className="flex items-center gap-2">
           <span className={`min-w-0 flex-1 text-sm font-medium ${expanded ? 'break-words' : 'truncate'}`}>{job.company}｜{job.title}</span>
+          <OutsourcingBadge job={job} />
           <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${needsSelection ? 'bg-warning-soft text-warning' : 'text-muted'}`}>{selectionLabel}</span>
           <ChevronDown className={`h-4 w-4 shrink-0 text-muted transition-transform ${expanded ? 'rotate-180' : ''}`} />
         </span>
@@ -1413,7 +1415,7 @@ function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: J
     <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-surface' : 'border-card-border bg-surface'}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="font-black">{job.company}｜{job.title}</div>
+          <div className="flex flex-wrap items-center gap-2 font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></div>
           <div className="mt-1 text-xs text-muted">{jobSubtitle(job)}</div>
         </div>
         <input type="checkbox" checked={selected} onChange={onToggle} className="mt-1 h-4 w-4 accent-primary" />
@@ -1531,7 +1533,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">岗位详情</div>
-            <h3 className="mt-1 text-2xl font-black">{job.company}｜{job.title}</h3>
+            <h3 className="mt-1 flex flex-wrap items-center gap-2 text-2xl font-black"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></h3>
             <p className="mt-1 text-sm text-muted">{job.salary || '薪资未填'} · {job.city || '城市未填'} · {getStatusLabel(job.status)}</p>
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>

@@ -75,6 +75,23 @@ describe('DashboardPage workbench task panel', () => {
     expect(within(await screen.findByLabelText('任务状态摘要')).getByText('生成招呼语 (2/3)：字节跳动｜后端工程师')).toBeTruthy()
   })
 
+  it('keeps outsourcing evidence visible before greeting review and sending', async () => {
+    workbenchPayload = baseWorkbench({ pending_greetings: [{
+      id: 'outsourcing-preview', company: '合成供应商', title: '测试岗位', status: 'ready',
+      greeting: '原始招呼语', greeting_original: '原始招呼语', greeting_optimized: '优化招呼语',
+      greeting_selection: 'pending', greeting_style_issues: ['表达可以更简洁'],
+      outsourcing_level: 'confirmed', outsourcing_matches: ['合成供应商'],
+    }] })
+    render(<DashboardPage view="workbench" />)
+    const toggle = await screen.findByRole('button', { name: '展开招呼语：合成供应商｜测试岗位' })
+    expect(within(toggle).getByLabelText('外包；命中：合成供应商')).toBeTruthy()
+    fireEvent.click(toggle)
+    expect(screen.getByLabelText('外包；命中：合成供应商')).toBeTruthy()
+    expect(screen.getByText('表达可以更简洁')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: '采用优化版' })).toBeTruthy()
+  })
+
   it('shows the latest queue summary and preserves full progress in expandable details', async () => {
     const latestProgress = '招呼语进度：2/3\n成功 1，失败 1，待处理 1'
     workbenchPayload = baseWorkbench({

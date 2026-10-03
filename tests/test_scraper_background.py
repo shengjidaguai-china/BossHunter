@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, call, patch
 
+from bosshunter.db import get_db
 from bosshunter.scraper.jobs import scrape_jobs
 from bosshunter.web.server import _execute_collect
 from bosshunter.web.tasks import WorkbenchTask
@@ -111,7 +112,7 @@ class ScraperBackgroundTests(unittest.TestCase):
         self.assertEqual(task.snapshot()["metrics"], task.metrics)
 
     def test_scraper_reports_seen_new_and_duplicate_counts(self):
-        db = MagicMock()
+        db = get_db(Path(":memory:"))
         progress = MagicMock()
         progress.add_task.return_value = "task-1"
         progress_context = MagicMock()
@@ -137,7 +138,8 @@ class ScraperBackgroundTests(unittest.TestCase):
              patch("bosshunter.scraper.jobs.new_tab", return_value="worker-target"), \
              patch("bosshunter.scraper.jobs.navigate", return_value=True), \
              patch("bosshunter.scraper.jobs.evaluate", side_effect=[
-                 json.dumps({"risk": None}), False, json.dumps(jobs),
+                 json.dumps({"risk": None}), json.dumps({}),  # No custom font sources.
+                 False, json.dumps(jobs),
                  json.dumps({"risk": None}), json.dumps(detail),
              ]), \
              patch("bosshunter.scraper.jobs.wait_for_load"), \
@@ -159,7 +161,7 @@ class ScraperBackgroundTests(unittest.TestCase):
         })
 
     def test_search_and_detail_pages_reuse_one_background_worker_tab(self):
-        db = MagicMock()
+        db = get_db(Path(":memory:"))
         progress = MagicMock()
         progress.add_task.return_value = "task-1"
         progress_context = MagicMock()
@@ -198,7 +200,8 @@ class ScraperBackgroundTests(unittest.TestCase):
              patch(
                  "bosshunter.scraper.jobs.evaluate",
                  side_effect=[
-                     json.dumps({"risk": None}), False, json.dumps(jobs),
+                     json.dumps({"risk": None}), json.dumps({}),  # No custom font sources.
+                     False, json.dumps(jobs),
                      json.dumps({"risk": None}), json.dumps(detail),
                  ],
              ), \

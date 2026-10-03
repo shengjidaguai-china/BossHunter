@@ -144,7 +144,7 @@ platforms:
             reopened.close()
 
     def test_collection_risk_stops_and_records_safe_reason(self):
-        db = MagicMock()
+        db = get_db(Path(":memory:"))
         progress = MagicMock()
         progress.add_task.return_value = "task"
         context = MagicMock()
@@ -174,7 +174,7 @@ platforms:
         self.assertLessEqual(lock_call.kwargs["minutes"], 10)
 
     def test_transient_collection_risk_is_ignored_without_locking(self):
-        db = MagicMock()
+        db = get_db(Path(":memory:"))
         progress = MagicMock()
         progress.add_task.return_value = "task"
         context = MagicMock()
@@ -195,6 +195,7 @@ platforms:
                  side_effect=[
                      json.dumps({"risk": "blocked", "evidence": "blocked_page"}),
                      json.dumps({"risk": None}),
+                     json.dumps({}),  # Font discovery: this fixture has no custom font.
                      False,
                      json.dumps([]),
                  ],
@@ -209,7 +210,7 @@ platforms:
         guard_cls.return_value.lock.assert_not_called()
 
     def test_consecutive_page_failures_end_collection_without_risk_lock(self):
-        db = MagicMock()
+        db = get_db(Path(":memory:"))
         progress = MagicMock()
         progress.add_task.return_value = "task"
         context = MagicMock()

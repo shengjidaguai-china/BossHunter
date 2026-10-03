@@ -63,6 +63,8 @@ from bosshunter.db import (
 	persist_agent_evaluations,
 	reject_jobs,
 	restore_jobs,
+	serialize_job,
+	recompute_outsourcing,
 	select_job_greeting,
 	soft_delete_jobs,
 	edit_job_greeting,
@@ -201,7 +203,15 @@ def set_base_dir(base_dir: Path | str) -> None:
 
 def _get_web_db():
 	"""Open the dashboard database from the resolved runtime data directory."""
-	return get_db(DATA_DIR / "bosshunter.db")
+	from bosshunter.outsourcing import load_rules
+
+	db = get_db(DATA_DIR / "bosshunter.db")
+	try:
+		recompute_outsourcing(db, load_rules(load_config(CONFIG_PATH)))
+		return db
+	except Exception:
+		db.close()
+		raise
 
 
 def _json_response(data, status_code=200):
@@ -230,8 +240,8 @@ def _serialize_history_items(items):
 
 
 def _serialize_job(item):
-	"""Expose greeting style issues as a list while retaining DB compatibility."""
-	record = dict(item)
+	"""Expose outsourcing evidence and greeting state in one API representation."""
+	record = serialize_job(dict(item))
 	record["greeting_activity"] = greeting_activity.get(str(record.get("id") or ""))
 	raw_issues = record.get("greeting_style_issues")
 	if isinstance(raw_issues, str):
@@ -1253,7 +1263,7 @@ def api_job_search():
 			rows = filtered_rows
 		total = len(rows)
 		return _json_response({
-			"items": rows[offset:offset + limit],
+			"items": [_serialize_job(row) for row in rows[offset:offset + limit]],
 			"total": total,
 			"all_total": all_total,
 			"limit": limit,
