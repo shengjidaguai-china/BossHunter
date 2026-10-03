@@ -22,6 +22,8 @@ MAX_JOB_IDS = 1000
 DELETION_PROTECTED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 GREETING_ALLOWED_STATUSES = {"ready", "approved", "error"}
 REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}
+MANUAL_STATUS_TARGETS = {"ready", "filtered", "skipped", "rejected"}
+MANUAL_STATUS_PROTECTED = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 DELETION_PROTECTED_HISTORY_ACTIONS = {
     "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
@@ -929,6 +931,44 @@ def update_job_status(conn: sqlite3.Connection, job_id: str, status: str) -> Non
         (status, job_id)
     )
     conn.commit()
+
+
+def update_jobs_manual_status(conn: sqlite3.Connection, job_ids: Any, status: str) -> dict[str, Any]:
+    """Apply a safe, user-selected status to active jobs and record history."""
+    ids = _normalize_job_ids(job_ids, required=True)
+    target = str(status or "").strip()
+    if target not in MANUAL_STATUS_TARGETS:
+        raise ValueError("不支持的手动岗位状态")
+    rows = _job_rows_by_ids(conn, ids)
+    by_id = {str(row["id"]): row for row in rows}
+    not_found = [job_id for job_id in ids if job_id not in by_id]
+    blocked = []
+    for job_id in ids:
+        row = by_id.get(job_id)
+        if row is None:
+            continue
+        current = str(row.get("status") or "")
+        if current in MANUAL_STATUS_PROTECTED:
+            blocked.append({"job_id": job_id, "reasons": ["已发送或已有回复记录的岗位不可手动回退"]})
+    if not_found or blocked:
+        raise ValueError("存在不能手动修改状态的岗位")
+    changed = [job_id for job_id in ids if str(by_id[job_id].get("status") or "") != target]
+    with conn:
+        for job_id in changed:
+            previous = str(by_id[job_id].get("status") or "")
+            conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+                (target, job_id),
+            )
+            conn.execute(
+                "INSERT INTO history (job_id, action, detail) VALUES (?, 'status_changed', ?)",
+                (job_id, f"用户手动将状态从 {previous or '未知'} 修改为 {target}"),
+            )
+    return {
+        "requested_count": len(ids),
+        "affected_count": len(changed),
+        "unchanged": [job_id for job_id in ids if job_id not in changed],
+    }
 
 
 def add_history(conn: sqlite3.Connection, job_id: str, action: str, detail: str = "") -> None:

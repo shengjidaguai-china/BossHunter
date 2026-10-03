@@ -2,6 +2,7 @@ import { RotateCcw, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { MultiSelect } from '@/components/ui/multi-select'
 import { cn } from '@/lib/utils'
 import { STATUS_LABELS } from '@/lib/status'
 import { hasActiveJobFilters, type JobFilters } from '@/lib/jobFilters'
@@ -31,6 +32,7 @@ export function JobFilterBar({
 }: JobFilterBarProps) {
   const controlClass = cn('min-w-0', compact && 'h-7 px-2 text-xs')
   const update = (key: keyof JobFilters, value: string) => onChange({ ...filters, [key]: value })
+  const updateMulti = (key: keyof JobFilters, value: string[]) => onChange({ ...filters, [key]: value })
 
   return (
     <div className={cn(!compact && "mb-4 rounded-2xl border border-card-border bg-surface p-3")}>
@@ -78,37 +80,23 @@ export function JobFilterBar({
           aria-label="最高薪资 K"
         />
         {showStatus && (
-          <Select className={controlClass} value={filters.status} onChange={event => update('status', event.target.value)} aria-label="岗位状态">
-            <option value="">全部状态</option>
-            {Object.entries(STATUS_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </Select>
+          <MultiSelect className={controlClass} compact={compact} value={filters.status} onChange={value => updateMulti('status', value)} placeholder="全部状态" options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))} />
         )}
         {showSource && (
-          <Select className={controlClass} value={filters.sourcePlatform} onChange={event => update('sourcePlatform', event.target.value)} aria-label="来源平台">
-            <option value="">来源平台：全部</option>
-            <option value="boss">BOSS 直聘</option>
-            <option value="zhilian">智联招聘</option>
-            <option value="51job">前程无忧</option>
-            <option value="liepin">猎聘</option>
-          </Select>
+          <MultiSelect className={controlClass} compact={compact} value={filters.sourcePlatform} onChange={value => updateMulti('sourcePlatform', value)} placeholder="来源平台：全部" options={[
+            { value: 'boss', label: 'BOSS 直聘' },
+            { value: 'zhilian', label: '智联招聘' },
+            { value: '51job', label: '前程无忧' },
+            { value: 'liepin', label: '猎聘' },
+          ]} />
         )}
-        <Select className={cn(controlClass, compact && 'xl:order-1')} value={filters.education} onChange={event => update('education', event.target.value)} aria-label="学历要求">
-          <option value="">学历：全部</option>
-          <option value="博士">博士</option>
-          <option value="硕士">硕士</option>
-          <option value="本科">本科</option>
-          <option value="大专">大专</option>
-          <option value="不限">学历不限</option>
-          <option value="unknown">未识别</option>
-        </Select>
-        <Select className={cn(controlClass, compact && 'xl:order-1')} value={filters.recruitmentType} onChange={event => update('recruitmentType', event.target.value)} aria-label="招聘类型">
-          <option value="">招聘类型：全部</option>
-          <option value="campus">校招</option>
-          <option value="experienced">社招</option>
-          <option value="unknown">未识别</option>
-        </Select>
+        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.education} onChange={value => updateMulti('education', value)} placeholder="学历：全部" options={[
+          { value: '博士', label: '博士' }, { value: '硕士', label: '硕士' }, { value: '本科', label: '本科' },
+          { value: '大专', label: '大专' }, { value: '不限', label: '学历不限' }, { value: 'unknown', label: '未识别' },
+        ]} />
+        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.recruitmentType} onChange={value => updateMulti('recruitmentType', value)} placeholder="招聘类型：全部" options={[
+          { value: 'campus', label: '校招' }, { value: 'experienced', label: '社招' }, { value: 'unknown', label: '未识别' },
+        ]} />
         <div className={cn("flex min-w-0 items-center gap-2", compact ? "col-span-2 justify-end xl:col-span-1" : "min-h-9 flex-wrap justify-between rounded-md border border-card-border bg-card px-3 py-1")}>
           {!compact && <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>}
           <Button

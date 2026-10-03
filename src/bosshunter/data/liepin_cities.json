@@ -1,7 +1,7 @@
 {
   "schema": "bosshunter.liepin_cities.v1",
   "source": "verified_from_city_pages",
-  "fetched_at": null,
+  "fetched_at": "2026-09-01",
   "note": "dqCode 从猎聘城市分站页 $CONFIG 变量提取。直辖市为 3 位编码（如 010=北京），其他城市为 6 位编码（省份码+城市码，如 050020=广州）。未知城市不匹配，fail-closed。",
   "cities": [
     {"name": "北京", "code": "010"},

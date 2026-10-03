@@ -32,7 +32,7 @@ from bosshunter.throttle import PageThrottle
 SEARCH_URL = "https://www.zhipin.com/web/geek/job?query={keyword}&city={city_code}"
 
 BOSS_FILTER_OPTIONS: dict[str, dict[str, str]] = {
-    "job_type": {"全职": "0", "兼职": "1", "实习": "2"},
+    "job_type": {"全职": "1901", "兼职": "1903", "实习": "1902"},
     "experience": {
         "经验不限": "101", "应届生": "102", "1年以内": "103", "1-3年": "104",
         "3-5年": "105", "5-10年": "106", "10年以上": "107", "在校生": "108",

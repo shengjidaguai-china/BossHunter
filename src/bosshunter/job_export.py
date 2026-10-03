@@ -94,26 +94,41 @@ def _filtered_rows(conn: sqlite3.Connection, filters: dict[str, Any] | None = No
 	if city:
 		conditions.append("city = ?")
 		params.append(city)
-	status = str(filters.get("status") or "").strip()
-	if status:
-		conditions.append("status = ?")
-		params.append(status)
-	source_platform = str(filters.get("source_platform") or "").strip()
-	if source_platform:
-		if source_platform not in {"boss", "zhilian", "51job", "liepin"}:
+	def values(name: str) -> list[str]:
+		value = filters.get(name)
+		if isinstance(value, list):
+			return [str(item).strip() for item in value if str(item).strip()]
+		return [str(value).strip()] if str(value or "").strip() else []
+
+	status_values = values("status")
+	if status_values:
+		placeholders = ",".join("?" for _ in status_values)
+		conditions.append(f"status IN ({placeholders})")
+		params.extend(status_values)
+	source_platforms = values("source_platform")
+	if source_platforms:
+		if any(value not in {"boss", "zhilian", "51job", "liepin"} for value in source_platforms):
 			raise ValueError("source_platform 参数无效")
-		conditions.append("COALESCE(source_platform, 'boss') = ?")
-		params.append(source_platform)
-	recruitment_type = str(filters.get("recruitment_type") or "").strip()
-	if recruitment_type:
-		if recruitment_type not in {"campus", "experienced", "unknown"}:
+		placeholders = ",".join("?" for _ in source_platforms)
+		conditions.append(f"COALESCE(source_platform, 'boss') IN ({placeholders})")
+		params.extend(source_platforms)
+	recruitment_types = values("recruitment_type")
+	if recruitment_types:
+		if any(value not in {"campus", "experienced", "unknown"} for value in recruitment_types):
 			raise ValueError("recruitment_type 参数无效")
-		conditions.append("COALESCE(recruitment_type, 'unknown') = ?")
-		params.append(recruitment_type)
-	education = str(filters.get("education") or "").strip()
-	if education:
-		conditions.append("education LIKE ?")
-		params.append(f"%{education}%")
+		placeholders = ",".join("?" for _ in recruitment_types)
+		conditions.append(f"COALESCE(recruitment_type, 'unknown') IN ({placeholders})")
+		params.extend(recruitment_types)
+	educations = values("education")
+	if educations:
+		education_conditions = []
+		for value in educations:
+			if value == "unknown":
+				education_conditions.append("COALESCE(TRIM(education), '') = ''")
+			else:
+				education_conditions.append("education LIKE ?")
+				params.append(f"%{value}%")
+		conditions.append(f"({' OR '.join(education_conditions)})")
 	minimum_score = filters.get("min_score")
 	if minimum_score not in (None, ""):
 		try:

@@ -69,6 +69,7 @@ from bosshunter.db import (
 	soft_delete_jobs,
 	edit_job_greeting,
 	update_job_status,
+	update_jobs_manual_status,
 )
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.collection.orchestrator import CollectionOrchestrator, normalize_collection_options
@@ -1155,6 +1156,12 @@ def _score_trace_missing_state(job: dict) -> str:
 	return "unavailable"
 
 
+def _query_values(name: str) -> list[str]:
+	"""Read repeated query values while keeping the old single-value form valid."""
+	values = request.query.getall(name)
+	return [str(value).strip() for value in values if str(value).strip()]
+
+
 @app.route("/api/jobs/search")
 def api_job_search():
 	try:
@@ -1168,11 +1175,11 @@ def api_job_search():
 		created_within = request.params.get("created_within", "").strip()
 		if created_within and created_within not in {"today", "3d", "7d"}:
 			raise ValueError("created_within 参数无效")
-		recruitment_type = request.params.get("recruitment_type", "").strip()
-		if recruitment_type and recruitment_type not in {"campus", "experienced", "unknown"}:
+		recruitment_types = _query_values("recruitment_type")
+		if any(value not in {"campus", "experienced", "unknown"} for value in recruitment_types):
 			raise ValueError("recruitment_type 参数无效")
-		education_filter = (request.query.getunicode("education") or "").strip()
-		if education_filter and education_filter not in {"博士", "硕士", "本科", "大专", "不限", "其他", "unknown"}:
+		education_filters = _query_values("education")
+		if any(value not in {"博士", "硕士", "本科", "大专", "不限", "其他", "unknown"} for value in education_filters):
 			raise ValueError("education 参数无效")
 		sort_by = request.params.get("sort_by", "created_at").strip()
 		if sort_by not in {"salary", "education", "score", "status", "hr_active", "created_at"}:
@@ -1187,7 +1194,7 @@ def api_job_search():
 	conditions = ["deleted_at IS NULL"]
 	params = []
 	keyword = (request.query.getunicode("q") or "").strip()
-	status_filter = request.params.get("status", "").strip()
+	status_filters = _query_values("status")
 	if keyword:
 		conditions.append("(title LIKE ? OR company LIKE ? OR jd LIKE ? OR score_reason LIKE ?)")
 		keyword_param = f"%{keyword}%"
@@ -1195,24 +1202,30 @@ def api_job_search():
 	if minimum_score is not None:
 		conditions.append("score >= ?")
 		params.append(minimum_score)
-	if status_filter:
-		conditions.append("status = ?")
-		params.append(status_filter)
-	source_platform = request.params.get("source_platform", "").strip()
-	if source_platform:
-		if source_platform not in {"boss", "zhilian", "51job", "liepin"}:
+	if status_filters:
+		placeholders = ",".join("?" for _ in status_filters)
+		conditions.append(f"status IN ({placeholders})")
+		params.extend(status_filters)
+	source_platforms = _query_values("source_platform")
+	if source_platforms:
+		if any(value not in {"boss", "zhilian", "51job", "liepin"} for value in source_platforms):
 			return _json_response({"error": "source_platform 参数无效"}, 400)
-		conditions.append("COALESCE(source_platform, 'boss') = ?")
-		params.append(source_platform)
-	if recruitment_type:
-		conditions.append("COALESCE(recruitment_type, 'unknown') = ?")
-		params.append(recruitment_type)
-	if education_filter:
-		if education_filter == "unknown":
-			conditions.append("COALESCE(TRIM(education), '') = ''")
-		else:
-			conditions.append("education LIKE ?")
-			params.append(f"%{education_filter}%")
+		placeholders = ",".join("?" for _ in source_platforms)
+		conditions.append(f"COALESCE(source_platform, 'boss') IN ({placeholders})")
+		params.extend(source_platforms)
+	if recruitment_types:
+		placeholders = ",".join("?" for _ in recruitment_types)
+		conditions.append(f"COALESCE(recruitment_type, 'unknown') IN ({placeholders})")
+		params.extend(recruitment_types)
+	if education_filters:
+		education_conditions = []
+		for value in education_filters:
+			if value == "unknown":
+				education_conditions.append("COALESCE(TRIM(education), '') = ''")
+			else:
+				education_conditions.append("education LIKE ?")
+				params.append(f"%{value}%")
+		conditions.append(f"({' OR '.join(education_conditions)})")
 	if created_within == "today":
 		conditions.append("created_at >= datetime('now', 'localtime', 'start of day', 'utc')")
 	elif created_within == "3d":
@@ -3164,6 +3177,23 @@ def api_jobs_manual_sent():
 		return _json_response(result)
 	except (ValueError, JobManualSentConflictError) as exc:
 		return _job_action_error(exc)
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/status", method="POST")
+def api_jobs_status():
+	db = _get_web_db()
+	try:
+		body, job_ids = _job_action_payload()
+		with job_mutation_lock:
+			conflict = _active_task_mutation_error()
+			if conflict is not None:
+				return conflict
+			result = update_jobs_manual_status(db, job_ids, str(body.get("status") or ""))
+		return _json_response(result)
+	except ValueError as exc:
+		return _json_response({"error": str(exc), "code": "status_change_blocked"}, 409)
 	finally:
 		db.close()
 

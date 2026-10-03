@@ -881,6 +881,34 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
 
+    def test_job_search_supports_repeated_multi_select_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                fixtures = [
+                    ("boss-ready", "boss", "experienced", "本科", "ready"),
+                    ("zhilian-filtered", "zhilian", "campus", "硕士", "filtered"),
+                    ("liepin-ready", "liepin", "experienced", "大专", "ready"),
+                ]
+                for job_id, platform, recruitment_type, education, status_value in fixtures:
+                    job = _job(job_id)
+                    job.update({"source_platform": platform, "recruitment_type": recruitment_type, "education": education})
+                    insert_job(db, job)
+                    update_job_status(db, job_id, status_value)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/jobs/search?source_platform=boss&source_platform=zhilian&"
+                "recruitment_type=experienced&recruitment_type=campus&status=ready&status=filtered"
+            )
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertCountEqual([job["id"] for job in payload["items"]], ["zhilian-filtered", "boss-ready"])
+
     def test_job_search_salary_overlap_excludes_unparseable_and_paginates(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -1474,6 +1502,42 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(json.loads(workbench_body)["send_quota"]["sent"], 0)
         self.assertEqual(row["status"], "sent")
         self.assertEqual([item["action"] for item in history], ["manual_sent"])
+
+    def test_web_api_manual_status_updates_history_and_blocks_sent_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                ready = _job("manual-status-ready")
+                sent = _job("manual-status-sent")
+                insert_job(db, ready)
+                insert_job(db, sent)
+                update_job_status(db, sent["id"], "sent")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/jobs/status", method="POST",
+                json_body={"job_ids": [ready["id"]], "status": "skipped"},
+            )
+            blocked_status, _, blocked_body = self._request(
+                "/api/jobs/status", method="POST",
+                json_body={"job_ids": [sent["id"]], "status": "ready"},
+            )
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = verify_db.execute("SELECT status FROM jobs WHERE id = ?", (ready["id"],)).fetchone()
+                history = verify_db.execute("SELECT action, detail FROM history WHERE job_id = ?", (ready["id"],)).fetchall()
+            finally:
+                verify_db.close()
+
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(json.loads(body)["affected_count"], 1)
+        self.assertTrue(blocked_status.startswith("409"), blocked_body)
+        self.assertEqual(row["status"], "skipped")
+        self.assertEqual(history[0]["action"], "status_changed")
+        self.assertIn("pending", history[0]["detail"])
 
     def test_web_api_cities_returns_bundled_liepin_snapshot(self):
         status, _, body = self._request("/api/cities?platform=liepin")

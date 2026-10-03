@@ -1,6 +1,7 @@
 {
   "schema": "bosshunter.51job_cities.v1",
   "source": "verified_from_51job_channel_pages",
+  "fetched_at": "2026-09-01",
   "note": "areaCode extracted from window.__APP_INITIAL_SESSION__ on each city channel page.",
   "cities": [
     {

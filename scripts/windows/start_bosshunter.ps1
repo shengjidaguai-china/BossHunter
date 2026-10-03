@@ -14,20 +14,28 @@ if ($PythonPath) {
 	$Runner = (Resolve-Path -LiteralPath $PythonPath).Path
 	$RunnerPrefix = @("-m", "bosshunter.main")
 } else {
+	# Resolve how to invoke bosshunter, mirroring scripts/macos/start_bosshunter.sh:
+	# the CLI command on PATH first, then the repository virtual environment, then
+	# Python on PATH (run as `python -m bosshunter.main`).
 	$Bosshunter = Get-Command "bosshunter" -ErrorAction SilentlyContinue
+	$VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 	if ($Bosshunter) {
 		$Runner = $Bosshunter.Source
 		$RunnerPrefix = @()
+	} elseif (Test-Path -LiteralPath $VenvPython) {
+		# A project installed inside the repository venv is only importable there.
+		$Runner = $VenvPython
+		$RunnerPrefix = @("-m", "bosshunter.main")
 	} else {
-	$Python = Get-Command "py" -ErrorAction SilentlyContinue
-	if (-not $Python) {
-		$Python = Get-Command "python" -ErrorAction SilentlyContinue
-	}
-	if (-not $Python) {
-		throw "Could not find BossHunter or Python. Install the project first with: pip install -e ."
-	}
-	$Runner = $Python.Source
-	$RunnerPrefix = @("-m", "bosshunter.main")
+		$Python = Get-Command "py" -ErrorAction SilentlyContinue
+		if (-not $Python) {
+			$Python = Get-Command "python" -ErrorAction SilentlyContinue
+		}
+		if (-not $Python) {
+			throw "Could not find BossHunter or Python. Install the project first with: pip install -e ."
+		}
+		$Runner = $Python.Source
+		$RunnerPrefix = @("-m", "bosshunter.main")
 	}
 }
 

@@ -18,6 +18,7 @@ interface JobsTableProps {
   onToggleSelected: (id: string) => void
   onSoftDelete?: (job: Job) => void
   onMarkManuallySent?: (job: Job) => void
+  onStatusChange?: (job: Job, status: string) => void
   loading?: boolean
   sortBy: JobSortKey
   sortOrder: JobSortOrder
@@ -65,11 +66,11 @@ function statusVariant(status: string) {
   return variants.has(status) ? status : 'default'
 }
 
-export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
+export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pageInput, setPageInput] = useState(String(page + 1))
   const totalPages = Math.ceil(total / pageSize)
-  const hasActions = Boolean(onSoftDelete || onMarkManuallySent)
+  const hasActions = Boolean(onSoftDelete || onMarkManuallySent || onStatusChange)
 
   useEffect(() => {
     setPageInput(String(page + 1))
@@ -222,6 +223,24 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                               <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-2 text-muted hover:bg-danger-soft hover:text-danger" aria-label={`将 ${job.company} ${job.title} 移入回收站`}>
                                 <Trash2 className="h-4 w-4" />
                               </button>
+                            )}
+                            {onStatusChange && !alreadySent && (
+                              <select
+                                defaultValue=""
+                                aria-label={`修改 ${job.company} ${job.title} 状态`}
+                                onChange={event => {
+                                  const status = event.target.value
+                                  if (status) onStatusChange(job, status)
+                                  event.currentTarget.value = ''
+                                }}
+                                className="rounded-lg border border-card-border bg-card px-2 py-1.5 text-[11px] font-bold text-foreground"
+                              >
+                                <option value="">修改状态</option>
+                                <option value="ready">待确认</option>
+                                <option value="filtered">已过滤</option>
+                                <option value="skipped">已跳过</option>
+                                <option value="rejected">已拒绝</option>
+                              </select>
                             )}
                           </div>
                         </td>
