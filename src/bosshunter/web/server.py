@@ -40,6 +40,7 @@ from bosshunter.db import (
 	JobDeletionConflictError,
 	JobManualSentConflictError,
 	add_history,
+	apply_outsourcing_label,
 	count_unresolved_monitor_items,
 	get_active_platform_safety_lock,
 	get_daily_activity,
@@ -52,6 +53,7 @@ from bosshunter.db import (
 	get_jobs_with_send_errors,
 	get_recent_history,
 	get_recent_monitor_replies,
+	get_outsourcing_snapshot,
 	get_score_trace,
 	get_unresolved_reply_pending,
 	get_unresolved_resume_failures,
@@ -2120,7 +2122,46 @@ def api_job_detail(job_id):
 		row = db.execute("SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL", (job_id,)).fetchone()
 		if not row:
 			return _json_response({"error": "岗位不存在"}, 404)
-		return _json_response(_serialize_job(row))
+		record = _serialize_job(row)
+		snapshot = get_outsourcing_snapshot(db, job_id)
+		record["outsourcing_evidence"] = snapshot["evidence"]
+		record["outsourcing_label"] = snapshot["label"]
+		return _json_response(record)
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/<job_id>/outsourcing-evidence")
+def api_job_outsourcing_evidence(job_id):
+	db = _get_web_db()
+	try:
+		row = db.execute("SELECT id FROM jobs WHERE id = ? AND deleted_at IS NULL", (job_id,)).fetchone()
+		if not row:
+			return _json_response({"error": "岗位不存在"}, 404)
+		snapshot = get_outsourcing_snapshot(db, job_id)
+		return _json_response({"job_id": job_id, **snapshot})
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/<job_id>/outsourcing-label", method="POST")
+def api_job_outsourcing_label(job_id):
+	body = request.json or {}
+	label = str(body.get("label") or "").strip()
+	note = str(body.get("note") or "").strip()
+	if len(note) > 240:
+		return _json_response({"error": "note 不能超过240字"}, 400)
+	db = _get_web_db()
+	try:
+		from bosshunter.outsourcing import load_rules
+		result = apply_outsourcing_label(
+			db, job_id, label, note, rules=load_rules(load_config(CONFIG_PATH))
+		)
+		return _json_response({"job_id": job_id, **result})
+	except KeyError:
+		return _json_response({"error": "岗位不存在"}, 404)
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
 	finally:
 		db.close()
 
