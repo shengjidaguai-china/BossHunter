@@ -6,6 +6,7 @@ interface JobSearchResponse {
   items: Job[]
   total: number
   all_total: number
+  city_options?: string[]
   limit: number
   offset: number
 }
@@ -24,6 +25,7 @@ export function useJobSearch(
   const [items, setItems] = useState<Job[]>([])
   const [total, setTotal] = useState(0)
   const [allTotal, setAllTotal] = useState(0)
+  const [cityOptions, setCityOptions] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
@@ -49,6 +51,7 @@ export function useJobSearch(
     filters.status.forEach(value => params.append('status', value))
     if (filters.createdWithin) params.set('created_within', filters.createdWithin)
     filters.sourcePlatform.forEach(value => params.append('source_platform', value))
+    filters.city.forEach(value => params.append('city', value))
     filters.education.forEach(value => params.append('education', value))
     filters.recruitmentType.forEach(value => params.append('recruitment_type', value))
     params.set('sort_by', sortBy)
@@ -65,6 +68,7 @@ export function useJobSearch(
         setItems(data.items)
         setTotal(data.total)
         setAllTotal(data.all_total)
+        setCityOptions(data.city_options || [])
         setError('')
       })
       .catch(cause => {
@@ -76,7 +80,7 @@ export function useJobSearch(
       })
 
     return () => controller.abort()
-  }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.education, filters.recruitmentType, page, pageSize, sortBy, sortOrder, revision])
+  }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, page, pageSize, sortBy, sortOrder, revision])
 
-  return { items, total, allTotal, loading, error, refresh: () => setRevision(value => value + 1) }
+  return { items, total, allTotal, cityOptions, loading, error, refresh: () => setRevision(value => value + 1) }
 }

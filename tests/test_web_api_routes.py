@@ -909,6 +909,49 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), body)
         self.assertCountEqual([job["id"] for job in payload["items"]], ["zhilian-filtered", "boss-ready"])
 
+    def test_job_search_filters_by_city_and_reports_city_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, city in (("sh", "Shanghai"), ("sh-pd", "Shanghai·Pudong"), ("bj", "Beijing"), ("blank", "")):
+                    job = _job(job_id)
+                    job["city"] = city
+                    insert_job(db, job)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?city=Shanghai&city=Beijing")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertCountEqual([job["id"] for job in payload["items"]], ["sh", "sh-pd", "bj"])
+        self.assertCountEqual(payload["city_options"], ["Shanghai", "Beijing"])
+
+    def test_job_search_decodes_chinese_query_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                bachelor = _job("bachelor")
+                bachelor.update({"education": "本科", "city": "北京"})
+                insert_job(db, bachelor)
+                master = _job("master")
+                master.update({"education": "硕士", "city": "上海"})
+                insert_job(db, master)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                f"/api/jobs/search?education={quote('本科')}&city={quote('北京')}"
+            )
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual([job["id"] for job in payload["items"]], ["bachelor"])
+
     def test_job_search_salary_overlap_excludes_unparseable_and_paginates(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
