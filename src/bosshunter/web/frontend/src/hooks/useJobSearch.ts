@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Job } from '@/hooks/useDashboard'
 import { hasInvalidSalaryRange, useDebouncedValue, type JobFilters } from '@/lib/jobFilters'
 
@@ -29,6 +29,7 @@ export function useJobSearch(
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
+  const refresh = useCallback(() => setRevision(value => value + 1), [])
 
   useEffect(() => {
     if (hasInvalidSalaryRange(filters)) {
@@ -65,6 +66,7 @@ export function useJobSearch(
         return data as JobSearchResponse
       })
       .then(data => {
+        if (controller.signal.aborted) return
         setItems(data.items)
         setTotal(data.total)
         setAllTotal(data.all_total)
@@ -82,5 +84,5 @@ export function useJobSearch(
     return () => controller.abort()
   }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, page, pageSize, sortBy, sortOrder, revision])
 
-  return { items, total, allTotal, cityOptions, loading, error, refresh: () => setRevision(value => value + 1) }
+  return { items, total, allTotal, cityOptions, loading, error, refresh }
 }

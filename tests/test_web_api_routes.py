@@ -881,6 +881,102 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
 
+    def test_job_search_hides_blocked_companies_before_pagination_without_deleting_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            config_path = base_dir / "config.yaml"
+            config_path.write_text(yaml.safe_dump({"profile": {"blocked_companies": ["  BLOCKED  "]}}))
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, company, score, status_value in (
+                    ("blocked-high", "Blocked Technology", 99, "ready"),
+                    ("visible-high", "Visible A", 90, "ready"),
+                    ("blocked-middle", "Another blocked Company", 85, "ready"),
+                    ("visible-low", "Visible B", 80, "ready"),
+                    ("visible-filtered", "Visible C", 60, "filtered"),
+                    ("deleted", "Visible D", 95, "ready"),
+                ):
+                    insert_job(db, {**_job(job_id), "company": company})
+                    update_job_score(db, job_id, score, "匹配")
+                    update_job_status(db, job_id, status_value)
+                db.execute("UPDATE jobs SET deleted_at = datetime('now') WHERE id = 'deleted'")
+                db.commit()
+                before = [tuple(row) for row in db.execute("SELECT id, score, status, deleted_at FROM jobs ORDER BY id")]
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            for offset, expected_id in ((0, "visible-high"), (1, "visible-low")):
+                status, _, body = self._request(f"/api/jobs/search?status=ready&sort_by=score&limit=1&offset={offset}")
+                self.assertTrue(status.startswith("200"), body)
+                payload = json.loads(body)
+                self.assertEqual([job["id"] for job in payload["items"]], [expected_id])
+                self.assertEqual(payload["total"], 2)
+                self.assertEqual(payload["all_total"], 3)
+
+            config_path.write_text(yaml.safe_dump({"profile": {"blocked_companies": []}}))
+            status, _, body = self._request("/api/jobs/search?status=ready&sort_by=score")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual([job["id"] for job in payload["items"]], ["blocked-high", "visible-high", "blocked-middle", "visible-low"])
+            self.assertEqual(payload["total"], 4)
+            self.assertEqual(payload["all_total"], 5)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                self.assertEqual(
+                    [tuple(row) for row in db.execute("SELECT id, score, status, deleted_at FROM jobs ORDER BY id")], before
+                )
+            finally:
+                db.close()
+
+    def test_job_search_combines_blacklist_with_city_filters_and_pagination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(yaml.safe_dump({"profile": {"blocked_companies": ["blocked"]}}))
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, company, city, score in (
+                    ("blocked-sh", "Blocked Technology", "上海·浦东", 99),
+                    ("visible-sh", "Visible A", "上海·徐汇", 90),
+                    ("visible-bj", "Visible B", "北京", 80),
+                    ("outside-cities", "Visible C", "深圳", 70),
+                ):
+                    insert_job(db, {**_job(job_id), "company": company, "city": city, "title": "前端实习生"})
+                    update_job_score(db, job_id, score, "匹配")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            for offset, expected_id in ((0, "visible-sh"), (1, "visible-bj")):
+                status, _, body = self._request(
+                    f"/api/jobs/search?city={quote('上海')}&city={quote('北京')}&sort_by=score&limit=1&offset={offset}"
+                )
+                self.assertTrue(status.startswith("200"), body)
+                payload = json.loads(body)
+                self.assertEqual([job["id"] for job in payload["items"]], [expected_id])
+                self.assertEqual(payload["items"][0]["employment_type"], "internship")
+                self.assertEqual(payload["total"], 2)
+                self.assertEqual(payload["all_total"], 3)
+                self.assertCountEqual(payload["city_options"], ["上海", "北京", "深圳"])
+
+    def test_job_search_treats_blacklist_rules_as_literal_substrings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(yaml.safe_dump({"profile": {"blocked_companies": ["100%", "_hold", " "]}}))
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, company in (("percent", "100% Real"), ("underscore", "My_Holdings"), ("visible", "100x Real Holdings")):
+                    insert_job(db, {**_job(job_id), "company": company})
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            status, _, body = self._request("/api/jobs/search")
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body)
+            self.assertEqual([job["id"] for job in payload["items"]], ["visible"])
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(payload["all_total"], 1)
+
     def test_job_search_supports_repeated_multi_select_filters(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
