@@ -282,6 +282,8 @@ export default function ConfigPage() {
   const bossTheoreticalPages = bossEstimateKeywords.length * bossEstimateCities.length * bossEstimateMaxPages
   const bossDailySearchLimit = Math.max(Number(config.collection?.daily_search_page_limit) || 60, 1)
   const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
+  const guidePlatform = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[])
+    .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
 
   return (
     <div className="h-full overflow-y-auto space-y-4 pr-4">
@@ -297,17 +299,19 @@ export default function ConfigPage() {
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3 h-3 mr-1" />重置</Button>
-            <Button size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
+            <Button data-tour="config-save" size="sm" onClick={saveConfig} disabled={saving || !dirty}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
           </div>
         </div>
 
         {/* Profile Section */}
         <SectionCard title="个人信息" sectionKey="profile" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
-            <ResumeUploadSection
-              currentResumePath={config.profile?.resume_path || ''}
-              updateConfig={updateConfig}
-            />
+            <div data-tour="resume-upload">
+              <ResumeUploadSection
+                currentResumePath={config.profile?.resume_path || ''}
+                updateConfig={updateConfig}
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <Field label="最高学历">
                 <Select value={config.profile?.education || ''} onChange={e => updateConfig('profile.education', e.target.value)}>
@@ -428,8 +432,8 @@ export default function ConfigPage() {
               const cityInput = cities.join(', ')
               const bossFilters = search.filters && typeof search.filters === 'object' ? search.filters : {}
               return (
-                <div key={platform} className={`rounded-2xl border p-4 ${enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
-                  <div className="flex items-center justify-between gap-3">
+                <div key={platform} data-tour={!guidePlatform && platform === 'boss' ? 'search-city' : undefined} className={`rounded-2xl border p-4 ${enabled ? 'border-primary/30 bg-surface' : 'border-card-border bg-card opacity-70'}`}>
+                  <div data-tour={!guidePlatform && platform === 'boss' ? 'search-keywords' : undefined} className="flex items-center justify-between gap-3">
                     <label className="flex items-center gap-2 text-sm font-black text-foreground">
                       <input type="checkbox" checked={enabled} onChange={event => setPlatformEnabled(platform, event.target.checked)} className="h-4 w-4 accent-primary" />
                       {label}
@@ -437,11 +441,12 @@ export default function ConfigPage() {
                     <span className="text-xs text-muted">{enabled ? '已启用' : '未启用'}</span>
                   </div>
                   {enabled && <div className="mt-4 space-y-3">
-                    <Field label="搜索关键词" hint={platform === 'boss' ? '输入岗位后请按回车键确认，多岗位用","隔开，否则配置无法保存。' : undefined}>
+                    <Field label="搜索关键词" dataTour={platform === guidePlatform ? 'search-keywords' : undefined} hint={platform === 'boss' ? '输入岗位后请按回车键确认，多岗位用","隔开，否则配置无法保存。' : undefined}>
                       <TagsInput value={Array.isArray(search.keywords) ? search.keywords : []} onChange={value => updatePlatformSearch(platform, 'keywords', value)} placeholder="如：人力、产品运营" />
                     </Field>
-                    <Field label="搜索城市">
+                    <Field label="搜索城市" dataTour={platform === guidePlatform && platform !== 'boss' ? 'search-city' : undefined}>
                       {platform === 'boss' ? <CityMultiSelect
+                        tourTarget={platform === guidePlatform ? 'search-city' : undefined}
                         options={cityOptions}
                         value={cities}
                         onChange={value => updatePlatformCities(platform, value)}
@@ -556,7 +561,7 @@ export default function ConfigPage() {
         {/* AI Section */}
         <SectionCard title="AI 设置" sectionKey="ai" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
-            <Field label="提供商">
+            <Field label="提供商" dataTour="ai-fields">
               <Select
                 value={config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')}
                 onChange={e => handleAiServiceChange(e.target.value as AiService)}
@@ -851,6 +856,7 @@ function SectionCard({ title, sectionKey, expanded, toggle, children }: {
   return (
     <Card>
       <button
+        data-tour={sectionKey === 'ai' ? 'ai-section' : undefined}
         className="w-full flex items-center justify-between p-4 transition-colors hover:bg-surface"
         onClick={() => toggle(sectionKey)}
       >
@@ -862,9 +868,9 @@ function SectionCard({ title, sectionKey, expanded, toggle, children }: {
   )
 }
 
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+function Field({ label, children, hint, dataTour }: { label: string; children: React.ReactNode; hint?: string; dataTour?: string }) {
   return (
-    <div>
+    <div data-tour={dataTour}>
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
         <label className="block text-xs text-foreground">{label}</label>
         {hint && <span className="text-[11px] leading-4 text-muted">{hint}</span>}

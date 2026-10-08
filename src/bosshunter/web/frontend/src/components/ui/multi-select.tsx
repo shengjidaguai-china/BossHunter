@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 
 interface MultiSelectOption {
@@ -15,15 +16,38 @@ interface MultiSelectProps {
 }
 
 export function MultiSelect({ value, options, placeholder, onChange, className, compact = false }: MultiSelectProps) {
+  const detailsRef = useRef<HTMLDetailsElement>(null)
+  const triggerRef = useRef<HTMLElement>(null)
   const selectedLabels = options.filter(option => value.includes(option.value)).map(option => option.label)
   const summary = selectedLabels.length === 0
     ? placeholder
     : selectedLabels.join('、')
   const allSelected = options.length > 0 && options.every(option => value.includes(option.value))
 
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !detailsRef.current?.open) return
+      event.preventDefault()
+      detailsRef.current.open = false
+      triggerRef.current?.focus()
+    }
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (detailsRef.current?.open && event.target instanceof Node && !detailsRef.current.contains(event.target)) {
+        detailsRef.current.open = false
+      }
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+    }
+  }, [])
+
   return (
-    <details className={cn('relative min-w-0', className)}>
+    <details ref={detailsRef} aria-label={`${placeholder}选项`} className={cn('relative min-w-0', className)}>
       <summary
+        ref={triggerRef}
         className={cn(
           'flex h-9 w-full cursor-pointer list-none items-center justify-between rounded-md border border-card-border bg-card px-3 py-1 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 [&::-webkit-details-marker]:hidden',
           compact && 'h-7 px-2 text-xs',

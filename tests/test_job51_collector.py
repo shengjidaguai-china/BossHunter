@@ -485,11 +485,11 @@ class IsInternshipTests(TestCase):
 class SalaryWithinRangeTests(TestCase):
     """_salary_within_range — 薪资范围过滤。"""
 
-    def test_no_filter_passes_all(self):
-        self.assertTrue(_salary_within_range("面议", 0, 0))
+    def test_unknown_salary_uses_shared_default(self):
+        self.assertFalse(_salary_within_range("面议", 0, 0))
 
     def test_unparseable_passes(self):
-        self.assertTrue(_salary_within_range("面议", 10, 30))
+        self.assertTrue(_salary_within_range("面议", 10, 30, {"filter_unparsed_salary": False}))
 
     def test_below_min_rejected(self):
         self.assertFalse(_salary_within_range("5K", 10, 0))
@@ -900,3 +900,72 @@ class CollectSalaryParseErrorTests(TestCase):
         ):
             result = collector.collect(request, self._hooks())
         self.assertEqual(result.status, "completed")
+
+
+class Job51FilterRegressionTests(TestCase):
+    def test_salary_matches_shared_prefilter_and_preserves_config(self):
+        from bosshunter.ai.prefilter import quick_score
+
+        for ratio in (1.0, 1.5, 2.0):
+            for unknown in (False, True):
+                profile = {"salary_min": 12, "salary_max": 20,
+                           "salary_ceil_ratio": ratio, "filter_unparsed_salary": unknown}
+                collector = Job51Collector(config={"profile": profile})
+                for salary in ("10-15K", "10-20K", "12-20K", "15-25K", "20-30K", "5K", "50K", "面议"):
+                    with self.subTest(ratio=ratio, unknown=unknown, salary=salary):
+                        expected = quick_score({"salary": salary}, {"profile": profile})[0] > 0
+                        candidate = JobCandidate("51job", "sample", "IT运维工程师", "示例公司", salary=salary)
+                        self.assertEqual(collector._passes_collector_filters(
+                            candidate, "IT运维", allow_internship=False, salary_min=12, salary_max=20,
+                        ), expected)
+                        self.assertEqual(collector._would_be_collected(
+                            candidate, "IT运维", allow_internship=False, salary_min=12, salary_max=20,
+                            deal_breakers=[], jd_deal_breakers=[], blocked_companies=[],
+                        ), expected)
+
+    def test_title_whitespace_without_english_substring_false_positives(self):
+        for title in ("IT 运维工程师", "IT\u3000运维工程师", "IT 技术支持工程师"):
+            keyword = "IT技术支持" if "支持" in title else "IT运维"
+            self.assertTrue(_is_relevant_to_keyword(title, "", keyword))
+        self.assertFalse(_is_relevant_to_keyword("Waiter", "", "IT主管"))
+        self.assertFalse(_is_relevant_to_keyword("Retail经理", "", "ai"))
+
+    def test_original_pipeline_saves_overlap_jobs_and_spaced_titles(self):
+        import tempfile
+        from pathlib import Path
+        from bosshunter.collection.orchestrator import CollectionOrchestrator
+        from bosshunter.db import get_db, insert_job
+
+        salaries = ["10-15K", "10-20K", "12-20K", "15-25K", "20-30K", "5K", "50K", "12-20K"]
+        items = [{"jobId": str(i), "jobName": "IT 运维工程师" if i != 7 else "财务主管",
+                  "provideSalaryString": salary, "fullCompanyName": "示例公司"}
+                 for i, salary in enumerate(salaries)]
+        wrapper = json.dumps({"http_status": 200, "content_type": "application/json", "body": _ok_body(items)})
+        browser = Job51Browser(evaluate=Mock(return_value=wrapper), close_tab=Mock())
+        profile = {"salary_min": 12, "salary_max": 20, "filter_unparsed_salary": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "isolated.db"
+            conn = get_db(db_path)
+            insert_job(conn, Job51Collector._item_to_candidate(items[2], "上海", "020000", "IT运维").as_job_record())
+            conn.close()
+            with (
+                patch("bosshunter.collection.platforms.job51.Job51Browser", return_value=browser),
+                patch.object(Job51Collector, "_ensure_host_tab", return_value=("fake", False)),
+                patch("bosshunter.collection.platforms.job51.SendWindowChecker.is_active", return_value=True),
+                patch("bosshunter.collection.platforms.job51.should_take_day_off", return_value=False),
+                patch("bosshunter.collection.platforms.job51._wait_or_stop", return_value=False),
+                patch.object(_ApiRateLimiter, "wait_before_request", return_value=True),
+            ):
+                result = CollectionOrchestrator({"profile": profile}, db_path=db_path).run({
+                    "platform_order": ["51job"], "auto_score": False,
+                    "platforms": {"51job": {"keywords": ["IT运维"], "cities": ["上海"],
+                                              "city_codes": {"上海": "020000"}, "max_pages": 1, "sort": "default"}},
+                })
+            state = result["platforms"]["51job"]
+            self.assertEqual(state["new"], 4)
+            self.assertEqual(state["duplicate"], 1)
+            self.assertEqual(state["seen"], 5)
+            self.assertEqual(browser.evaluate.call_count, 1)
+            conn = get_db(db_path)
+            self.assertEqual(conn.execute("select count(*) from jobs").fetchone()[0], 5)
+            conn.close()

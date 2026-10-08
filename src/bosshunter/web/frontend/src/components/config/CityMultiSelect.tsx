@@ -15,6 +15,7 @@ export function CityMultiSelect({
   onRefresh,
   refreshing,
   message,
+  tourTarget,
 }: {
   options: CityOption[]
   value: string[]
@@ -22,6 +23,7 @@ export function CityMultiSelect({
   onRefresh: () => void
   refreshing: boolean
   message: string
+  tourTarget?: string
 }) {
   const [query, setQuery] = useState('')
   const visible = useMemo(() => {
@@ -31,7 +33,7 @@ export function CityMultiSelect({
   const toggle = (name: string) => onChange(value.includes(name) ? value.filter(item => item !== name) : [...value, name])
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
+      <div data-tour={tourTarget} className="flex gap-2">
         <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索城市名或 BOSS 编码" className="min-w-0 flex-1 rounded-xl border border-card-border bg-surface px-3 py-2 text-xs outline-none focus:border-primary" />
         <Button type="button" variant="secondary" size="sm" onClick={onRefresh} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新城市列表'}</Button>
       </div>
