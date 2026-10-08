@@ -112,7 +112,7 @@ export function filterJobs(jobs: Job[], filters: JobFilters) {
     if (filters.sourcePlatform.length > 0 && !filters.sourcePlatform.includes(job.source_platform || 'boss')) return false
     if (filters.city.length > 0 && !filters.city.includes(jobCityBaseName(job.city))) return false
     if (filters.recruitmentType.length > 0 && !filters.recruitmentType.includes(job.recruitment_type || 'unknown')) return false
-    if (filters.education.length > 0 && !filters.education.some(value => value === 'unknown' ? !job.education : (job.education || '').includes(value))) return false
+    if (filters.education.length > 0 && !filters.education.some(value => value === 'unknown' ? !(job.education || '').trim() : (job.education || '').includes(value))) return false
     if (salaryEnabled) {
       const salaryRange = parseMonthlySalaryK(job.salary || '')
       if (!salaryRange) return false
