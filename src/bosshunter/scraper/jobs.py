@@ -146,7 +146,7 @@ def _scrape_jobs_impl(
     def event(**values) -> None:
         if values.get("phase") == "loading_list":
             counts["search_pages"] += 1
-        if values.get("message") == "BOSS 列表预筛不通过":
+        if values.get("increment_filtered") or values.get("message") == "BOSS 列表预筛不通过":
             counts["filtered"] += 1
         emit()
 

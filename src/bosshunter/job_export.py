@@ -10,7 +10,7 @@ import sqlite3
 from typing import Any, Iterable
 
 from bosshunter.cities import get_city_code
-from bosshunter.job_filters import parse_monthly_salary_k
+from bosshunter.job_filters import city_match_clause, parse_monthly_salary_k
 
 
 MAX_EXPORT_JOB_IDS = 1000
@@ -90,15 +90,17 @@ def _filtered_rows(conn: sqlite3.Connection, filters: dict[str, Any] | None = No
 	if keyword:
 		conditions.append("(title LIKE ? OR company LIKE ? OR jd LIKE ? OR score_reason LIKE ?)")
 		params.extend([f"%{keyword}%"] * 4)
-	city = str(filters.get("city") or "").strip()
-	if city:
-		conditions.append("city = ?")
-		params.append(city)
 	def values(name: str) -> list[str]:
 		value = filters.get(name)
 		if isinstance(value, list):
 			return [str(item).strip() for item in value if str(item).strip()]
 		return [str(value).strip()] if str(value or "").strip() else []
+
+	cities = values("city")
+	if cities:
+		city_clause, city_params = city_match_clause(cities)
+		conditions.append(city_clause)
+		params.extend(city_params)
 
 	status_values = values("status")
 	if status_values:

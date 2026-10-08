@@ -5,6 +5,8 @@ Serves:
 - /* → Frontend static files (dist/)
 """
 
+from bosshunter.employment import classify_employment, internship_rejection
+
 import json
 from ipaddress import ip_address
 from urllib.parse import urlsplit
@@ -82,7 +84,7 @@ from bosshunter.collection_run_store import (
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
 )
-from bosshunter.job_filters import parse_monthly_salary_k
+from bosshunter.job_filters import city_base_name, city_match_clause, parse_monthly_salary_k
 from bosshunter.job_export import InvalidJobSelectionError, export_jobs, export_row_count
 from bosshunter.scoring_run_store import (
 	create_scoring_run,
@@ -239,9 +241,11 @@ def _serialize_history_items(items):
 	return serialized
 
 
-def _serialize_job(item):
-	"""Expose outsourcing evidence and greeting state in one API representation."""
+def _serialize_job(item, *, config=None):
+	"""Expose outsourcing, employment, and greeting state in one API representation."""
 	record = serialize_job(dict(item))
+	record["employment_type"] = classify_employment(record)
+	record["employment_review"] = internship_rejection(record, config if config is not None else load_config(CONFIG_PATH))
 	record["greeting_activity"] = greeting_activity.get(str(record.get("id") or ""))
 	raw_issues = record.get("greeting_style_issues")
 	if isinstance(raw_issues, str):
@@ -1157,8 +1161,12 @@ def _score_trace_missing_state(job: dict) -> str:
 
 
 def _query_values(name: str) -> list[str]:
-	"""Read repeated query values while keeping the old single-value form valid."""
-	values = request.query.getall(name)
+	"""Read repeated query values while keeping the old single-value form valid.
+
+	``decode()`` is required: raw query values keep WSGI latin-1 bytes, so Chinese
+	filter values (学历、城市) would never match the database without it.
+	"""
+	values = request.query.decode().getall(name)
 	return [str(value).strip() for value in values if str(value).strip()]
 
 
@@ -1213,6 +1221,11 @@ def api_job_search():
 		placeholders = ",".join("?" for _ in source_platforms)
 		conditions.append(f"COALESCE(source_platform, 'boss') IN ({placeholders})")
 		params.extend(source_platforms)
+	city_filters = _query_values("city")
+	if city_filters:
+		city_clause, city_params = city_match_clause(city_filters)
+		conditions.append(city_clause)
+		params.extend(city_params)
 	if recruitment_types:
 		placeholders = ",".join("?" for _ in recruitment_types)
 		conditions.append(f"COALESCE(recruitment_type, 'unknown') IN ({placeholders})")
@@ -1247,6 +1260,12 @@ def api_job_search():
 	db = _get_web_db()
 	try:
 		all_total = db.execute("SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL").fetchone()[0]
+		city_options = sorted({
+			city_base_name(row[0]) for row in db.execute(
+				"SELECT DISTINCT city FROM jobs"
+				" WHERE deleted_at IS NULL AND TRIM(COALESCE(city, '')) <> ''"
+			).fetchall()
+		})
 		rows = [dict(row) for row in db.execute(query, params).fetchall()]
 		if salary_min is not None or salary_max is not None:
 			filtered_rows = []
@@ -1262,10 +1281,12 @@ def api_job_search():
 				filtered_rows.append(row)
 			rows = filtered_rows
 		total = len(rows)
+		config = load_config(CONFIG_PATH)
 		return _json_response({
-			"items": [_serialize_job(row) for row in rows[offset:offset + limit]],
+			"items": [_serialize_job(row, config=config) for row in rows[offset:offset + limit]],
 			"total": total,
 			"all_total": all_total,
+			"city_options": city_options,
 			"limit": limit,
 			"offset": offset,
 		})

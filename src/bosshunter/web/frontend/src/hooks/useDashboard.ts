@@ -11,6 +11,8 @@ interface ActivityData {
 }
 
 interface Job {
+  employment_type?: string
+  employment_review?: string
   id: string
   source_platform?: 'boss' | 'zhilian' | string
   source_job_id?: string | null

@@ -15,7 +15,7 @@ PlatformId = Literal["boss", "zhilian", "51job", "liepin"]
 def classify_recruitment_type(title: str = "", experience: str = "", jd: str = "") -> str:
     """Classify explicit campus/social recruitment signals conservatively."""
     text = " ".join(str(value or "") for value in (title, experience, jd))
-    if any(marker in text for marker in ("校招", "校园招聘", "应届", "毕业生", "管培生", "实习生")):
+    if any(marker in text for marker in ("校招", "校园招聘", "应届", "毕业生", "管培生")):
         return "campus"
     if any(marker in text for marker in ("社招", "社会招聘")):
         return "experienced"
