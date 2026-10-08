@@ -34,6 +34,14 @@ describe('job multi-select filters', () => {
     ], filters).map(item => item.id)).toEqual(['beijing', 'shanghai-pudong'])
   })
 
+  it('treats space-only education as unknown like server search', () => {
+    const filters: JobFilters = { ...EMPTY_JOB_FILTERS, education: ['unknown'] }
+    expect(filterJobs([
+      job({ id: 'spaces', education: '   ' }),
+      job({ id: 'bachelor' }),
+    ], filters).map(item => item.id)).toEqual(['spaces'])
+  })
+
   it('does not count empty multi-selects as active filters', () => {
     expect(hasActiveJobFilters(EMPTY_JOB_FILTERS)).toBe(false)
     expect(hasActiveJobFilters({ ...EMPTY_JOB_FILTERS, status: ['ready'] })).toBe(true)
