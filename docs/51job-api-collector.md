@@ -155,3 +155,14 @@ collector = (
 - 临时库往返测试：`_init_tables` 自动建两张检查点表；词级 / 页级检查点读写往返正确。
 - 实机冒烟（dev 分支、同一逻辑）：单关键词 `max_pages=50`，探针全部落在有效范围，`totalCount` 把有效末页收窄到 36，保底针全部 ≤ 36，越界页返回 `empty_items` 而非 `non_json`，**无误停**。
 - `tests/test_job51_collector.py` 覆盖响应分级、末页判定、探针规划、异常 fail-closed 与升序断点流程。
+
+
+## 10. 薪资门槛与标题匹配修复（2026-10-07）
+
+51job 探针和正式采集原先要求整个报价区间落在期望薪资范围内，与共享预筛不一致。例如期望 12–20K 时，10–20K、15–25K 被提前排除；标题直接做子串匹配，也会把「IT 运维工程师」排除在「IT运维」之外。
+
+修复复用 `ai/prefilter.py::salary_filter_result`，使两个采集阶段使用与预筛相同的下限、`salary_ceil_ratio` 和 `filter_unparsed_salary` 规则。中文及中英混合词匹配忽略标题空白，纯英文保留词边界；不增加同义词推断。入口及共享调用链不变。
+
+验证：`test_job51_collector.py`、`test_prefilter_salary.py`、`test_collection_orchestrator.py`、`test_job_filters.py` 共 181 tests 和 50 subtests 通过。新增回归覆盖三档上限倍率、未知薪资开关、标题普通/全角空格、英文误匹配，以及模拟 API → 原采集管线 → 临时 SQLite 入库（8 条响应、4 条新增、1 条重复、3 条筛除）。CLI help 检查通过。验证使用隔离数据及模拟网络；未在上游版本执行真实平台采集，不能量化新增提升。
+
+本修复不改变默认 24h 跳过、采样、限速、风控停止、配置保存或其他平台实现。

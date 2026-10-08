@@ -5,6 +5,7 @@ import type { WorkbenchTask } from '@/hooks/useDashboard'
 
 let workbenchPayload: Record<string, unknown> = {}
 let stopResponse: () => Response = () => jsonResponse({})
+let preflightResponse: () => Response = () => jsonResponse({})
 
 function jsonResponse(body: unknown, ok = true) {
   return new Response(JSON.stringify(body), {
@@ -48,6 +49,9 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   if (url.includes('/stop') && init?.method === 'POST') {
     return stopResponse()
   }
+  if (url.startsWith('/api/workbench/preflight')) {
+    return preflightResponse()
+  }
   return jsonResponse({})
 })
 
@@ -55,6 +59,7 @@ describe('DashboardPage workbench task panel', () => {
   beforeEach(() => {
     workbenchPayload = baseWorkbench()
     stopResponse = () => jsonResponse({})
+    preflightResponse = () => jsonResponse({})
     vi.stubGlobal('fetch', fetchMock)
     fetchMock.mockClear()
   })
@@ -62,6 +67,45 @@ describe('DashboardPage workbench task panel', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+  })
+
+  it('starts an interactive guide from an empty workbench and reuses preflight', async () => {
+    render(<DashboardPage view="workbench" />)
+
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    expect(within(guide).getByRole('link', { name: /连接 Chrome/ }).getAttribute('href')).toContain('QUICKSTART.md')
+    expect(within(guide).getByText(/单独采集且关闭自动评分时/)).toBeTruthy()
+    const started = vi.fn()
+    window.addEventListener('bosshunter:start-onboarding', started, { once: true })
+    fireEvent.click(within(guide).getByRole('button', { name: '开始交互引导' }))
+    expect(started).toHaveBeenCalledOnce()
+
+    fireEvent.click(within(guide).getByRole('button', { name: '检查准备情况' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/workbench/preflight?mode=full'))
+  })
+
+  it('does not keep the getting started card above the workbench after jobs have been collected', async () => {
+    workbenchPayload = baseWorkbench({ funnel: { collected: 2 } })
+    render(<DashboardPage view="workbench" />)
+
+    expect(await screen.findByRole('heading', { name: '今日求职行动' })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: '开始使用' })).toBeNull()
+  })
+
+  it('shows setup check failures next to the getting started steps', async () => {
+    preflightResponse = () => jsonResponse({
+      ok: false,
+      checks: [{
+        id: 'resume', title: '简历文件', status: 'error', message: '尚未配置有效简历',
+        detail: '打开“配置 → 个人信息”，上传简历。', action: 'config',
+      }],
+    })
+    render(<DashboardPage view="workbench" />)
+
+    const guide = await screen.findByRole('region', { name: '开始使用' })
+    fireEvent.click(within(guide).getByRole('button', { name: '检查准备情况' }))
+    const results = await within(guide).findByRole('region', { name: '启动检查结果' })
+    expect(within(results).getByRole('status').textContent).toContain('尚未配置有效简历')
   })
 
   it('shows per-job greet progress from task logs', async () => {
