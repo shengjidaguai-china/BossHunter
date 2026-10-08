@@ -1,6 +1,7 @@
 """Pre-filter module - hard filtering before LLM evaluation."""
 
 import re
+from bosshunter.employment import internship_rejection
 
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 
@@ -13,6 +14,9 @@ _ANONYMOUS_COMPANY_PATTERN = re.compile(
 
 def quick_score(job: dict, config: dict) -> tuple[int, str]:
     """Apply hard filters before LLM scoring."""
+    reason = internship_rejection(job, config)
+    if reason:
+        return 0, reason
     profile = config.get("profile", {})
     deal_breakers = profile.get("deal_breakers", [])
     jd_deal_breakers = profile.get("jd_deal_breakers", [])

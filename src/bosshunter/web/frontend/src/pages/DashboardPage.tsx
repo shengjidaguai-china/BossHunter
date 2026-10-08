@@ -19,6 +19,7 @@ import {
   EMPTY_JOB_FILTERS,
   filterJobs,
   hasInvalidSalaryRange,
+  jobCityBaseName,
   useDebouncedValue,
   type JobFilters,
 } from '@/lib/jobFilters'
@@ -411,6 +412,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
     [workbench.pending_confirmation, confirmedDeliveryIds]
+  )
+  const todayCityOptions = useMemo(
+    () => [...new Set(todayJobs.map(job => jobCityBaseName(job.city)).filter(Boolean))].sort(),
+    [todayJobs]
   )
   const debouncedTodayQuery = useDebouncedValue(todayFilters.query, 250)
   const activeTodayFilterCount = Object.values(todayFilters).filter(value => Array.isArray(value) ? value.length > 0 : value !== '').length
@@ -1177,6 +1182,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               resultCount={filteredTodayJobs.length}
               totalCount={todayJobs.length}
               invalidSalary={hasInvalidSalaryRange(todayFilters)}
+              cityOptions={todayCityOptions}
             />
           </div>
         </details>
@@ -1618,7 +1624,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [recycleLoading, setRecycleLoading] = useState(false)
   const [permanentDeleteIds, setPermanentDeleteIds] = useState<string[]>([])
   const [permanentDeleteAcknowledged, setPermanentDeleteAcknowledged] = useState(false)
-  const { items, total, allTotal, loading, error, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
+  const { items, total, allTotal, cityOptions, loading, error, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
   const { workbench: deliveryWorkbench } = useDashboard('workbench')
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
@@ -1626,7 +1632,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
 
   useEffect(() => {
     setPage(0)
-  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.education, filters.recruitmentType])
+  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType])
 
   const toggleSelected = (jobId: string) => {
     setSelectedIds(previous => previous.includes(jobId) ? previous.filter(id => id !== jobId) : [...previous, jobId])
@@ -1814,6 +1820,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
             status: filters.status,
             created_within: filters.createdWithin,
             source_platform: filters.sourcePlatform,
+            city: filters.city,
             education: filters.education,
             recruitment_type: filters.recruitmentType,
           } : {},
@@ -1932,6 +1939,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         invalidSalary={hasInvalidSalaryRange(filters)}
         showStatus
         showSource
+        cityOptions={cityOptions}
       />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>

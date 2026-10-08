@@ -16,6 +16,7 @@ interface JobFilterBarProps {
   invalidSalary?: boolean
   showStatus?: boolean
   showSource?: boolean
+  cityOptions?: string[]
   compact?: boolean
 }
 
@@ -28,6 +29,7 @@ export function JobFilterBar({
   invalidSalary = false,
   showStatus = false,
   showSource = false,
+  cityOptions = [],
   compact = false,
 }: JobFilterBarProps) {
   const controlClass = cn('min-w-0', compact && 'h-7 px-2 text-xs')
@@ -89,6 +91,9 @@ export function JobFilterBar({
             { value: '51job', label: '前程无忧' },
             { value: 'liepin', label: '猎聘' },
           ]} />
+        )}
+        {cityOptions.length > 0 && (
+          <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.city} onChange={value => updateMulti('city', value)} placeholder="城市：全部" options={cityOptions.map(city => ({ value: city, label: city }))} />
         )}
         <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.education} onChange={value => updateMulti('education', value)} placeholder="学历：全部" options={[
           { value: '博士', label: '博士' }, { value: '硕士', label: '硕士' }, { value: '本科', label: '本科' },

@@ -1,6 +1,7 @@
 """Sender module - Auto-send greetings with throttle control."""
 
 import time
+from bosshunter.employment import internship_rejection
 from contextlib import nullcontext
 import json
 from threading import Event
@@ -1081,6 +1082,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         return 0
 
     jobs = get_jobs_ready_to_send(db)
+    type_blocked = [job for job in jobs if internship_rejection(job, config)]
+    send_report["employment_blocked_ids"] = [str(job["id"]) for job in type_blocked]
+    for job in type_blocked:
+        console.print(f"[yellow]跳过岗位：{job.get('title', '')}（{internship_rejection(job, config)}）[/yellow]")
+    jobs = [job for job in jobs if not internship_rejection(job, config)]
     # Review choices made during generation require a separate send confirmation.
     pending_review_ids = config.get("_workbench_pending_review_ids", set())
     jobs = [job for job in jobs if str(job["id"]) not in pending_review_ids]
