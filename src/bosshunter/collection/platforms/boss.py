@@ -125,6 +125,26 @@ JS_VERIFY_INTERNSHIP_FILTER = """(() => {
 })()"""
 
 JS_IS_SCROLL_LIST = "Boolean(document.querySelector('.page-jobs .job-list-container .rec-job-list'))"
+
+JS_VERIFY_SEARCH_PAGE = """
+(() => {
+	const jobCards = document.querySelectorAll('.job-card-wrap').length;
+	if (jobCards > 0) return JSON.stringify({ready: true, reason: 'job_cards_present'});
+	const markers = [
+		'.page-jobs', '.job-list-container', '.search-condition',
+		'.condition-search', '.rec-job-list', '.job-search-sidebar',
+		'.search-job-result', '.job-list',
+	];
+	for (const sel of markers) {
+		if (document.querySelector(sel)) return JSON.stringify({ready: true, reason: 'structure_present'});
+	}
+	const title = String(document.title || '');
+	if (/求职|找工作|招聘信息.*BOSS|BOSS直聘/.test(title) && document.body?.innerText?.length < 500) {
+		return JSON.stringify({ready: false, reason: 'generic_shell_title'});
+	}
+	return JSON.stringify({ready: false, reason: 'no_search_structure'});
+})()
+"""
 # Chrome can defer native scroll events in a hidden tab. The site's public
 # scroll handler must run after moving the viewport to request the next batch.
 JS_DISPATCH_LIST_SCROLL = "window.dispatchEvent(new Event('scroll'))"
@@ -378,6 +398,7 @@ class BossCollector:
         page_failures = 0
         seen_jobs = 0
         incomplete_combos = 0
+        empty_shell_pages = 0
         undecodable_salary: set[str] = set()
         salary_decode_action = _salary_decode_failure_action(self.config)
 
@@ -600,9 +621,17 @@ class BossCollector:
                         continue
                     page_failures = 0
                     if not jobs:
-                        # An empty extraction alone does not prove the search is exhausted.
                         combo_complete = False
-                        hooks.on_event(message="BOSS 搜索页未读取到岗位")
+                        page_state = self.browser.evaluate(worker_target, JS_VERIFY_SEARCH_PAGE)
+                        try:
+                            verified = json.loads(page_state) if isinstance(page_state, str) else page_state
+                        except (json.JSONDecodeError, TypeError):
+                            verified = None
+                        if isinstance(verified, dict) and not verified.get("ready"):
+                            empty_shell_pages += 1
+                            hooks.on_event(message=f"BOSS 搜索页未加载岗位列表（疑似 CDP 导航空壳页：{verified.get('reason', 'unknown')}）")
+                        else:
+                            hooks.on_event(message="BOSS 搜索页未读取到岗位")
                         break
                     fingerprint = frozenset(list_ids(jobs))
                     if fingerprint and fingerprint in page_fingerprints:
@@ -717,6 +746,12 @@ class BossCollector:
             if worker_target:
                 self.browser.close_tab(worker_target)
         if not seen_jobs:
+            if empty_shell_pages > 0:
+                return PlatformCollectionResult(
+                    self.platform, "completed_with_shortage", "cdp_empty_shell",
+                    f"BOSS 本轮未读取到岗位，{empty_shell_pages} 个搜索页缺少岗位列表 DOM（CDP 导航可能触发平台反爬空壳页）。"
+                    "建议：在同一 Chrome 中手动打开搜索页确认岗位正常显示；或尝试重新采集。",
+                )
             return PlatformCollectionResult(
                 self.platform, "completed_with_shortage", "no_jobs_extracted",
                 "BOSS 本轮未读取到岗位，请检查搜索页是否加载完成、登录状态及搜索条件",
