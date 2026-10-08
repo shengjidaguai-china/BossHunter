@@ -72,3 +72,34 @@ it('defaults optimization off and disabling unknown salary filtering follows int
   expect((screen.getByRole('switch', { name: '过滤面议/无法解析薪资' }) as HTMLButtonElement).disabled).toBe(false)
   expect(screen.getByRole('switch', { name: '过滤面议/无法解析薪资' }).getAttribute('aria-checked')).toBe('false')
 })
+
+it('points the guide at the enabled search platform when BOSS is off', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { platforms: { boss: { enabled: false }, zhilian: { enabled: true, search: {} } } }
+      : url.startsWith('/api/cities') ? { cities: [] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+
+  const keyword = await screen.findByPlaceholderText('如：人力、产品运营')
+  const city = screen.getByPlaceholderText('如：深圳')
+  expect(document.querySelector('[data-tour="search-keywords"]')?.contains(keyword)).toBe(true)
+  expect(document.querySelector('[data-tour="search-city"]')?.contains(city)).toBe(true)
+})
+
+it('points the guide at the platform switch when no search platform is enabled', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config'
+      ? { platforms: Object.fromEntries(['boss', 'zhilian', '51job', 'liepin'].map(platform => [platform, { enabled: false }])) }
+      : url.startsWith('/api/cities') ? { cities: [] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+
+  const bossSwitch = await screen.findByRole('checkbox', { name: 'BOSS 直聘' })
+  expect(document.querySelector('[data-tour="search-keywords"]')?.contains(bossSwitch)).toBe(true)
+  expect(document.querySelector('[data-tour="search-city"]')?.contains(bossSwitch)).toBe(true)
+})
