@@ -58,6 +58,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           <NavLink
             key={item.to}
             to={item.to}
+            data-tour={item.to === '/config' ? 'nav-config' : item.to === '/' ? 'nav-workbench' : undefined}
             className={({ isActive }) =>
               `relative flex items-center justify-center gap-3 rounded-xl px-1 py-3 text-[10px] transition-colors md:justify-between md:px-3 md:text-sm ${
                 isActive
