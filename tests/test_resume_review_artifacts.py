@@ -7,6 +7,45 @@ from bosshunter.db import get_db
 
 
 class ResumeMasterPolicyTests(unittest.TestCase):
+    def test_generated_target_header_is_removed_without_touching_experience(self):
+        from bosshunter.ai.resume import _remove_generated_target_header
+
+        source = (
+            "# 候选人\n\n北京｜candidate@example.com\n\n"
+            "**求职方向：新媒体运营负责人｜长顺邓氏制冷**\n\n"
+            "## 工作经历\n### 长顺邓氏制冷｜新媒体运营负责人\n"
+            "- 参与内容制作。\n"
+        )
+        result = _remove_generated_target_header(source)
+
+        self.assertNotIn("求职方向", result)
+        self.assertIn("北京｜candidate@example.com", result)
+        self.assertIn("### 长顺邓氏制冷｜新媒体运营负责人", result)
+        self.assertEqual(_remove_generated_target_header(result), result)
+
+    def test_full_jd_reaches_generation_prompt(self):
+        from bosshunter.ai.resume import _build_resume_prompt
+
+        jd = "岗位介绍。" * 500 + "必须提供小红书运营案例。"
+        prompt = _build_resume_prompt(
+            {"title": "新媒体运营负责人", "company": "招聘公司", "salary": "", "jd": jd},
+            "# 候选人\n真实经历。",
+            3,
+        )
+
+        self.assertIn(jd, prompt)
+        self.assertNotIn("求职方向：新媒体运营负责人｜招聘公司", prompt)
+
+    def test_case_section_projects_cannot_be_silently_dropped(self):
+        from bosshunter.ai.resume import _find_project_preservation_issues
+
+        source = "## 代表性AI传播案例\n### 社媒账号\n- 内容运营。\n### 开源社区\n- 社区协作。\n"
+        candidate = "## 项目经历\n### 社媒账号\n- 内容运营。\n"
+
+        issues = _find_project_preservation_issues(candidate, source)
+
+        self.assertTrue(any("开源社区" in issue for issue in issues))
+
     def test_project_order_can_change_without_triggering_deletion(self):
         from bosshunter.ai.resume import _find_project_preservation_issues
 

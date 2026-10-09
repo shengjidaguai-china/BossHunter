@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 from socketserver import ThreadingMixIn
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 from unittest.mock import MagicMock, patch
@@ -19,6 +19,7 @@ from bosshunter.db import (
     add_history,
     edit_job_greeting,
     get_db,
+    get_score_trace,
     get_jobs_ready_to_send,
     get_unresolved_resume_failures,
     insert_job,
@@ -37,6 +38,14 @@ from threading import Event, Lock
 from bosshunter.scoring_run_store import create_scoring_run, get_scoring_run, update_scoring_run
 from bosshunter.collection_run_store import create_collection_run, update_collection_run
 from bosshunter.web.tasks import TaskAlreadyRunningError, WorkbenchTask, WorkbenchTaskRunner
+
+# datetime.UTC 自 Python 3.11 才提供，而 pyproject.toml 声明支持 >=3.10
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone as _timezone
+
+    UTC = _timezone.utc
 
 
 def _job(job_id: str) -> dict:
@@ -57,6 +66,21 @@ def _job(job_id: str) -> dict:
     }
 
 
+def _agent_score() -> dict:
+    return {
+        "role_summary": "面向企业用户的 AI 产品岗位",
+        "core_duties": {"evidence": "有 AI 产品功能设计和交付经验", "score": 34},
+        "transferable_evidence": {"evidence": "负责过用户调研、方案设计和上线复盘", "score": 21},
+        "hard_requirements": {"evidence": "JD 的产品经验要求已有对应项目事实", "score": 14},
+        "tools_industry": {"evidence": "熟悉 AI 产品与企业服务场景", "score": 8},
+        "practical_fit": {"evidence": "城市和薪资范围可接受", "score": 10},
+        "caps": [],
+        "hard_gaps": [],
+        "reason": "岗位职责与已有 AI 产品交付经历高度相关",
+        "missing": "",
+    }
+
+
 class WebApiRouteTests(unittest.TestCase):
     def setUp(self):
         # Arrange
@@ -66,7 +90,102 @@ class WebApiRouteTests(unittest.TestCase):
         # Cleanup
         server.set_base_dir(self.original_base_dir)
 
-    def _request(self, path: str, method: str = "GET", json_body: dict | None = None):
+    def test_outsourcing_rules_refresh_old_jobs_in_every_review_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, {**_job("outsourcing-review"), "company": "测试供应商"})
+                update_job_score(db, "outsourcing-review", 85, "synthetic score")
+                update_job_status(db, "outsourcing-review", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            paths = {
+                "/api/jobs": lambda payload: payload[0],
+                "/api/jobs/search": lambda payload: payload["items"][0],
+                "/api/jobs/outsourcing-review": lambda payload: payload,
+                "/api/workbench": lambda payload: payload["pending_confirmation"][0],
+            }
+            versions = []
+            for enabled, expected in ((True, "confirmed"), (False, "clean")):
+                (base_dir / "config.yaml").write_text(yaml.safe_dump({
+                    "outsourcing_rules": {"companies_user": ["测试供应商"], "enabled": enabled},
+                }), encoding="utf-8")
+                for path, get_record in paths.items():
+                    with self.subTest(enabled=enabled, path=path):
+                        status, _, body = self._request(path)
+                        self.assertTrue(status.startswith("200"), body)
+                        record = get_record(json.loads(body))
+                        self.assertEqual(record["outsourcing_level"], expected)
+                        self.assertEqual(record["outsourcing_confirmed"], enabled)
+                        self.assertIsInstance(record["outsourcing_matches"], list)
+                        self.assertEqual(record["status"], "ready")
+                versions.append(record["outsourcing_rules_version"])
+            self.assertNotEqual(*versions)
+
+    def test_bad_outsourcing_json_cannot_break_job_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("malformed-outsourcing"))
+                server.set_base_dir(base_dir)
+                for raw in ("1", "null", "{}", '[{"keyword":{}}]'):
+                    db.execute("UPDATE jobs SET outsourcing_matches=?,outsourcing_layers=?", (raw, raw))
+                    db.commit()
+                    status, _, body = self._request("/api/jobs/malformed-outsourcing")
+                    self.assertTrue(status.startswith("200"), body)
+                    record = json.loads(body)
+                    self.assertEqual(record["outsourcing_matches"], [])
+                    self.assertEqual(record["outsourcing_layers"], [])
+            finally:
+                db.close()
+
+    def test_outsourcing_and_greeting_metadata_coexist_across_review_apis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, {**_job("outsourcing-greeting"), "company": "中软国际有限公司"})
+                update_job_status(db, "outsourcing-greeting", "ready")
+                save_generated_greeting_preview(
+                    db, "outsourcing-greeting", original="原始招呼语", optimized="优化招呼语",
+                    style_issues=["表达可以更简洁"], selected_greeting="原始招呼语", selection="pending",
+                )
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            paths = {
+                "/api/jobs": lambda payload: payload[0],
+                "/api/jobs/search": lambda payload: payload["items"][0],
+                "/api/jobs/outsourcing-greeting": lambda payload: payload,
+                "/api/workbench": lambda payload: payload["pending_greetings"][0],
+            }
+            with server.greeting_activity.claim("outsourcing-greeting", "editing"):
+                for path, get_record in paths.items():
+                    with self.subTest(path=path):
+                        status, _, body = self._request(path)
+                        self.assertTrue(status.startswith("200"), body)
+                        record = get_record(json.loads(body))
+                        self.assertEqual(record["outsourcing_level"], "confirmed")
+                        self.assertIs(record["outsourcing_confirmed"], True)
+                        self.assertIsInstance(record["outsourcing_matches"], list)
+                        self.assertEqual(record["greeting_style_issues"], ["表达可以更简洁"])
+                        self.assertEqual(record["greeting_activity"], "editing")
+                        self.assertEqual(record["greeting_selection"], "pending")
+            status, _, body = self._request(
+                "/api/jobs/outsourcing-greeting/greeting-selection", method="POST",
+                json_body={"selection": "optimized", "confirmed": True},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            record = json.loads(body)
+            self.assertEqual(record["outsourcing_level"], "confirmed")
+            self.assertIsInstance(record["outsourcing_matches"], list)
+            self.assertEqual(record["greeting_selection"], "optimized")
+            self.assertEqual(record["greeting_style_issues"], ["表达可以更简洁"])
+
+    def _request(self, path: str, method: str = "GET", json_body: dict | None = None, environ_overrides=None):
         if "?" in path:
             path_info, query_string = path.split("?", 1)
         else:
@@ -80,6 +199,7 @@ class WebApiRouteTests(unittest.TestCase):
 
         request_body = json.dumps(json_body).encode("utf-8") if json_body is not None else b""
         environ = {
+            "REMOTE_ADDR": "127.0.0.1",
             "REQUEST_METHOD": method,
             "PATH_INFO": path_info,
             "QUERY_STRING": query_string,
@@ -97,6 +217,7 @@ class WebApiRouteTests(unittest.TestCase):
             environ["CONTENT_LENGTH"] = str(len(request_body))
             environ["CONTENT_TYPE"] = "application/json"
 
+        environ.update(environ_overrides or {})
         response_iter = server.app(environ, start_response)
         try:
             body = b"".join(
@@ -108,6 +229,27 @@ class WebApiRouteTests(unittest.TestCase):
             if close:
                 close()
         return status_headers["status"], status_headers["headers"], body
+
+    def test_fixed_greeting_settings_validate_and_persist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            server._write_config({"profile": {"greeting_preference": "不要问问题"}})
+            before = server.CONFIG_PATH.read_bytes()
+            for fixed in ("", "   ", "字" * 301, 123):
+                status, _, body = self._request("/api/config", "POST", {
+                    "profile": {"ai_greeting_enabled": False, "fixed_greeting": fixed},
+                })
+                self.assertTrue(status.startswith("400"), body)
+                self.assertEqual(server.CONFIG_PATH.read_bytes(), before)
+            status, _, body = self._request("/api/config", "POST", {
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "您好，我想了解这个岗位。", "greeting_preference": "不要问问题"},
+            })
+            self.assertTrue(status.startswith("200"), body)
+            status, _, body = self._request("/api/config")
+            profile = json.loads(body)["profile"]
+            self.assertFalse(profile["ai_greeting_enabled"])
+            self.assertEqual(profile["fixed_greeting"], "您好，我想了解这个岗位。")
+            self.assertEqual(profile["greeting_preference"], "不要问问题")
 
     def test_model_list_uses_draft_settings_and_preserves_saved_config(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
@@ -203,6 +345,320 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual(json.loads(body), {"error": "Not found"})
         self.assertNotIn("<!doctype html", body.lower())
+
+    def test_agent_state_redacts_credentials_and_advertises_tool_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({"ai": {"api_key": "private-agent-key"}}, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/agent/state")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["api_version"], "v1")
+        self.assertTrue(payload["capabilities"]["collect_without_ai"])
+
+        tools_status, _, tools_body = self._request("/api/agent/tools")
+        self.assertTrue(tools_status.startswith("200"), tools_body)
+        self.assertEqual(
+            [tool["name"] for tool in json.loads(tools_body)["tools"]],
+            [
+                "bosshunter_get_onboarding",
+                "bosshunter_get_state",
+                "bosshunter_preview_preferences",
+                "bosshunter_apply_preferences",
+                "bosshunter_start_workflow",
+                "bosshunter_get_pending_evaluations",
+                "bosshunter_submit_evaluations",
+            ],
+        )
+        self.assertNotIn("private-agent-key", body)
+        self.assertNotIn("api_key", str(payload["preferences"]))
+
+    def test_agent_config_preview_does_not_write_and_apply_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            config_path = base_dir / "config.yaml"
+            config_path.write_text(yaml.safe_dump({"ai": {"api_key": "private-agent-key"}}), encoding="utf-8")
+            server.set_base_dir(base_dir)
+            request = {
+                "preferences": {
+                    "keywords": ["AI 应用工程师"],
+                    "cities": ["杭州"],
+                    "salary": {"min": 20, "max": 35},
+                    "platform_order": ["boss"],
+                    "max_pages": 2,
+                }
+            }
+
+            preview_status, _, preview_body = self._request("/api/agent/config/preview", "POST", request)
+            preview = json.loads(preview_body)
+            self.assertTrue(preview_status.startswith("200"), preview_body)
+            self.assertTrue(preview["requires_confirmation"])
+            self.assertEqual(yaml.safe_load(config_path.read_text(encoding="utf-8")), {"ai": {"api_key": "private-agent-key"}})
+
+            apply_status, _, apply_body = self._request("/api/agent/config/apply", "POST", request)
+            self.assertTrue(apply_status.startswith("400"), apply_body)
+            self.assertTrue(json.loads(apply_body)["requires_confirmation"])
+
+            apply_status, _, apply_body = self._request(
+                "/api/agent/config/apply", "POST", {**request, "confirm": True}
+            )
+
+        payload = json.loads(apply_body)
+        self.assertTrue(apply_status.startswith("200"), apply_body)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["preferences"]["cities"], ["杭州"])
+        self.assertNotIn("private-agent-key", apply_body)
+
+    def test_agent_onboarding_uses_local_preferences_not_platform_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/agent/onboarding")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertTrue(payload["does_not_use_platform_history"])
+        self.assertEqual(payload["profile_source"], "local_configuration")
+        self.assertEqual({item["key"] for item in payload["missing"]}, {"resume", "keywords", "cities"})
+        self.assertFalse(payload["ready_for_collection"])
+        self.assertFalse(payload["ready_for_agent_workflow"])
+
+    def test_agent_can_evaluate_collected_jobs_without_bosshunter_ai_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume\nBuilt AI product features.", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "profile": {"resume_path": str(resume_path)},
+                    "scoring": {"threshold": 71},
+                }, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("agent-evaluation"))
+            finally:
+                db.close()
+
+            context_status, _, context_body = self._request(
+                "/api/agent/evaluations/pending?include_resume=true"
+            )
+            context = json.loads(context_body)
+            self.assertTrue(context_status.startswith("200"), context_body)
+            self.assertEqual(context["resume"]["content"], "# Resume\nBuilt AI product features.")
+            self.assertEqual(context["items"][0]["id"], "agent-evaluation")
+
+            submit_status, _, submit_body = self._request(
+                "/api/agent/evaluations",
+                "POST",
+                {
+                    "evaluations": [{
+                        "job_id": "agent-evaluation",
+                        "score": _agent_score(),
+                        "greeting": "我做过 AI 产品从需求拆解到上线复盘的工作，看到贵司这个岗位很关注实际落地，想和您具体聊聊。",
+                    }],
+                },
+            )
+
+            self.assertTrue(submit_status.startswith("200"), submit_body)
+            self.assertEqual(json.loads(submit_body)["result"]["ready"], ["agent-evaluation"])
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = dict(db.execute("SELECT score, greeting, status FROM jobs WHERE id = ?", ("agent-evaluation",)).fetchone())
+                has_trace, trace = get_score_trace(db, "agent-evaluation")
+                entry = db.execute(
+                    "SELECT action FROM history WHERE job_id = ? ORDER BY id DESC LIMIT 1", ("agent-evaluation",)
+                ).fetchone()
+            finally:
+                db.close()
+
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["score"], 87)
+        self.assertTrue(row["greeting"])
+        self.assertTrue(has_trace)
+        self.assertEqual(trace["final_score"], 87)
+        self.assertEqual(entry["action"], "agent_evaluated")
+
+    def test_agent_task_rejects_unsupported_mode_and_requires_confirmation(self):
+        status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "collect"})
+        self.assertTrue(status.startswith("400"), body)
+        self.assertTrue(json.loads(body)["requires_confirmation"])
+
+        status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "send", "confirm": True})
+        self.assertTrue(status.startswith("403"), body)
+        self.assertIn("不能单独跳过确认发送", json.loads(body)["error"])
+
+    def test_agent_task_starts_full_workflow_with_existing_confirmation_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "profile": {"resume_path": str(resume_path)},
+                    "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]},
+                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]}}},
+                    "ai": {"api_key": "private-agent-key"},
+                }, allow_unicode=True),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            task = {"id": "agent-full-task", "mode": "full", "status": "running"}
+            with (
+                patch.object(server, "collect_preflight_checks", return_value=[]),
+                patch.object(server, "_preflight_messages", return_value=[]),
+                patch.object(server.task_runner, "start", return_value=task) as start,
+            ):
+                status, _, body = self._request("/api/agent/tasks", "POST", {"mode": "full", "confirm": True})
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["task"], task)
+        self.assertIn("人工确认", payload["policy"]["delivery"])
+        self.assertEqual(start.call_args.args[0], "full")
+        self.assertTrue(start.call_args.args[1]["_collection_options"]["auto_score"])
+        self.assertTrue(start.call_args.args[1]["_agent_workflow"])
+
+    def test_agent_local_guard_rejects_remote_rebinding_and_cross_origin(self):
+        denied = [
+            {"REMOTE_ADDR": "192.168.1.5"},
+            {"REMOTE_ADDR": "192.168.1.5", "HTTP_X_FORWARDED_FOR": "127.0.0.1"},
+            {"REMOTE_ADDR": ""},
+            {"HTTP_HOST": "attacker.example:8686"},
+            {"HTTP_HOST": "127.0.0.1:8686", "HTTP_ORIGIN": "https://attacker.example"},
+            {"HTTP_HOST": "127.0.0.1:8686", "HTTP_ORIGIN": "null"},
+            {"HTTP_HOST": "127.0.0.1:invalid"},
+        ]
+        with patch.object(server, "_write_config") as write, patch.object(server, "load_config") as load:
+            for environ in denied:
+                for path, method, payload in [
+                    ("/api/agent/evaluations/pending?include_resume=true", "GET", None),
+                    ("/api/agent/config/apply", "POST", {"preferences": {"score_threshold": 0}, "confirm": True}),
+                ]:
+                    with self.subTest(environ=environ, path=path):
+                        status, _, body = self._request(path, method, payload, environ)
+                        self.assertTrue(status.startswith("403"), body)
+            write.assert_not_called()
+            load.assert_not_called()
+        for peer, host in [("127.0.0.1", "127.0.0.1:8686"), ("::1", "[::1]:8686"), ("::ffff:127.0.0.1", "localhost:8686")]:
+            status, _, body = self._request("/api/agent/tools", environ_overrides={
+                "REMOTE_ADDR": peer, "HTTP_HOST": host, "HTTP_ORIGIN": "http://" + host,
+            })
+            self.assertTrue(status.startswith("200"), body)
+
+    def test_agent_config_apply_rejects_active_task_without_writing(self):
+        with patch.object(server.task_runner, "status", return_value={"active": {"id": "busy"}}), patch.object(server, "_write_config") as write:
+            status, _, body = self._request("/api/agent/config/apply", "POST", {
+                "preferences": {"score_threshold": 0}, "confirm": True,
+            })
+        self.assertTrue(status.startswith("409"), body)
+        write.assert_not_called()
+
+    def test_agent_hard_filters_reject_whole_evaluation_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            server.set_base_dir(base_dir)
+            (base_dir / "config.yaml").write_text(yaml.safe_dump({"profile": {"blocked_companies": ["Blocked"]}}))
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            insert_job(db, _job("allowed"))
+            insert_job(db, {**_job("blocked"), "company": "Blocked"})
+            status, _, body = self._request("/api/agent/evaluations", "POST", {
+                "evaluations": [{"job_id": name, "score": _agent_score(), "greeting": "您好，我有相关产品经验，希望与您进一步交流这个岗位的职责和要求。"} for name in ("allowed", "blocked")],
+            })
+            self.assertTrue(status.startswith("409"), body)
+            self.assertIn("预筛不通过", body)
+            self.assertEqual([row[0] for row in db.execute("SELECT status FROM jobs")], ["pending", "pending"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM score_traces").fetchone()[0], 0)
+            db.close()
+
+    def test_agent_greeting_requires_approval_before_shared_sender_selection(self):
+        from bosshunter.agent_api import validate_agent_evaluations
+        from bosshunter.db import persist_agent_evaluations, get_jobs_ready_to_send, get_jobs_pending_confirmation
+        from bosshunter.ai.greeter import generate_greetings
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "synthetic.db"
+            db = get_db(db_path)
+            insert_job(db, _job("agent-greeting"))
+            evaluations = validate_agent_evaluations([{
+                "job_id": "agent-greeting", "score": _agent_score(),
+                "greeting": "您好，我有相关产品经验，希望与您进一步交流这个岗位的职责和要求。",
+            }], 71)
+            persist_agent_evaluations(db, evaluations)
+            self.assertEqual(get_jobs_ready_to_send(db), [])
+            from bosshunter.executor import sender
+            send_config = {"throttle": {"day_off_probability": 0, "send_windows": []}}
+            with patch.object(sender, "get_db", side_effect=lambda *args, **kwargs: get_db(db_path)), patch.object(sender, "should_take_day_off", return_value=False), patch.object(sender.SendWindowChecker, "is_active", return_value=True), patch.object(sender, "_send_greeting_once") as outbound:
+                self.assertEqual(sender.send_greetings(send_config), 0)
+            self.assertEqual(send_config["_workbench_send_report"]["stop_reason"], "no_ready_jobs")
+            outbound.assert_not_called()
+            self.assertEqual([row["id"] for row in get_jobs_pending_confirmation(db)], ["agent-greeting"])
+            update_job_status(db, "agent-greeting", "approved")
+            add_history(db, "agent-greeting", "approved", "synthetic human confirmation")
+            with patch("bosshunter.ai.greeter.get_db", side_effect=lambda *args, **kwargs: get_db(db_path)):
+                self.assertEqual(generate_greetings({}), 0)
+            # Greeter returns approved jobs to ready; persistent approval must survive.
+            self.assertEqual([row["id"] for row in get_jobs_ready_to_send(db)], ["agent-greeting"])
+            self.assertEqual(get_jobs_pending_confirmation(db), [])
+            # A later evaluation after reset must not reuse old approval.
+            update_job_status(db, "agent-greeting", "pending")
+            db.execute("UPDATE jobs SET greeting_original = 'stale original', greeting_optimized = 'stale optimized', greeting_reviewed_at = CURRENT_TIMESTAMP WHERE id = 'agent-greeting'")
+            db.commit()
+            persist_agent_evaluations(db, evaluations)
+            self.assertEqual(get_jobs_ready_to_send(db), [])
+            refreshed = dict(db.execute("SELECT * FROM jobs WHERE id = 'agent-greeting'").fetchone())
+            self.assertEqual(refreshed["greeting_original"], refreshed["greeting"])
+            self.assertIsNone(refreshed["greeting_optimized"])
+            self.assertIsNone(refreshed["greeting_reviewed_at"])
+            self.assertEqual(refreshed["greeting_selection"], "generated")
+            db.close()
+
+    def test_agent_monitor_disables_automatic_outbound_with_enabled_user_settings(self):
+        task = WorkbenchTask(id="safe-monitor", mode="monitor", label="test")
+        config = {"_agent_workflow": True, "monitor": {"auto_reply_hr_questions": True}, "follow_up": {"enabled": True}}
+        def monitor(safe_config):
+            self.assertFalse(safe_config["monitor"]["auto_reply_hr_questions"])
+            self.assertFalse(safe_config["follow_up"]["enabled"])
+            task.stop_requested.set()
+            return {}
+        with patch.object(server, "_stop_for_active_platform_lock", return_value=False), patch("bosshunter.executor.monitor.monitor_and_send_resumes", side_effect=monitor) as run, patch("bosshunter.executor.monitor.close_monitor_chat_target"), patch.object(server, "_execute_deliver") as deliver:
+            server._execute_monitor(task, config)
+        run.assert_called_once()
+        deliver.assert_not_called()
+        self.assertTrue(config["monitor"]["auto_reply_hr_questions"])
+        self.assertTrue(config["follow_up"]["enabled"])
+
+    def test_agent_full_waits_before_send_and_preserves_monitor_restrictions(self):
+        for confirmed in (False, True):
+            with self.subTest(confirmed=confirmed):
+                task = WorkbenchTask(id="safe-full", mode="full", label="test")
+                config = {"_agent_workflow": True, "scoring": {"threshold": 71}, "_collection_options": {"platform_order": ["boss"]}}
+                def log(current, message):
+                    if message == "等待前端确认投递":
+                        deliver.assert_not_called()
+                        if confirmed:
+                            current.context["confirmed_job_ids"] = ["new-job"]
+                            current.context["confirmation_event"].set()
+                        else:
+                            current.stop_requested.set()
+                with patch.object(server, "_get_web_db", return_value=MagicMock()), patch.object(server, "get_jobs_ready_to_send", return_value=[{"id": "old-approved"}]), patch.object(server, "get_jobs_pending_confirmation", return_value=[{"id": "new-job", "score": 87}]), patch.object(server, "_execute_collect"), patch.object(server, "_execute_deliver") as deliver, patch.object(server, "_execute_monitor") as monitor, patch.object(server, "_wait_for_collection_delivery_cooldown", return_value=False), patch.object(server, "load_config", return_value={"monitor": {"auto_reply_hr_questions": True}}), patch.object(server, "_log", side_effect=log):
+                    server._execute_full(task, config)
+                if confirmed:
+                    deliver.assert_called_once()
+                    self.assertEqual(deliver.call_args.args[1]["_workbench_job_ids"], ["new-job"])
+                    self.assertTrue(monitor.call_args.args[1]["_agent_workflow"])
+                else:
+                    deliver.assert_not_called()
+                    monitor.assert_not_called()
 
     def test_web_assets_serve_javascript_with_windows_safe_mime_type(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -424,6 +880,77 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["all_total"], 4)
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
+
+    def test_job_search_supports_repeated_multi_select_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                fixtures = [
+                    ("boss-ready", "boss", "experienced", "本科", "ready"),
+                    ("zhilian-filtered", "zhilian", "campus", "硕士", "filtered"),
+                    ("liepin-ready", "liepin", "experienced", "大专", "ready"),
+                ]
+                for job_id, platform, recruitment_type, education, status_value in fixtures:
+                    job = _job(job_id)
+                    job.update({"source_platform": platform, "recruitment_type": recruitment_type, "education": education})
+                    insert_job(db, job)
+                    update_job_status(db, job_id, status_value)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/jobs/search?source_platform=boss&source_platform=zhilian&"
+                "recruitment_type=experienced&recruitment_type=campus&status=ready&status=filtered"
+            )
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertCountEqual([job["id"] for job in payload["items"]], ["zhilian-filtered", "boss-ready"])
+
+    def test_job_search_filters_by_city_and_reports_city_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id, city in (("sh", "Shanghai"), ("sh-pd", "Shanghai·Pudong"), ("bj", "Beijing"), ("blank", "")):
+                    job = _job(job_id)
+                    job["city"] = city
+                    insert_job(db, job)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/jobs/search?city=Shanghai&city=Beijing")
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertCountEqual([job["id"] for job in payload["items"]], ["sh", "sh-pd", "bj"])
+        self.assertCountEqual(payload["city_options"], ["Shanghai", "Beijing"])
+
+    def test_job_search_decodes_chinese_query_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                bachelor = _job("bachelor")
+                bachelor.update({"education": "本科", "city": "北京"})
+                insert_job(db, bachelor)
+                master = _job("master")
+                master.update({"education": "硕士", "city": "上海"})
+                insert_job(db, master)
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                f"/api/jobs/search?education={quote('本科')}&city={quote('北京')}"
+            )
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual([job["id"] for job in payload["items"]], ["bachelor"])
 
     def test_job_search_salary_overlap_excludes_unparseable_and_paginates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1019,6 +1546,42 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(row["status"], "sent")
         self.assertEqual([item["action"] for item in history], ["manual_sent"])
 
+    def test_web_api_manual_status_updates_history_and_blocks_sent_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                ready = _job("manual-status-ready")
+                sent = _job("manual-status-sent")
+                insert_job(db, ready)
+                insert_job(db, sent)
+                update_job_status(db, sent["id"], "sent")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/jobs/status", method="POST",
+                json_body={"job_ids": [ready["id"]], "status": "skipped"},
+            )
+            blocked_status, _, blocked_body = self._request(
+                "/api/jobs/status", method="POST",
+                json_body={"job_ids": [sent["id"]], "status": "ready"},
+            )
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = verify_db.execute("SELECT status FROM jobs WHERE id = ?", (ready["id"],)).fetchone()
+                history = verify_db.execute("SELECT action, detail FROM history WHERE job_id = ?", (ready["id"],)).fetchall()
+            finally:
+                verify_db.close()
+
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(json.loads(body)["affected_count"], 1)
+        self.assertTrue(blocked_status.startswith("409"), blocked_body)
+        self.assertEqual(row["status"], "skipped")
+        self.assertEqual(history[0]["action"], "status_changed")
+        self.assertIn("pending", history[0]["detail"])
+
     def test_web_api_cities_returns_bundled_liepin_snapshot(self):
         status, _, body = self._request("/api/cities?platform=liepin")
 
@@ -1176,6 +1739,32 @@ class WebApiRouteTests(unittest.TestCase):
                 method="POST",
                 json_body={"job_ids": ["preview-pending"], "direct_send": True},
             )
+            active_task = WorkbenchTask(id="pending-queue", mode="deliver", label="确认投递")
+            active_task.context.update({"delivering": True, "pending_deliveries": []})
+            runner = WorkbenchTaskRunner()
+            runner._tasks[active_task.id] = active_task
+            with patch.object(server, "task_runner", runner):
+                queued_status, _, queued_body = self._request(
+                    "/api/workbench/deliver", method="POST",
+                    json_body={"job_ids": ["preview-pending"], "direct_send": False},
+                )
+                self.assertTrue(queued_status.startswith("409"), queued_body)
+                self.assertEqual(json.loads(queued_body)["code"], "greeting_review_required")
+                self.assertEqual(active_task.context["pending_deliveries"], [])
+                choice_status, _, choice_body = self._request(
+                    "/api/jobs/preview-pending/greeting-selection", method="POST",
+                    json_body={"selection": "optimized", "confirmed": True},
+                )
+                self.assertTrue(choice_status.startswith("200"), choice_body)
+                self.assertEqual(active_task.context["pending_deliveries"], [])
+                confirmed_status, _, confirmed_body = self._request(
+                    "/api/workbench/deliver", method="POST",
+                    json_body={"job_ids": ["preview-pending"], "direct_send": False},
+                )
+                self.assertTrue(confirmed_status.startswith("200"), confirmed_body)
+                self.assertEqual(active_task.context["pending_deliveries"], [
+                    {"job_ids": ["preview-pending"], "direct_send": False},
+                ])
 
         self.assertTrue(workbench_status.startswith("200"), workbench_body)
         preview = json.loads(workbench_body)["pending_greetings"][0]
@@ -1557,6 +2146,7 @@ class WebApiRouteTests(unittest.TestCase):
             calls.append("collect")
 
         def fake_deliver(task, config):
+            self.assertTrue(config.get("_workbench_live_greeting_settings"))
             calls.append((
                 "deliver",
                 config.get("_workbench_job_ids"),
@@ -1564,6 +2154,12 @@ class WebApiRouteTests(unittest.TestCase):
             ))
 
         def fake_monitor(task, config, **kwargs):
+            with patch.object(server, "load_config", return_value={
+                "profile": {"ai_greeting_enabled": False, "fixed_greeting": "新保存的固定招呼语"},
+            }):
+                refreshed = server._refresh_greeting_settings(config)
+            self.assertEqual(refreshed.get("profile", {}).get("fixed_greeting"), "新保存的固定招呼语")
+            self.assertIs(refreshed["profile"]["ai_greeting_enabled"], False)
             calls.append("monitor")
 
         runner = WorkbenchTaskRunner()
@@ -2258,8 +2854,8 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("400"), body)
         self.assertIn("生成打招呼用语", payload["error"])
 
-    def test_greeting_edit_blocked_while_delivery_task_active(self):
-        # Codex 审计 P2 回归：投递任务运行期间编辑招呼语必须 409，防止平台发旧文本、库里存新文本。
+    def test_greeting_edit_blocked_only_for_job_being_sent(self):
+        # Sending holds only this job until its final database status is recorded.
         active_task = WorkbenchTask(id="active-delivery", mode="deliver", label="确认投递")
         runner = WorkbenchTaskRunner()
         runner._tasks[active_task.id] = active_task
@@ -2275,7 +2871,7 @@ class WebApiRouteTests(unittest.TestCase):
                 db.close()
             server.set_base_dir(base_dir)
 
-            with patch.object(server, "task_runner", runner):
+            with patch.object(server, "task_runner", runner), server.greeting_activity.claim("edit-busy", "sending"):
                 status, _, body = self._request(
                     "/api/jobs/edit-busy/greeting",
                     method="POST",
@@ -2295,8 +2891,8 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["code"], "greeting_edit_busy")
         self.assertEqual(row["greeting"], "原招呼语")
 
-    def test_greeting_edit_blocked_while_monitor_task_active(self):
-        # Codex 审计 P2 回归：monitor 任务内部也会发送，编辑拦截集合必须覆盖 monitor。
+    def test_greeting_edit_allowed_while_monitor_task_active(self):
+        # An idle monitor owns no greeting snapshot and must not block review.
         active_task = WorkbenchTask(id="active-monitor", mode="monitor", label="单独监测")
         runner = WorkbenchTaskRunner()
         runner._tasks[active_task.id] = active_task
@@ -2320,8 +2916,8 @@ class WebApiRouteTests(unittest.TestCase):
                 )
 
         payload = json.loads(body)
-        self.assertTrue(status.startswith("409"), body)
-        self.assertEqual(payload["code"], "greeting_edit_busy")
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(payload["greeting"], "监测期间的新文本")
 
     def test_full_flow_does_not_auto_send_ready_drafts_without_confirmation(self):
         # Codex 审计 P1 回归：只生成过草稿（ready）未经确认，全流程启动不得自动发送积压。
@@ -3836,7 +4432,7 @@ class WebApiRouteTests(unittest.TestCase):
                 patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
                 patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
             ):
-                send_greetings({"_workbench_log": edit_during_send, "throttle": {"daily_limit": 10}})
+                send_greetings({"_workbench_log": edit_during_send, "_workbench_greeting_activity": server.greeting_activity.claim, "throttle": {"daily_limit": 10}})
             db = get_db(db_path)
             try:
                 row = db.execute("SELECT greeting, status FROM jobs WHERE id = 'send-snapshot'").fetchone()
@@ -3847,6 +4443,160 @@ class WebApiRouteTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM history WHERE action = 'greeting_selected'").fetchone()[0], 0)
             finally:
                 db.close()
+
+    def test_send_allows_other_job_edits_and_reads_latest_text_after_throttle(self):
+        from bosshunter.executor.sender import send_greetings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db_path = base_dir / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            for index, job_id in enumerate(["first", "next", "review-only"]):
+                insert_job(db, _job(job_id))
+                update_job_greeting(db, job_id, "原文" + job_id)
+                update_job_status(db, job_id, "ready")
+                update_job_score(db, job_id, 90 - index, "test")
+            db.execute("UPDATE jobs SET greeting_selection = 'pending' WHERE id = 'review-only'")
+            db.commit()
+            db.close()
+            server.set_base_dir(base_dir)
+            sent = []
+
+            def edit(job_id, text):
+                return self._request(
+                    f"/api/jobs/{job_id}/greeting-selection", method="POST",
+                    json_body={"selection": "edited", "greeting": text, "confirmed": True},
+                )
+
+            def fake_send(job, greeting, config):
+                sent.append((job["id"], greeting))
+                self.assertEqual(server.greeting_activity.get(job["id"]), "sending")
+                status, _, body = edit(job["id"], "不能改正在发送的这条")
+                self.assertTrue(status.startswith("409"), body)
+                if job["id"] == "first":
+                    status, _, body = edit("review-only", "只确认版本，不发送")
+                    self.assertTrue(status.startswith("200"), body)
+                return {"success": True}, None
+
+            def during_wait(stop_event):
+                self.assertIsNone(server.greeting_activity.get("next"))
+                status, _, body = edit("next", "发送前最新确认的文字")
+                self.assertTrue(status.startswith("200"), body)
+                return False
+
+            with (
+                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
+                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
+                patch("bosshunter.executor.sender.RequestThrottle.wait", side_effect=during_wait),
+                patch("bosshunter.executor.sender._send_greeting_once", side_effect=fake_send),
+            ):
+                count = send_greetings({
+                    "_workbench_greeting_activity": server.greeting_activity.claim,
+                    "throttle": {"daily_limit": 10},
+                }, db_path=db_path)
+            self.assertEqual(count, 2)
+            self.assertEqual(sent, [("first", "原文first"), ("next", "发送前最新确认的文字")])
+            self.assertIsNone(server.greeting_activity.get("first"))
+            self.assertIsNone(server.greeting_activity.get("next"))
+            db = get_db(db_path)
+            try:
+                row = db.execute("SELECT status, greeting FROM jobs WHERE id = 'review-only'").fetchone()
+                self.assertEqual(dict(row), {"status": "ready", "greeting": "只确认版本，不发送"})
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM history WHERE job_id = 'review-only' AND action = 'sent'").fetchone()[0], 0)
+            finally:
+                db.close()
+
+    def test_generation_locks_only_current_job_and_preserves_new_manual_choice(self):
+        from bosshunter.ai.greeter import generate_greetings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db_path = base_dir / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            for index, job_id in enumerate(["generating-first", "generating-next"]):
+                insert_job(db, _job(job_id))
+                update_job_greeting(db, job_id, "旧草稿")
+                update_job_status(db, job_id, "ready")
+                update_job_score(db, job_id, 90 - index, "test")
+            db.close()
+            server.set_base_dir(base_dir)
+
+            def fake_generate(job, *args):
+                self.assertEqual(job["id"], "generating-first")
+                status, _, body = self._request("/api/jobs/generating-first")
+                self.assertEqual(json.loads(body)["greeting_activity"], "generating")
+                for job_id, expected in [("generating-first", "409"), ("generating-next", "200")]:
+                    status, _, body = self._request(
+                        f"/api/jobs/{job_id}/greeting-selection", method="POST",
+                        json_body={"selection": "edited", "greeting": "用户已确认的版本", "confirmed": True},
+                    )
+                    self.assertTrue(status.startswith(expected), body)
+                return "新生成的第一条"
+
+            config = {
+                "_workbench_greeting_activity": server.greeting_activity.claim,
+                "_workbench_regenerate": True,
+                "ai": {"greeting_max_iterations": 0},
+            }
+            with (
+                patch("bosshunter.ai.greeter._get_resume_summary", return_value="测试简历"),
+                patch("bosshunter.ai.greeter._generate_with_token_retry", side_effect=fake_generate) as generate,
+            ):
+                count = generate_greetings(config, job_ids=["generating-first", "generating-next"], db_path=db_path)
+            self.assertEqual(count, 1)
+            self.assertEqual(generate.call_count, 1)
+            self.assertEqual(config["_workbench_greeting_report"]["skipped_existing"], 1)
+            self.assertIsNone(server.greeting_activity.get("generating-first"))
+            self.assertIsNone(server.greeting_activity.get("generating-next"))
+            db = get_db(db_path)
+            try:
+                row = db.execute("SELECT greeting, greeting_reviewed_at FROM jobs WHERE id = 'generating-next'").fetchone()
+                self.assertEqual(row["greeting"], "用户已确认的版本")
+                self.assertIsNotNone(row["greeting_reviewed_at"])
+            finally:
+                db.close()
+
+    def test_review_choice_between_generation_and_send_does_not_auto_send(self):
+        from bosshunter.ai.greeter import generate_greetings
+        from bosshunter.executor.sender import send_greetings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db_path = base_dir / "data" / "bosshunter.db"
+            db = get_db(db_path)
+            insert_job(db, _job("choose-only"))
+            update_job_status(db, "choose-only", "approved")
+            save_generated_greeting_preview(db, 'choose-only', original='原稿', optimized='优化稿', style_issues=['建议'], selected_greeting='原稿', selection='pending')
+            db.close()
+            server.set_base_dir(base_dir)
+            config = {
+                "_workbench_greeting_activity": server.greeting_activity.claim,
+                "_workbench_job_ids": ["choose-only"],
+                "ai": {"greeting_style_suggestions": True, "greeting_max_iterations": 1},
+                "throttle": {"daily_limit": 10},
+            }
+            with (
+                patch("bosshunter.ai.greeter._get_resume_summary", return_value="测试简历"),
+                patch("bosshunter.ai.greeter._generate_with_token_retry", side_effect=["原稿", "优化稿"]),
+                patch("bosshunter.ai.greeter._review_greeting", return_value={"avg": 1, "critique": "调整措辞"}),
+            ):
+                self.assertEqual(generate_greetings(config, job_ids=["choose-only"], db_path=db_path), 0)
+            status, _, body = self._request(
+                "/api/jobs/choose-only/greeting-selection", method="POST",
+                json_body={"selection": "optimized", "confirmed": True},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            with (
+                patch("bosshunter.executor.sender.should_take_day_off", return_value=False),
+                patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True),
+                patch("bosshunter.executor.sender._send_greeting_once", return_value=({"success": True}, None)) as send,
+            ):
+                self.assertEqual(send_greetings(config, db_path=db_path), 0)
+                send.assert_not_called()
+                # A later, separate send action has a fresh config and may send the saved choice.
+                send_config = {"_workbench_job_ids": ["choose-only"], "_workbench_greeting_activity": server.greeting_activity.claim}
+                self.assertEqual(send_greetings(send_config, db_path=db_path), 1)
+                self.assertEqual(send.call_args.args[1], "优化稿")
 
     def test_detail_edit_confirms_preview_and_cannot_be_regenerated(self):
         with tempfile.TemporaryDirectory() as tmp:

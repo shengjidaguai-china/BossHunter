@@ -64,12 +64,18 @@ class BossCollectorUnitTests(TestCase):
             "industry": ["100001", "100002"],
         }))
 
-        self.assertEqual(query["jobType"], ["0"])
+        self.assertEqual(query["jobType"], ["1901"])
         self.assertEqual(query["experience"], ["102,104"])
         self.assertEqual(query["degree"], ["203"])
         self.assertEqual(query["scale"], ["303"])
         self.assertEqual(query["salary"], ["405"])
         self.assertEqual(query["industry"], ["100001,100002"])
+
+    def test_job_types_use_boss_search_codes(self):
+        for label, code in (("全职", "1901"), ("兼职", "1903"), ("实习", "1902")):
+            with self.subTest(label=label):
+                query = parse_qs(build_boss_filter_query({"job_type": [label]}))
+                self.assertEqual(query, {"jobType": [code]})
 
     def test_boss_filters_reject_unknown_labels_and_query_injection(self):
         normalized = normalize_boss_search_filters({
@@ -167,6 +173,20 @@ class BossCollectorCollectionTests(TestCase):
         )
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason_code, "captcha")
+
+    def test_blocked_risk_stops_collection(self):
+        browser = self._make_browser(risk="blocked")
+        hooks, _ = self._make_hooks()
+        result = BossCollector(
+            browser=browser,
+            throttle_factory=lambda **_kw: self._make_throttle(),
+            randint=lambda _a, _b: 5,
+        ).collect(
+            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=1),
+            hooks,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.reason_code, "blocked")
 
     def test_rate_limit_risk_stops_collection(self):
         browser = self._make_browser(risk="rate_limit")

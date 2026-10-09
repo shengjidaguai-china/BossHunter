@@ -6,10 +6,10 @@ interface FunnelCardsProps {
 }
 
 const funnelSteps = [
-  { key: '采集总数', color: 'text-blue-600', bg: 'bg-blue-50' },
-  { key: '初筛通过', color: 'text-cyan-600', bg: 'bg-cyan-50' },
-  { key: 'AI评分', color: 'text-green-600', bg: 'bg-green-50' },
-  { key: '人工确认', color: 'text-amber-600', bg: 'bg-amber-50' },
+  { key: '采集总数', color: 'text-info', bg: 'bg-info-soft' },
+  { key: '初筛通过', color: 'text-cyan', bg: 'bg-cyan-soft' },
+  { key: 'AI评分', color: 'text-success', bg: 'bg-success-soft' },
+  { key: '人工确认', color: 'text-warning', bg: 'bg-warning-soft' },
 ]
 
 export function FunnelCards({ data }: FunnelCardsProps) {

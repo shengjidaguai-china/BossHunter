@@ -362,10 +362,10 @@ def _structured_score_result(result: dict, *, reviewed: bool = False) -> ScoreRe
     if not isinstance(raw_caps, list):
         return None
     caps = tuple(dict.fromkeys(str(cap) for cap in raw_caps if str(cap) in CAP_LIMITS))
-    summary_reason = str(result.get("reason") or "").strip()
+    summary_reason = _normalize_short_text(result.get("reason"), SUMMARY_REASON_LIMIT)
     if not summary_reason:
         return None
-    missing = str(result.get("missing") or "").strip()
+    missing = _normalize_short_text(result.get("missing"), MISSING_LIMIT)
     role_summary = _normalize_short_text(result.get("role_summary"), ROLE_SUMMARY_LIMIT)
     hard_gaps = _normalize_short_strings(
         result.get("hard_gaps"),
@@ -406,12 +406,18 @@ def _apply_field_aliases(result: dict) -> dict:
 def _validated_score_result(text: str) -> ScoreResult | None:
     """Accept only complete structured evidence scores."""
     result = _parse_score_response(text)
-    if not isinstance(result, dict):
+    return validate_structured_score_payload(result)
+
+
+def validate_structured_score_payload(value: object, *, reviewed: bool = False) -> ScoreResult | None:
+    """Validate a structured score supplied by a local Agent or an AI provider."""
+    if not isinstance(value, dict):
         return None
+    result = dict(value)
     _apply_field_aliases(result)
-    if all(key in result for key in COMPONENT_LIMITS):
-        return _structured_score_result(result)
-    return None
+    if not all(key in result for key in COMPONENT_LIMITS):
+        return None
+    return _structured_score_result(result, reviewed=reviewed)
 
 
 def _score_validation_failure_reason(text: str | None) -> str:

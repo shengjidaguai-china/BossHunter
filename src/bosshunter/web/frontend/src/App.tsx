@@ -3,6 +3,7 @@ import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import DashboardPage from './pages/DashboardPage'
 import ConfigPage from './pages/ConfigPage'
+import { OnboardingTour } from './components/onboarding/OnboardingTour'
 
 function JobsPage() {
   return <DashboardPage view="jobs" />
@@ -29,6 +30,7 @@ export default function App() {
             </Routes>
           </main>
         </div>
+        <OnboardingTour />
       </div>
     </BrowserRouter>
   )

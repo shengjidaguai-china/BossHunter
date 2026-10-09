@@ -154,6 +154,26 @@ class BrowserRuntimeManagerTests(unittest.TestCase):
         self.assertEqual(start_runtime.call_args.args[1], "node")
 
     @patch("bosshunter.browser.runtime.time.sleep")
+    @patch("bosshunter.browser.runtime._is_port_available", return_value=True)
+    @patch("bosshunter.browser.runtime.runtime_health", return_value=None)
+    @patch("bosshunter.browser.runtime.runtime_targets")
+    @patch("bosshunter.browser.runtime.start_runtime")
+    @patch("bosshunter.browser.runtime.check_node_available", return_value={"available": True})
+    def test_startup_probes_once_even_when_deadline_has_expired(
+        self, check_node, start_runtime, runtime_targets, runtime_health, available, sleep
+    ):
+        from bosshunter.browser.runtime import ensure_runtime
+
+        for ready in ([], None):
+            with self.subTest(ready=ready):
+                runtime_targets.reset_mock()
+                runtime_targets.side_effect = [None, ready]
+                result = ensure_runtime({"browser": {"auto_start_proxy": True}}, wait_seconds=0)
+                self.assertEqual(result, ready is not None)
+                self.assertEqual(runtime_targets.call_count, 2)
+                sleep.assert_not_called()
+
+    @patch("bosshunter.browser.runtime.time.sleep")
     @patch("bosshunter.browser.runtime._is_port_available")
     @patch("bosshunter.browser.runtime.runtime_health")
     @patch("bosshunter.browser.runtime.runtime_targets")

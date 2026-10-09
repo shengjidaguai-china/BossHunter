@@ -424,7 +424,9 @@ class ConfirmationUiTests(unittest.TestCase):
         ]
         prompt_ask.return_value = "q"
 
-        result = show_confirmation({})
+        with patch("bosshunter.ui.confirm.recompute_outsourcing") as refresh:
+            result = show_confirmation({})
+        self.assertEqual(refresh.call_args.args[0], db)
 
         self.assertFalse(result)
         self.assertEqual(prompt_ask.call_args_list[0].kwargs["default"], "s")
@@ -456,20 +458,8 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn("最后刷新：", self.source)
         self.assertIn("refreshing && 'animate-spin'", self.source)
 
-    def test_dashboard_keeps_greeting_queue_progress_in_collapsed_details(self):
-        import re
-
-        self.assertIn("if (log.includes('招呼语进度')) return log", self.source)
-        details = re.search(
-            r'<details\b([^>]*aria-label="任务运行状态"[^>]*)>(.*?)</details>',
-            self.source,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(details)
-        self.assertNotRegex(details.group(1), r"\bopen(?:\s|=|$)")
-        self.assertIn("{taskSummary}", details.group(2))
-        self.assertIn("currentTaskStage(visibleTask)", details.group(2))
-        self.assertIn("whitespace-pre-line", details.group(2))
+    # Greeting queue progress is covered by rendered component assertions in
+    # DashboardPage.test.tsx; the task panel no longer uses collapsed details.
 
     def test_dashboard_falls_back_to_concrete_task_status(self):
         self.assertNotIn("return '等待后端返回阶段'", self.source)
@@ -743,7 +733,7 @@ class DashboardPageTests(unittest.TestCase):
         )
 
     def test_dashboard_shows_automatic_task_deadline_and_stop_reason(self):
-        self.assertIn("自动截止：", self.source)
+        self.assertIn("截止 ", self.source)
         self.assertIn("visibleTask.deadline_at", self.source)
         self.assertIn("visibleTask.stop_reason", self.source)
 
@@ -770,7 +760,7 @@ class SidebarTests(unittest.TestCase):
         self.assertIn("md:absolute md:left-3", self.source)
         self.assertIn("mx-auto hidden items-center justify-center gap-2 md:flex", self.source)
         self.assertIn("text-xl", self.source)
-        self.assertIn("text-yellow-400", self.source)
+        self.assertIn("text-star", self.source)
 
     def test_sidebar_fetches_unresolved_reply_count(self):
         # Act / Assert

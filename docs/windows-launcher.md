@@ -29,3 +29,14 @@ Double-click the shortcut. It will:
 3. Start the local workbench at `http://127.0.0.1:8686`.
 
 Log in manually in the dedicated Chrome profile when required. The launcher does not submit applications or bypass the project's manual confirmation safeguards.
+
+## Options
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_bosshunter.ps1 -SkipChrome
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_bosshunter.ps1 -PythonPath C:\path\to\python.exe
+```
+
+`-SkipChrome` reuses an already-running debug Chrome instance. `-PythonPath` forces a specific interpreter, for example a virtual environment Python.
+
+Without `-PythonPath`, the launcher resolves the interpreter the same way the macOS launcher does: the `bosshunter` command on `PATH` first, then the repository virtual environment (`.venv\Scripts\python.exe`), then `py`/`python` on `PATH`. The repository venv is the one that matters for a checkout installed with `pip install -e .`, because such a project is only importable there.

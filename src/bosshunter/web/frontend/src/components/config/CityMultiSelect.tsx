@@ -15,6 +15,7 @@ export function CityMultiSelect({
   onRefresh,
   refreshing,
   message,
+  tourTarget,
 }: {
   options: CityOption[]
   value: string[]
@@ -22,6 +23,7 @@ export function CityMultiSelect({
   onRefresh: () => void
   refreshing: boolean
   message: string
+  tourTarget?: string
 }) {
   const [query, setQuery] = useState('')
   const visible = useMemo(() => {
@@ -31,26 +33,26 @@ export function CityMultiSelect({
   const toggle = (name: string) => onChange(value.includes(name) ? value.filter(item => item !== name) : [...value, name])
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
-        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索城市名或 BOSS 编码" className="min-w-0 flex-1 rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2 text-xs outline-none focus:border-primary" />
+      <div data-tour={tourTarget} className="flex gap-2">
+        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索城市名或 BOSS 编码" className="min-w-0 flex-1 rounded-xl border border-card-border bg-surface px-3 py-2 text-xs outline-none focus:border-primary" />
         <Button type="button" variant="secondary" size="sm" onClick={onRefresh} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新城市列表'}</Button>
       </div>
-      <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl border border-card-border bg-[#FFFCFA] p-2">
+      <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl border border-card-border bg-surface p-2">
         {visible.map(city => {
           const selected = value.includes(city.name)
-          return <button key={city.code} type="button" onClick={() => toggle(city.name)} className={`rounded-lg border px-2 py-1 text-xs transition-colors ${selected ? 'border-primary/50 bg-primary/20 text-primary' : 'border-card-border bg-white text-muted hover:border-primary/40 hover:text-foreground'}`}>{city.name} · {city.code}</button>
+          return <button key={city.code} type="button" onClick={() => toggle(city.name)} className={`rounded-lg border px-2 py-1 text-xs transition-colors ${selected ? 'border-primary/50 bg-primary/20 text-primary' : 'border-card-border bg-card text-muted hover:border-primary/40 hover:text-foreground'}`}>{city.name} · {city.code}</button>
         })}
         {!visible.length && <span className="p-2 text-xs text-muted">没有匹配的城市。</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
         <span>已选 {value.length} 个</span>
         {value.map(name => (
-          <button key={name} type="button" onClick={() => toggle(name)} className="rounded-full bg-[#FFF0E5] px-2 py-1 text-primary" title="点击移除">
+          <button key={name} type="button" onClick={() => toggle(name)} className="rounded-full bg-secondary px-2 py-1 text-primary" title="点击移除">
             {name} ×
           </button>
         ))}
       </div>
-      {message && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">{message}</p>}
+      {message && <p className="rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">{message}</p>}
     </div>
   )
 }

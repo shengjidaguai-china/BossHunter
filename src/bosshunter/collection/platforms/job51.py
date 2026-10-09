@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
+from bosshunter.ai.prefilter import salary_filter_result
 from bosshunter.browser import close_tab, evaluate, get_page_targets, new_tab
 from bosshunter.collection.base import CollectionBlockedError, CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
@@ -289,7 +290,7 @@ def _is_relevant_to_keyword(title: str, jd: str, kw: str) -> bool:
         if core_l.isascii() and any(c.isalpha() for c in core_l):
             if re.search(rf"(?<![a-z0-9]){re.escape(core_l)}(?![a-z0-9])", t):
                 return True
-        elif core_l in t:
+        elif core_l in re.sub(r"\s+", "", t):
             return True
     return False
 
@@ -300,19 +301,14 @@ def _is_internship(title: str, experience: str) -> bool:
     return any(s in t for s in _INTERNSHIP_TITLE_TERMS)
 
 
-def _salary_within_range(salary: str, salary_min: float, salary_max: float) -> bool:
-    """薪资过滤：仅当薪资能解析出区间才对边界做校验（解析失败放行，不误伤）。"""
-    if salary_min <= 0 and salary_max <= 0:
-        return True
-    rng = _parse_salary_range(salary)
-    if rng is None:
-        return True
-    lo, hi = rng
-    if salary_min > 0 and lo < salary_min:
-        return False
-    if salary_max > 0 and hi > salary_max:
-        return False
-    return True
+def _salary_within_range(
+    salary: str, salary_min: float, salary_max: float, profile: dict | None = None,
+) -> bool:
+    """Use the shared salary gate for probes and the final collection pass."""
+    score, _ = salary_filter_result(salary, {
+        **(profile or {}), "salary_min": salary_min, "salary_max": salary_max,
+    })
+    return score > 0
 
 
 def _analyze_api_response(http_status: int, content_type: str, body: str) -> dict:
@@ -552,7 +548,7 @@ class Job51Collector:
         if not _is_relevant_to_keyword(candidate.title, candidate.jd, kw):
             return False
         # collector 增值层：薪资范围
-        if not _salary_within_range(candidate.salary, salary_min, salary_max):
+        if not _salary_within_range(candidate.salary, salary_min, salary_max, self.config.get("profile")):
             return False
         return True
 
@@ -574,7 +570,7 @@ class Job51Collector:
             return False
         if not _is_relevant_to_keyword(candidate.title, candidate.jd, kw):
             return False
-        if not _salary_within_range(candidate.salary, salary_min, salary_max):
+        if not _salary_within_range(candidate.salary, salary_min, salary_max, self.config.get("profile")):
             return False
         return True
 

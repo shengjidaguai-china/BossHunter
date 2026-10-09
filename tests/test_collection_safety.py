@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 
 from bosshunter.config import DEFAULTS, load_config
 from bosshunter.db import (
@@ -23,7 +23,8 @@ class CollectionSafetyTests(unittest.TestCase):
         collection = DEFAULTS["collection"]
         self.assertNotIn("daily_new_jobs_limit", collection)
         self.assertEqual(collection["daily_search_page_limit"], 60)
-        self.assertEqual(collection["daily_detail_page_limit"], 150)
+        self.assertEqual(collection["daily_detail_page_limit"], 900)
+        self.assertEqual(DEFAULTS["safety"]["daily_platform_page_limit"], 1100)
         self.assertEqual(collection["risk_pause_min_minutes"], 5)
         self.assertEqual(collection["risk_pause_max_minutes"], 10)
         self.assertEqual(collection["collection_delay_multiplier"], 1.5)
@@ -61,6 +62,31 @@ platforms:
         self.assertNotIn("daily_new_jobs_limit", config["collection"])
         for platform in ("boss", "zhilian", "51job"):
             self.assertNotIn("target_count", config["platforms"][platform]["search"])
+
+    def test_default_budget_allows_search_and_detail_then_preserves_shared_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                db.executemany(
+                    "INSERT INTO platform_access_events (platform, stage, action) VALUES ('boss', 'collection', ?)",
+                    [("search_page",)] * 60 + [("detail_page",)] * 899,
+                )
+                db.commit()
+                guard = PlatformAccessGuard(db, DEFAULTS, "collection")
+                detail_limit = DEFAULTS["collection"]["daily_detail_page_limit"]
+                guard.reserve("detail_page", daily_limit=detail_limit)
+                with self.assertRaises(PlatformSafetyStop) as raised:
+                    guard.reserve("detail_page", daily_limit=detail_limit)
+                self.assertEqual(raised.exception.reason, "daily_detail_page_limit")
+                sender = PlatformAccessGuard(db, DEFAULTS, "send")
+                for _ in range(140):
+                    sender.reserve("job_page")
+                with self.assertRaises(PlatformSafetyStop) as raised:
+                    sender.reserve("job_page")
+                self.assertEqual(raised.exception.reason, "daily_platform_page_limit")
+                self.assertEqual(count_platform_access_today(db), 1100)
+            finally:
+                db.close()
 
     def test_daily_access_limit_stops_before_the_next_page(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,12 +144,12 @@ platforms:
             reopened.close()
 
     def test_collection_risk_stops_and_records_safe_reason(self):
-        db = Mock()
-        progress = Mock()
+        db = get_db(Path(":memory:"))
+        progress = MagicMock()
         progress.add_task.return_value = "task"
-        context = Mock()
-        context.__enter__ = Mock(return_value=progress)
-        context.__exit__ = Mock(return_value=False)
+        context = MagicMock()
+        context.__enter__ = MagicMock(return_value=progress)
+        context.__exit__ = MagicMock(return_value=False)
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 1},
@@ -148,12 +174,12 @@ platforms:
         self.assertLessEqual(lock_call.kwargs["minutes"], 10)
 
     def test_transient_collection_risk_is_ignored_without_locking(self):
-        db = Mock()
-        progress = Mock()
+        db = get_db(Path(":memory:"))
+        progress = MagicMock()
         progress.add_task.return_value = "task"
-        context = Mock()
-        context.__enter__ = Mock(return_value=progress)
-        context.__exit__ = Mock(return_value=False)
+        context = MagicMock()
+        context.__enter__ = MagicMock(return_value=progress)
+        context.__exit__ = MagicMock(return_value=False)
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 1},
@@ -169,6 +195,7 @@ platforms:
                  side_effect=[
                      json.dumps({"risk": "blocked", "evidence": "blocked_page"}),
                      json.dumps({"risk": None}),
+                     json.dumps({}),  # Font discovery: this fixture has no custom font.
                      False,
                      json.dumps([]),
                  ],
@@ -183,12 +210,12 @@ platforms:
         guard_cls.return_value.lock.assert_not_called()
 
     def test_consecutive_page_failures_end_collection_without_risk_lock(self):
-        db = Mock()
-        progress = Mock()
+        db = get_db(Path(":memory:"))
+        progress = MagicMock()
         progress.add_task.return_value = "task"
-        context = Mock()
-        context.__enter__ = Mock(return_value=progress)
-        context.__exit__ = Mock(return_value=False)
+        context = MagicMock()
+        context.__enter__ = MagicMock(return_value=progress)
+        context.__exit__ = MagicMock(return_value=False)
         config = {
             "profile": {"target_cities": ["北京"]},
             "search": {"max_pages": 3},

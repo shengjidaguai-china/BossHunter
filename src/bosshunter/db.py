@@ -6,16 +6,65 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from bosshunter.outsourcing import (
+    OUTSOURCING_COMPANIES,
+    OUTSOURCING_KEYWORDS_HARD,
+    OUTSOURCING_KEYWORDS_SOFT,
+    Rules,
+    compute_outsourcing_columns,
+    parse_persisted_columns,
+    rules_version,
+)
+
 
 DB_PATH = Path("./data/bosshunter.db")
 MAX_JOB_IDS = 1000
 DELETION_PROTECTED_STATUSES = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 GREETING_ALLOWED_STATUSES = {"ready", "approved", "error"}
 REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}
+MANUAL_STATUS_TARGETS = {"ready", "filtered", "skipped", "rejected"}
+MANUAL_STATUS_PROTECTED = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 DELETION_PROTECTED_HISTORY_ACTIONS = {
     "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
 EXTERNAL_MANUAL_SEND_PLATFORMS = {"zhilian", "51job", "liepin"}
+
+
+def _default_outsourcing_rules() -> Rules:
+    """Built-in default rules used when callers don't pass one.
+
+    Mirrors the built-in vendor registry / keyword lists so the migration
+    backfill and ad-hoc insert paths still detect outsourcing signals
+    without depending on the config loader.
+    """
+    return Rules(
+        enabled=True,
+        companies=OUTSOURCING_COMPANIES,
+        keywords_hard=OUTSOURCING_KEYWORDS_HARD,
+        keywords_soft=OUTSOURCING_KEYWORDS_SOFT,
+        detect_structural=True,
+        use_reply_history=False,
+        use_user_marks=True,
+        forward_propagate_n=2,
+    )
+
+
+def serialize_job(row: dict[str, Any]) -> dict[str, Any]:
+    """Hydrate persisted outsourcing JSON columns into typed fields.
+
+    Callers usually select with ``SELECT *`` and ship rows to the frontend
+    as-is; this helper rewrites the four outsourcing columns into the
+    shape :func:`parse_persisted_columns` returns so the frontend can
+    read ``outsourcing_level`` / ``outsourcing_matches`` directly without
+    parsing JSON itself.
+    """
+    parsed = parse_persisted_columns(row)
+    row["outsourcing_level"] = parsed["outsourcing_level"]
+    row["outsourcing_confirmed"] = parsed["outsourcing_confirmed"]
+    row["outsourcing_matches"] = parsed["outsourcing_matches"]
+    row["outsourcing_layers"] = parsed["outsourcing_layers"]
+    row["outsourcing_updated_at"] = parsed["outsourcing_updated_at"]
+    return row
 
 
 class JobDeletionConfirmationError(ValueError):
@@ -122,6 +171,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     _migrate_v1_3(conn)
     _migrate_v1_4(conn)
     _migrate_v1_5(conn)
+    _migrate_outsourcing(conn)
     _migrate_platform_access_events(conn)
     _init_scoring_runs(conn)
     _init_collection_runs(conn)
@@ -416,8 +466,20 @@ def permanent_delete_jobs(
     return {"requested_count": len(ids), "affected_count": len(ids)}
 
 
-def insert_job_if_new(conn: sqlite3.Connection, job: dict[str, Any]) -> bool:
-    """Insert a job atomically and return True only when a row was inserted."""
+def insert_job_if_new(
+    conn: sqlite3.Connection,
+    job: dict[str, Any],
+    *,
+    rules: Rules | None = None,
+) -> bool:
+    """Insert a job atomically and return True only when a row was inserted.
+
+    When ``rules`` is provided, the outsourcing detection columns are
+    computed from the job and written alongside the row. When omitted, the
+    built-in defaults are used so ad-hoc inserts (tests, replays) keep the
+    table consistent without forcing every caller to plumb a Rules
+    instance.
+    """
     values = {
         "id": str(job.get("id") or ""),
         "title": str(job.get("title") or ""),
@@ -443,16 +505,29 @@ def insert_job_if_new(conn: sqlite3.Connection, job: dict[str, Any]) -> bool:
         "source_keyword": job.get("source_keyword", ""),
         "source_city_code": job.get("source_city_code", ""),
     }
+    os_columns = compute_outsourcing_columns(values, rules or _default_outsourcing_rules())
+    values.update({
+        "outsourcing_level": os_columns["outsourcing_level"],
+        "outsourcing_confirmed": os_columns["outsourcing_confirmed"],
+        "outsourcing_matches": os_columns["outsourcing_matches"],
+        "outsourcing_layers": os_columns["outsourcing_layers"],
+        "outsourcing_updated_at": os_columns["outsourcing_updated_at"],
+        "outsourcing_rules_version": os_columns["outsourcing_rules_version"],
+    })
     cursor = conn.execute(
         """
         INSERT OR IGNORE INTO jobs (
             id, title, company, salary, city, experience, education, recruitment_type, jd,
             hr_name, hr_title, hr_active, company_size, company_industry, url,
-            source_platform, source_job_id, source_keyword, source_city_code
+            source_platform, source_job_id, source_keyword, source_city_code,
+            outsourcing_level, outsourcing_confirmed, outsourcing_matches,
+            outsourcing_layers, outsourcing_updated_at, outsourcing_rules_version
         ) VALUES (
             :id, :title, :company, :salary, :city, :experience, :education, :recruitment_type, :jd,
             :hr_name, :hr_title, :hr_active, :company_size, :company_industry, :url,
-            :source_platform, :source_job_id, :source_keyword, :source_city_code
+            :source_platform, :source_job_id, :source_keyword, :source_city_code,
+            :outsourcing_level, :outsourcing_confirmed, :outsourcing_matches,
+            :outsourcing_layers, :outsourcing_updated_at, :outsourcing_rules_version
         )
         """,
         values,
@@ -461,9 +536,14 @@ def insert_job_if_new(conn: sqlite3.Connection, job: dict[str, Any]) -> bool:
     return cursor.rowcount == 1
 
 
-def insert_job(conn: sqlite3.Connection, job: dict[str, Any]) -> bool:
+def insert_job(
+    conn: sqlite3.Connection,
+    job: dict[str, Any],
+    *,
+    rules: Rules | None = None,
+) -> bool:
     """Backward-compatible insert entry point; returns whether it was new."""
-    return insert_job_if_new(conn, job)
+    return insert_job_if_new(conn, job, rules=rules)
 
 
 def update_job_score(conn: sqlite3.Connection, job_id: str, score: int, reason: str) -> None:
@@ -503,6 +583,78 @@ def persist_job_score_and_trace(
             """,
             (job_id, int(trace.get("schema_version", 1)), trace_json),
         )
+
+
+def persist_agent_evaluations(conn: sqlite3.Connection, evaluations: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Persist validated Agent scores without allowing a delivery-state overwrite."""
+    job_ids = [str(evaluation["job_id"]) for evaluation in evaluations]
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = {
+        str(row["id"]): dict(row)
+        for row in conn.execute(
+            f"SELECT id, status, deleted_at FROM jobs WHERE id IN ({placeholders})", job_ids
+        ).fetchall()
+    }
+    missing = [job_id for job_id in job_ids if job_id not in rows]
+    blocked = [
+        job_id for job_id in job_ids
+        if job_id in rows and (rows[job_id]["deleted_at"] is not None or rows[job_id]["status"] != "pending")
+    ]
+    if missing:
+        raise ValueError("存在不存在的岗位，未保存 Agent 评估：" + "、".join(missing))
+    if blocked:
+        raise ValueError("只能评估未评分的待处理岗位：" + "、".join(blocked))
+
+    ready: list[str] = []
+    filtered: list[str] = []
+    with conn:
+        for evaluation in evaluations:
+            job_id = str(evaluation["job_id"])
+            passed = bool(evaluation["passed"])
+            status = "ready" if passed else "filtered"
+            cursor = conn.execute(
+                "UPDATE jobs SET score = ?, score_reason = ?, greeting = ?, status = ?, "
+                "greeting_original = ?, greeting_optimized = NULL, greeting_style_issues = '[]', "
+                "greeting_selection = 'generated', greeting_reviewed_at = NULL, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending' AND deleted_at IS NULL",
+                (
+                    int(evaluation["score"]),
+                    str(evaluation["reason"]),
+                    str(evaluation["greeting"]) if passed else None,
+                    status,
+                    str(evaluation["greeting"]) if passed else None,
+                    job_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("岗位状态已变化，未保存 Agent 评估")
+            trace = evaluation["trace"]
+            conn.execute(
+                """
+                INSERT INTO score_traces (job_id, schema_version, trace_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    schema_version = excluded.schema_version,
+                    trace_json = excluded.trace_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    job_id,
+                    int(trace.get("schema_version", 1)),
+                    json.dumps(trace, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            detail = json.dumps(
+                {"source": "local_agent", "score": int(evaluation["score"]), "status": status},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            conn.execute(
+                "INSERT INTO history (job_id, action, detail) VALUES (?, 'agent_evaluated', ?)",
+                (job_id, detail),
+            )
+            (ready if passed else filtered).append(job_id)
+    return {"ready": ready, "filtered": filtered}
 
 
 def get_score_trace(conn: sqlite3.Connection, job_id: str) -> tuple[bool, dict[str, Any] | None]:
@@ -781,6 +933,44 @@ def update_job_status(conn: sqlite3.Connection, job_id: str, status: str) -> Non
     conn.commit()
 
 
+def update_jobs_manual_status(conn: sqlite3.Connection, job_ids: Any, status: str) -> dict[str, Any]:
+    """Apply a safe, user-selected status to active jobs and record history."""
+    ids = _normalize_job_ids(job_ids, required=True)
+    target = str(status or "").strip()
+    if target not in MANUAL_STATUS_TARGETS:
+        raise ValueError("不支持的手动岗位状态")
+    rows = _job_rows_by_ids(conn, ids)
+    by_id = {str(row["id"]): row for row in rows}
+    not_found = [job_id for job_id in ids if job_id not in by_id]
+    blocked = []
+    for job_id in ids:
+        row = by_id.get(job_id)
+        if row is None:
+            continue
+        current = str(row.get("status") or "")
+        if current in MANUAL_STATUS_PROTECTED:
+            blocked.append({"job_id": job_id, "reasons": ["已发送或已有回复记录的岗位不可手动回退"]})
+    if not_found or blocked:
+        raise ValueError("存在不能手动修改状态的岗位")
+    changed = [job_id for job_id in ids if str(by_id[job_id].get("status") or "") != target]
+    with conn:
+        for job_id in changed:
+            previous = str(by_id[job_id].get("status") or "")
+            conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+                (target, job_id),
+            )
+            conn.execute(
+                "INSERT INTO history (job_id, action, detail) VALUES (?, 'status_changed', ?)",
+                (job_id, f"用户手动将状态从 {previous or '未知'} 修改为 {target}"),
+            )
+    return {
+        "requested_count": len(ids),
+        "affected_count": len(changed),
+        "unchanged": [job_id for job_id in ids if job_id not in changed],
+    }
+
+
 def add_history(conn: sqlite3.Connection, job_id: str, action: str, detail: str = "") -> None:
     """Add a history record."""
     conn.execute(
@@ -819,7 +1009,16 @@ def get_jobs_pending_confirmation(conn: sqlite3.Connection) -> list[dict]:
         SELECT * FROM jobs
         WHERE status IN ('ready', 'approved')
           AND deleted_at IS NULL
-          AND (greeting IS NULL OR TRIM(greeting) = '')
+          AND (greeting IS NULL OR TRIM(greeting) = ''
+               OR (status = 'ready' AND EXISTS (
+                   SELECT 1 FROM history AS evaluation
+                   WHERE evaluation.job_id = jobs.id AND evaluation.action = 'agent_evaluated'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM history AS approval
+                         WHERE approval.job_id = jobs.id AND approval.action = 'approved'
+                           AND approval.id > evaluation.id
+                     )
+               )))
         ORDER BY score DESC
     """).fetchall()
     return [dict(row) for row in rows]
@@ -839,6 +1038,15 @@ def get_jobs_ready_to_send(
           AND greeting IS NOT NULL
           AND TRIM(greeting) != ''
           {review_filter}
+          AND (status = 'approved' OR NOT EXISTS (
+              SELECT 1 FROM history AS evaluation
+                   WHERE evaluation.job_id = jobs.id AND evaluation.action = 'agent_evaluated'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM history AS approval
+                         WHERE approval.job_id = jobs.id AND approval.action = 'approved'
+                           AND approval.id > evaluation.id
+                     )
+          ))
         ORDER BY score DESC
     """).fetchall()
     return [dict(row) for row in rows]
@@ -973,6 +1181,62 @@ def _migrate_v1_5(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
     conn.commit()
+
+
+def _migrate_outsourcing(conn: sqlite3.Connection) -> None:
+    """Add outsourcing columns, independently of main's numbered migrations.
+
+    First-time backfill uses defaults. Config-aware collection and display
+    entry points refresh all rows with their current rules before use.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    additions = {
+        "outsourcing_level": "TEXT DEFAULT 'clean'",
+        "outsourcing_confirmed": "INTEGER DEFAULT 0",
+        "outsourcing_matches": "TEXT",
+        "outsourcing_layers": "TEXT",
+        "outsourcing_updated_at": "TIMESTAMP",
+        "outsourcing_rules_version": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_outsourcing_level ON jobs(outsourcing_level)")
+    conn.commit()
+    if additions.keys() - cols:
+        recompute_outsourcing(conn, _default_outsourcing_rules())
+
+
+def recompute_outsourcing(conn: sqlite3.Connection, rules: Rules) -> int:
+    """Atomically refresh existing rows using the same rules as new inserts.
+
+    All rows, including recycled ones, use current configuration. Only
+    outdated rule versions or invalid timestamps need computation. Repeated
+    reads preserve timestamps and never change workflow/history data.
+    """
+    changed = 0
+    with conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE outsourcing_rules_version IS NOT ? "
+            "OR datetime(outsourcing_updated_at) IS NULL",
+            (rules_version(rules),),
+        ).fetchall()
+        for row in rows:
+            data = compute_outsourcing_columns(dict(row), rules)
+            conn.execute(
+                """
+                UPDATE jobs SET outsourcing_level = :outsourcing_level,
+                    outsourcing_confirmed = :outsourcing_confirmed,
+                    outsourcing_matches = :outsourcing_matches,
+                    outsourcing_layers = :outsourcing_layers,
+                    outsourcing_updated_at = :outsourcing_updated_at,
+                    outsourcing_rules_version = :outsourcing_rules_version
+                WHERE id = :id
+                """,
+                {**data, "id": row["id"]},
+            )
+            changed += 1
+    return changed
 
 
 def _migrate_platform_access_events(conn: sqlite3.Connection) -> None:
@@ -1374,11 +1638,9 @@ def get_jobs_needing_resume(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-# =====================================================================
-# 51job 断点续采（词级 collect_progress + 页级 collect_progress_page）
+# ==============================================================# 51job 断点续采（词级 collect_progress + 页级 collect_progress_page）
 # 由 51job API-fetch 采集器使用，随该采集器一并引入
-# =====================================================================
-
+# ==============================================================
 
 def _init_collect_progress(conn: sqlite3.Connection) -> None:
     """采集断点续采进度表：记录已完成的 (source, city, keyword) 组合。

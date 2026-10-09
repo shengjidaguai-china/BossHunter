@@ -6,11 +6,12 @@ export interface JobFilters {
   minScore: string
   salaryMin: string
   salaryMax: string
-  status: string
+  status: string[]
   createdWithin: string
-  sourcePlatform: string
-  education: string
-  recruitmentType: string
+  sourcePlatform: string[]
+  city: string[]
+  education: string[]
+  recruitmentType: string[]
 }
 
 export const EMPTY_JOB_FILTERS: JobFilters = {
@@ -18,11 +19,12 @@ export const EMPTY_JOB_FILTERS: JobFilters = {
   minScore: '',
   salaryMin: '',
   salaryMax: '',
-  status: '',
+  status: [],
   createdWithin: '',
-  sourcePlatform: '',
-  education: '',
-  recruitmentType: '',
+  sourcePlatform: [],
+  city: [],
+  education: [],
+  recruitmentType: [],
 }
 
 export function useDebouncedValue<T>(value: T, delay: number) {
@@ -42,7 +44,12 @@ export function hasInvalidSalaryRange(filters: JobFilters) {
 }
 
 export function hasActiveJobFilters(filters: JobFilters) {
-  return Object.values(filters).some(value => value !== '')
+  return Object.values(filters).some(value => Array.isArray(value) ? value.length > 0 : value !== '')
+}
+
+/** Mirrors the backend: platform city labels look like 上海·浦东新区. */
+export function jobCityBaseName(city: string) {
+  return (city || '').split('·')[0].trim()
 }
 
 function parseMonthlySalaryK(salary: string): [number, number] | null {
@@ -101,11 +108,11 @@ export function filterJobs(jobs: Job[], filters: JobFilters) {
       if (!searchable.includes(keyword)) return false
     }
     if (minimumScore !== null && Number(job.score || 0) < minimumScore) return false
-    if (filters.status && job.status !== filters.status) return false
-    if (filters.sourcePlatform && job.source_platform !== filters.sourcePlatform) return false
-    if (filters.recruitmentType && (job.recruitment_type || 'unknown') !== filters.recruitmentType) return false
-    if (filters.education === 'unknown' && job.education) return false
-    if (filters.education && filters.education !== 'unknown' && !(job.education || '').includes(filters.education)) return false
+    if (filters.status.length > 0 && !filters.status.includes(job.status)) return false
+    if (filters.sourcePlatform.length > 0 && !filters.sourcePlatform.includes(job.source_platform || 'boss')) return false
+    if (filters.city.length > 0 && !filters.city.includes(jobCityBaseName(job.city))) return false
+    if (filters.recruitmentType.length > 0 && !filters.recruitmentType.includes(job.recruitment_type || 'unknown')) return false
+    if (filters.education.length > 0 && !filters.education.some(value => value === 'unknown' ? !(job.education || '').trim() : (job.education || '').includes(value))) return false
     if (salaryEnabled) {
       const salaryRange = parseMonthlySalaryK(job.salary || '')
       if (!salaryRange) return false

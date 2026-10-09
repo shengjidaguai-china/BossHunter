@@ -15,6 +15,7 @@ export const STATUS_LABELS: Record<string, string> = {
 }
 
 export const ACTION_LABELS: Record<string, string> = {
+  status_changed: '手动修改状态',
   scrape: '采集',
   scored: '评分',
   filtered: '过滤',

@@ -24,8 +24,10 @@ from bosshunter.collection_run_store import (
     boss_combo_key, boss_resume_options, claim_boss_resume, create_collection_run,
     save_boss_checkpoint, update_collection_run,
 )
-from bosshunter.db import get_db, insert_job_if_new, job_identity_exists
+from bosshunter.db import get_db, insert_job_if_new, job_identity_exists, recompute_outsourcing
+from bosshunter.employment import internship_config_error
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.outsourcing import load_rules
 
 
 SUPPORTED_PLATFORMS = {"boss", "zhilian", "51job", "liepin"}
@@ -124,7 +126,14 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
     }
     if supplied.get("resume_run_id"):
         options["resume_run_id"] = supplied["resume_run_id"]
-    return validate_collection_options(options)
+    normalized = validate_collection_options(options)
+    if "boss" in normalized["platform_order"]:
+        effective = {"profile": config.get("profile", {}), "platforms": {
+            "boss": {"search": {"filters": normalized["platforms"]["boss"]["filters"]}},
+        }}
+        if conflict := internship_config_error(effective):
+            raise ValueError(conflict)
+    return normalized
 
 
 def validate_collection_options(options: dict[str, Any]) -> dict[str, Any]:
@@ -234,6 +243,8 @@ class _SharedProcessor:
         self.stop_event = stop_event
         self.config = config
         self.emit = emit
+        self.outsourcing_rules = load_rules(config)
+        recompute_outsourcing(conn, self.outsourcing_rules)
         self.progress = CollectionProgress(
             run_id=run_id, platform=request.platform, platform_index=platform_index,
             platform_total=platform_total, phase="queued", target=None,
@@ -281,7 +292,7 @@ class _SharedProcessor:
             self.event(message="JD 命中过滤规则")
             return True
         try:
-            inserted = insert_job_if_new(self.conn, candidate.as_job_record())
+            inserted = insert_job_if_new(self.conn, candidate.as_job_record(), rules=self.outsourcing_rules)
         except Exception as exc:
             self.progress.save_failed += 1
             self.event(message=f"保存岗位失败：{type(exc).__name__}")
