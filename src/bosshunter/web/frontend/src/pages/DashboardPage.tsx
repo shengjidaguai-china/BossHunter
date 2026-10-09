@@ -1671,6 +1671,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [filters, setFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [notice, setNotice] = useState('')
+  const [blockedCompanies, setBlockedCompanies] = useState<string[]>([])
+  const [blockingJobId, setBlockingJobId] = useState<string | null>(null)
+  const blockingCompanyRef = useRef(false)
   const [showRecycleBin, setShowRecycleBin] = useState(false)
   const [showScoreDialog, setShowScoreDialog] = useState(false)
   const [quickScoring, setQuickScoring] = useState(false)
@@ -1686,6 +1689,33 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
     : deliveryWorkbench.last_task?.mode === 'deliver' ? deliveryWorkbench.last_task : null
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadBlockedCompanies = () => {
+      fetch('/api/agent/state', { cache: 'no-store', signal: controller.signal })
+        .then(async res => {
+          if (!res.ok) return
+          const data = await res.json()
+          if (!controller.signal.aborted && Array.isArray(data.preferences?.blocked_companies)) {
+            setBlockedCompanies(data.preferences.blocked_companies)
+          }
+        })
+        .catch(() => { /* 点击屏蔽时会重新读取，并显示读取错误。 */ })
+    }
+    loadBlockedCompanies()
+    const handleConfigSaved = () => {
+      loadBlockedCompanies()
+      setSelectedIds([])
+      setPage(0)
+      refreshJobs()
+    }
+    window.addEventListener('bosshunter-config-saved', handleConfigSaved)
+    return () => {
+      controller.abort()
+      window.removeEventListener('bosshunter-config-saved', handleConfigSaved)
+    }
+  }, [refreshJobs])
 
   useEffect(() => {
     setPage(0)
@@ -1769,6 +1799,56 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       setNotice(`已移入回收站 ${result.affected_count || 0} 条岗位。`)
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : '移入回收站失败')
+    }
+  }
+
+  const blockCompany = async (job: Job) => {
+    const company = (job.company || '').trim()
+    if (!company || blockingCompanyRef.current) return
+    blockingCompanyRef.current = true
+    setBlockingJobId(job.id)
+    setNotice('正在读取屏蔽名单并准备配置预览…')
+    try {
+      const readRules = async (): Promise<string[]> => {
+        const res = await fetch('/api/agent/state', { cache: 'no-store' })
+        const data = await res.json()
+        const rules = data.preferences?.blocked_companies
+        if (!res.ok || !Array.isArray(rules) || !rules.every(rule => typeof rule === 'string')) {
+          throw new Error(data.error || '读取屏蔽名单失败，请重试。')
+        }
+        return rules
+      }
+      const current = await readRules()
+      setBlockedCompanies(current)
+      const existing = current.find(rule => rule.trim() && company.toLowerCase().includes(rule.trim().toLowerCase()))
+      if (existing) {
+        setSelectedIds([])
+        setPage(0)
+        refreshJobs()
+        setNotice(`“${company}”已被“${existing}”屏蔽。可在配置 → 个人信息 → 屏蔽公司中解除。`)
+        return
+      }
+      const preferences = { blocked_companies: [...current, company] }
+      await postJobAction('/api/agent/config/preview', { preferences })
+      if (!window.confirm(`配置预览\n新增屏蔽公司：${company}\n已有屏蔽规则：${current.join('、') || '无'}\n\n保存后，公司名包含“${company}”的岗位将从列表隐藏，并跳过后续采集和评分。岗位记录和投递状态保留。\n可在“配置 → 个人信息 → 屏蔽公司”中解除，解除后恢复显示。\n\n确认保存？`)) {
+        setNotice('已取消屏蔽，配置未修改。')
+        return
+      }
+      // 确认期间可能在其他页面修改了名单，避免用旧预览覆盖新规则。
+      const latest = await readRules()
+      if (JSON.stringify(latest) !== JSON.stringify(current)) {
+        setBlockedCompanies(latest)
+        throw new Error('屏蔽名单已变化，请重新点击“屏蔽公司”查看最新预览。')
+      }
+      const result = await postJobAction('/api/agent/config/apply', { preferences, confirm: true })
+      setBlockedCompanies(result.preferences.blocked_companies)
+      window.dispatchEvent(new Event('bosshunter-config-saved'))
+      setNotice(`已屏蔽“${company}”，匹配岗位已从列表隐藏，记录保留；解除屏蔽后恢复显示。`)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '屏蔽公司失败，请重试。')
+    } finally {
+      blockingCompanyRef.current = false
+      setBlockingJobId(null)
     }
   }
 
@@ -2044,6 +2124,9 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         onSoftDelete={job => void softDelete([job.id])}
         onMarkManuallySent={job => void markManuallySent(job)}
         onStatusChange={changeJobStatus}
+        onBlockCompany={job => void blockCompany(job)}
+        blockedCompanies={blockedCompanies}
+        blockingJobId={blockingJobId}
         loading={loading}
         sortBy={sortBy}
         sortOrder={sortOrder}
