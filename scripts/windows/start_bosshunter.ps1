@@ -59,7 +59,7 @@ $Chrome = $ChromeCandidates | Select-Object -First 1
 $ChromeProfile = Join-Path $env:LOCALAPPDATA "BossHunterChrome"
 $ChromeArguments = @(
 	"--remote-debugging-port=9222",
-	"--user-data-dir=$ChromeProfile",
+	"--user-data-dir=`"$ChromeProfile`"",
 	"https://www.zhipin.com"
 )
 
@@ -105,7 +105,7 @@ for ($i = 0; $i -lt 20; $i++) {
 if (-not $SkipChrome) {
 	Start-Process -FilePath $Chrome -ArgumentList @(
 		"--remote-debugging-port=9222",
-		"--user-data-dir=$ChromeProfile",
+		"--user-data-dir=`"$ChromeProfile`"",
 		"http://127.0.0.1:8686"
 	)
 }
