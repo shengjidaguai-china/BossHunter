@@ -608,8 +608,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     try {
       setModePending(preflightMode)
       setNotice('正在重新检查运行环境...')
-      await runPreflight(preflightMode)
-      setNotice('')
+      const ok = await runPreflight(preflightMode)
+      setNotice(ok ? `${preflightMode === 'full' ? '全流程' : '任务'}预检通过，可以开始任务。` : '')
     } catch {
       setNotice('重新检查失败，请确认 BossHunter 后端仍在运行。')
     } finally {

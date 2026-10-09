@@ -56,6 +56,28 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
 })
 
 describe('DashboardPage workbench task panel', () => {
+  it('keeps failed checks visible and reports success after retry without starting a task', async () => {
+    preflightResponse = () => jsonResponse({
+      ok: false,
+      checks: [{ id: 'chrome_connection', title: 'Chrome 远程调试', status: 'error', message: 'Chrome 未连接', detail: '' }],
+    })
+    render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '全流程预检' }))
+    const panel = await screen.findByRole('region', { name: '启动检查结果' })
+    fireEvent.click(within(panel).getByRole('button', { name: '重新检查' }))
+    await waitFor(() => expect(screen.queryByText('正在重新检查运行环境...')).toBeNull())
+    expect(screen.getByRole('region', { name: '启动检查结果' })).toBeTruthy()
+    expect(screen.queryByText('全流程预检通过，可以开始任务。')).toBeNull()
+
+    preflightResponse = () => jsonResponse({ ok: true, checks: [
+      { id: 'chrome_connection', title: 'Chrome 远程调试', status: 'pass', message: 'Chrome 已连接', detail: '' },
+    ] })
+    fireEvent.click(within(panel).getByRole('button', { name: '重新检查' }))
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('全流程预检通过，可以开始任务。'))
+    expect(screen.queryByRole('region', { name: '启动检查结果' })).toBeNull()
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/start'))).toBe(false)
+  })
+
   beforeEach(() => {
     workbenchPayload = baseWorkbench()
     stopResponse = () => jsonResponse({})
