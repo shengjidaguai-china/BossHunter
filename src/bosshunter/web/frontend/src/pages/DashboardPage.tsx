@@ -1,6 +1,6 @@
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
+import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type OutsourcingEvidence, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
@@ -1501,6 +1501,22 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
   const [notice, setNotice] = useState('')
   const [reviewed, setReviewed] = useState(Boolean(job.greeting_reviewed_at))
   const [selectionPending, setSelectionPending] = useState(job.greeting_selection === 'pending')
+  const [outsourcingEvidence, setOutsourcingEvidence] = useState<OutsourcingEvidence[]>(job.outsourcing_evidence || [])
+  const [outsourcingLabel, setOutsourcingLabel] = useState(job.outsourcing_label || null)
+  const [labelBusy, setLabelBusy] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    void fetch(`/api/jobs/${job.id}`, { cache: 'no-store' }).then(async res => {
+      if (!res.ok) return null
+      return res.json()
+    }).then(detail => {
+      if (!active || !detail) return
+      setOutsourcingEvidence(Array.isArray(detail.outsourcing_evidence) ? detail.outsourcing_evidence : [])
+      setOutsourcingLabel(detail.outsourcing_label || null)
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [job.id])
 
   const saveGreeting = async () => {
     const text = greeting.trim()
@@ -1589,6 +1605,27 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
     }
   }
 
+  const updateOutsourcingLabel = async (label: 'confirmed' | 'not_outsourcing' | 'clear') => {
+    setLabelBusy(true)
+    setNotice('')
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/outsourcing-label`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || '外包标记保存失败')
+      setOutsourcingEvidence(Array.isArray(data.evidence) ? data.evidence : [])
+      setOutsourcingLabel(data.label || null)
+      setNotice(label === 'clear' ? '已撤销人工标记' : label === 'confirmed' ? '已标记为外包' : '已标记为误报')
+      onChanged?.()
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '外包标记保存失败')
+    } finally {
+      setLabelBusy(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
       <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
@@ -1608,6 +1645,29 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           <InfoBlock label="来源平台" value={job.source_platform && job.source_platform !== 'boss' && PLATFORM_LABELS[job.source_platform] ? `${PLATFORM_LABELS[job.source_platform]}｜当前只开放采集` : 'BOSS 直聘'} />
           <InfoBlock label="匹配分" value={String(job.score || '-')} />
           <InfoBlock label="定制简历" value={job.resume_path || '未生成'} />
+        </div>
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-black">外包识别证据</div>
+              <div className="mt-1 text-xs text-muted">规则、HR 回复和跨岗位关联均保留来源；不会改变投递状态。</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant={outsourcingLabel?.label === 'confirmed' ? 'default' : 'secondary'} disabled={labelBusy} onClick={() => void updateOutsourcingLabel('confirmed')}>标记外包</Button>
+              <Button size="sm" variant={outsourcingLabel?.label === 'not_outsourcing' ? 'default' : 'secondary'} disabled={labelBusy} onClick={() => void updateOutsourcingLabel('not_outsourcing')}>标记误报</Button>
+              {outsourcingLabel && <Button size="sm" variant="ghost" disabled={labelBusy} onClick={() => void updateOutsourcingLabel('clear')}>撤销标记</Button>}
+            </div>
+          </div>
+          {outsourcingEvidence.length ? (
+            <div className="mt-3 space-y-2">
+              {outsourcingEvidence.map(item => (
+                <div key={item.id} className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-2 font-bold"><span>{item.layer}</span><span>{item.source === 'reply' ? 'HR回复' : item.source === 'user' ? '人工' : item.source === 'propagated' ? '同公司关联' : '规则'}</span>{item.keyword && <span className="text-primary">{item.keyword}</span>}<span className="ml-auto text-muted">{item.created_at || ''}</span></div>
+                  {item.excerpt && <div className="mt-1 line-clamp-2 text-muted">{item.excerpt}</div>}
+                </div>
+              ))}
+            </div>
+          ) : <div className="mt-3 text-xs text-muted">暂无可展示证据</div>}
         </div>
         <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">评分理由</div>
