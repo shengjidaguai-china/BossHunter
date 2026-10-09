@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type OutsourcingEvidence, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
+import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
@@ -13,12 +14,14 @@ import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
 import { RecentActivity } from '@/components/dashboard/RecentActivity'
 import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
+import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
 import { PLATFORM_LABELS } from '@/lib/platforms'
 import {
   EMPTY_JOB_FILTERS,
   filterJobs,
   hasInvalidSalaryRange,
+  jobCityBaseName,
   useDebouncedValue,
   type JobFilters,
 } from '@/lib/jobFilters'
@@ -364,6 +367,49 @@ function PreflightPanel({
   )
 }
 
+function GettingStartedCard({
+  onCheck,
+  checking,
+  notice,
+  checks,
+  onRetry,
+}: {
+  onCheck: () => void
+  checking: boolean
+  notice: string
+  checks: PreflightCheck[]
+  onRetry: () => void
+}) {
+  return (
+    <section aria-label="开始使用" className="rounded-2xl border border-primary/30 bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="mb-1 flex items-center gap-2">
+            <span className="rounded-md bg-primary/15 px-2 py-0.5 text-[11px] font-bold text-primary">首次使用</span>
+            <h2 className="text-lg font-black text-foreground">开始使用</h2>
+          </div>
+          <p className="text-sm text-muted">跟着页面提示，完成简历、搜索和 AI 配置，再检查运行环境。</p>
+        </div>
+        <Button size="sm" onClick={() => window.dispatchEvent(new Event(START_ONBOARDING_EVENT))}>开始交互引导</Button>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-card-border pt-3">
+        <p className="max-w-xl text-xs leading-5 text-muted">单独采集且关闭自动评分时，可先跳过简历和 AI 设置；运行全流程前请完成全部准备。</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <a data-tour="chrome-guide" className="text-xs font-semibold text-primary underline-offset-2 hover:underline" href="https://github.com/shengjidaguai-china/BossHunter/blob/main/docs/QUICKSTART.md#3-开启-chrome-远程调试" target="_blank" rel="noreferrer">连接 Chrome 说明 ↗</a>
+          <Button data-tour="check-preflight" variant="secondary" size="sm" onClick={onCheck} disabled={checking}>
+            <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+            {checking ? '检查中' : '检查准备情况'}
+          </Button>
+        </div>
+      </div>
+      {notice && <CompactNotice message={notice} />}
+      {checks.some(check => check.status !== 'pass') && (
+        <PreflightPanel checks={checks} checking={checking} onRetry={onRetry} />
+      )}
+    </section>
+  )
+}
+
 export default function DashboardPage({ view = 'workbench' }: DashboardPageProps) {
   const {
     workbench,
@@ -411,6 +457,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
     [workbench.pending_confirmation, confirmedDeliveryIds]
+  )
+  const todayCityOptions = useMemo(
+    () => [...new Set(todayJobs.map(job => jobCityBaseName(job.city)).filter(Boolean))].sort(),
+    [todayJobs]
   )
   const debouncedTodayQuery = useDebouncedValue(todayFilters.query, 250)
   const activeTodayFilterCount = Object.values(todayFilters).filter(value => Array.isArray(value) ? value.length > 0 : value !== '').length
@@ -785,8 +835,19 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     )
   }
 
+  const showGettingStarted = !Object.values(workbench.funnel).some(count => count > 0)
+
   return (
     <div className="space-y-4">
+      {showGettingStarted && (
+        <GettingStartedCard
+          onCheck={runStandalonePreflight}
+          checking={preflightRunning || Boolean(modePending)}
+          notice={notice}
+          checks={preflightChecks}
+          onRetry={retryPreflight}
+        />
+      )}
       <section id="today-workbench" className="scroll-mt-6 rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <h2 className="text-lg font-bold tracking-tight">今日求职行动</h2>
@@ -851,8 +912,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             )
           })}
         </div>
-        {notice && <CompactNotice message={notice} />}
-        {preflightChecks.some(check => check.status !== 'pass') && (
+        {!showGettingStarted && notice && <CompactNotice message={notice} />}
+        {!showGettingStarted && preflightChecks.some(check => check.status !== 'pass') && (
           <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} />
         )}
         {error && <CompactNotice message={error} danger />}
@@ -1177,6 +1238,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               resultCount={filteredTodayJobs.length}
               totalCount={todayJobs.length}
               invalidSalary={hasInvalidSalaryRange(todayFilters)}
+              cityOptions={todayCityOptions}
             />
           </div>
         </details>
@@ -1575,6 +1637,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           </div>
           <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
         </div>
+        <InterviewPreparation key={job.id} job={job} />
         <div className="grid gap-3 text-sm lg:grid-cols-2">
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
           <InfoBlock label="招聘者活跃" value={job.hr_active || '活跃度未知'} />
@@ -1678,7 +1741,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [recycleLoading, setRecycleLoading] = useState(false)
   const [permanentDeleteIds, setPermanentDeleteIds] = useState<string[]>([])
   const [permanentDeleteAcknowledged, setPermanentDeleteAcknowledged] = useState(false)
-  const { items, total, allTotal, loading, error, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
+  const { items, total, allTotal, cityOptions, loading, error, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
   const { workbench: deliveryWorkbench } = useDashboard('workbench')
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
@@ -1686,7 +1749,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
 
   useEffect(() => {
     setPage(0)
-  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.education, filters.recruitmentType])
+  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType])
 
   const toggleSelected = (jobId: string) => {
     setSelectedIds(previous => previous.includes(jobId) ? previous.filter(id => id !== jobId) : [...previous, jobId])
@@ -1874,6 +1937,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
             status: filters.status,
             created_within: filters.createdWithin,
             source_platform: filters.sourcePlatform,
+            city: filters.city,
             education: filters.education,
             recruitment_type: filters.recruitmentType,
           } : {},
@@ -1992,6 +2056,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         invalidSalary={hasInvalidSalaryRange(filters)}
         showStatus
         showSource
+        cityOptions={cityOptions}
       />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>

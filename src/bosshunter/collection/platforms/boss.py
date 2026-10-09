@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 import httpx
 
 from bosshunter.ai.prefilter import quick_score
+from bosshunter.employment import internship_config_error, internship_only, internship_rejection
 from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, wait_for_load
 from bosshunter.collection.base import CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
@@ -115,6 +116,14 @@ def _salary_decode_failure_action(config: Any) -> str:
     return value if value in _SALARY_DECODE_ACTIONS else "stop"
 
 
+JS_VERIFY_INTERNSHIP_FILTER = """(() => {
+    const selected = Array.from(document.querySelectorAll('.condition-filter-select [ka*="jobType"].active'));
+    return new URL(location.href).searchParams.get('jobType') === '1902'
+        && selected.length === 1
+        && selected[0].textContent.trim() === '实习'
+        && selected[0].getAttribute('ka').endsWith('-1902');
+})()"""
+
 JS_IS_SCROLL_LIST = "Boolean(document.querySelector('.page-jobs .job-list-container .rec-job-list'))"
 # Chrome can defer native scroll events in a hidden tab. The site's public
 # scroll handler must run after moving the viewport to request the next batch.
@@ -192,8 +201,8 @@ JS_EXTRACT_DETAIL = """
     const tagTexts = Array.from(tagItems).map(t => t.textContent.trim());
     info.experience = tagTexts[0] || '';
     info.education = tagTexts[1] || '';
-    const pageText = document.body?.innerText || '';
-    info.recruitment_type = /校招|校园招聘|应届|毕业生|管培生|实习生/.test(pageText)
+    const pageText = [info.title, info.experience, document.querySelector('.job-sec-text')?.textContent || ''].join(' ');
+    info.recruitment_type = /校招|校园招聘|应届|毕业生|管培生/.test(pageText)
         ? 'campus'
         : (/社招|社会招聘/.test(pageText) ? 'experienced' : 'unknown');
     info.jd = document.querySelector('.job-sec-text')?.textContent?.trim() || '';
@@ -328,6 +337,12 @@ class BossCollector:
         return str(request.city_codes.get(city) or CITY_CODES.get(city) or "") or None
 
     def collect(self, request: PlatformCollectionRequest, hooks: CollectorHooks) -> PlatformCollectionResult:
+        type_config = {
+            "profile": self.config.get("profile", {}),
+            "platforms": {"boss": {"search": {"filters": request.filters}}},
+        }
+        if conflict := internship_config_error(type_config):
+            return PlatformCollectionResult(self.platform, "failed", "internship_config_conflict", conflict)
         collection_cfg = self.config.get("collection", {}) if isinstance(self.config.get("collection"), dict) else {}
         delay_multiplier = _bounded_float(
             collection_cfg.get("collection_delay_multiplier", 1.5),
@@ -348,6 +363,16 @@ class BossCollector:
             risk_pause_min,
             _positive_int(collection_cfg.get("risk_pause_max_minutes", 10), 10),
         )
+        # List cards can omit the type; keep every other prefilter setting and
+        # defer only the employment check until the detail JD has been read.
+        list_config = {**self.config, "platforms": {
+            **self.config.get("platforms", {}), "boss": {
+                **self.config.get("platforms", {}).get("boss", {}), "search": {
+                    **self.config.get("platforms", {}).get("boss", {}).get("search", {}), "filters": {},
+                },
+            },
+        }}
+        only_internships = internship_only(type_config)
         worker_target: str | None = None
         detail_worker: str | None = None
         page_failures = 0
@@ -546,6 +571,12 @@ class BossCollector:
                             if signal and signal["kind"] == "user_stopped":
                                 return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                             if signal: return risk(signal["kind"], signal["evidence"])
+                            if only_internships:
+                                if self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is not True:
+                                    return PlatformCollectionResult(
+                                        self.platform, "completed_with_shortage", "internship_filter_not_applied",
+                                        "无法确认 BOSS 实习筛选已生效，已停止；请在网站核对职位类型后重试",
+                                    )
                             self._refresh_font_digits(worker_target)
                             scroll_list = self.browser.evaluate(worker_target, JS_IS_SCROLL_LIST) is True
                             jobs = read_list()
@@ -614,7 +645,7 @@ class BossCollector:
                             hooks.on_event(
                                 message="BOSS 薪资字体无法解析，已按配置保留该岗位（薪资留空）"
                             )
-                        score, filter_reason = quick_score(raw, self.config) if self.config else (100, "")
+                        score, filter_reason = quick_score(raw, list_config) if self.config else (100, "")
                         if score <= 0:
                             hooks.on_event(message=f"BOSS 列表预筛：{filter_reason}", increment_filtered=True)
                             continue
@@ -665,6 +696,10 @@ class BossCollector:
                         if not merged.title or not merged.company or not merged.url or not merged.jd:
                             combo_complete = False
                             hooks.on_parse_failed("BOSS 详情缺少职位、公司、链接或 JD")
+                            continue
+                        type_reason = internship_rejection(merged.as_job_record(), type_config)
+                        if type_reason:
+                            hooks.on_event(message=type_reason, increment_filtered=True)
                             continue
                         if not hooks.on_candidate(merged):
                             return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")

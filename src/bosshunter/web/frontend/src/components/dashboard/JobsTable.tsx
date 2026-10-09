@@ -7,6 +7,7 @@ import { getStatusLabel } from '@/lib/status'
 import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 import type { Job } from '@/hooks/useDashboard'
 import type { JobSortKey, JobSortOrder } from '@/hooks/useJobSearch'
+import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 
 interface JobsTableProps {
   jobs: Job[]
@@ -178,6 +179,8 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       <td className="px-4 py-3 text-muted">{job.salary || '-'}</td>
                       <td className="px-4 py-3 text-xs">
                         <div className="font-bold text-foreground">{job.education || '学历未识别'}</div>
+                        <div className="mt-1 text-muted">职位类型：{job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '待核实'}</div>
+                        {job.employment_review && <div className="mt-1 text-amber-600">{job.employment_review}</div>}
                         <div className="mt-1 text-muted">{job.recruitment_type === 'campus' ? '校招' : job.recruitment_type === 'experienced' ? '社招' : '类型未识别'}</div>
                       </td>
                       <td className="px-4 py-3">
@@ -249,6 +252,9 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                     {isExpanded && (
                       <tr className="border-b border-card-border bg-surface">
                         <td colSpan={hasActions ? 11 : 10} className="px-6 py-4">
+                          <div className="max-w-2xl w-[calc(100vw-9rem)] md:w-[calc(100vw-22rem)]">
+                            <InterviewPreparation key={job.id} job={job} />
+                          </div>
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-card p-4">
                               <p className="mb-2 text-xs font-black text-primary">JD摘要</p>
