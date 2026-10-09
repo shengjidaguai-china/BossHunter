@@ -201,6 +201,8 @@ const taskMetricItems = [
   { key: 'collect_filtered', label: '过滤' },
   { key: 'collect_parse_failed', label: '解析失败' },
   { key: 'collect_save_failed', label: '保存失败' },
+  { key: 'ai_completed', label: 'AI已完成' },
+  { key: 'ai_total', label: 'AI总数' },
   { key: 'ai_passed', label: 'AI通过' },
   { key: 'ai_filtered', label: 'AI过滤' },
   { key: 'ai_failed', label: 'AI失败' },
@@ -520,6 +522,15 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
+  const fullStage = visibleTask ? currentTaskStage(visibleTask) : ''
+  const hasStageDetails = fullStage.trim().includes('\n')
+  const detailMetrics = taskMetricItems.filter(item => {
+    const metrics = visibleTask?.metrics || {}
+    if (!(item.key in metrics)) return false
+    if (item.key.startsWith('collect_') && visibleTask?.progress?.platforms) return false
+    if (['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key)) return false
+    return !(item.key.endsWith('_failed') && Number(metrics[item.key]) > 0)
+  })
   const greetTaskRunning = activeTask != null && activeTask.mode === 'greet'
     && (activeTask.status === 'running' || activeTask.status === 'stopping')
 
@@ -953,28 +964,31 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 <p className="min-w-0 flex-[1_1_12rem] truncate leading-5 text-foreground" title={currentTaskStage(visibleTask)}>{currentTaskStage(visibleTask).split('\n')[0]}</p>
                 {visibleTask.metrics && (
                   <div className="flex max-w-full flex-wrap items-center gap-x-4 gap-y-1" aria-label="任务关键统计">
-                    {taskMetricItems.filter(item => ['collect_seen', 'collect_new', 'ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
+                    {taskMetricItems.filter(item => ['ai_passed', 'send_success', 'greet_generated'].includes(item.key) && item.key in visibleTask.metrics!).map(item => (
                       <span key={item.key} className="whitespace-nowrap text-muted">{item.label} <strong className="font-semibold tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
                     ))}
-                    {taskMetricItems.filter(item => item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
+                    {taskMetricItems.filter(item => !item.key.startsWith('collect_') && item.key.endsWith('_failed') && Number(visibleTask.metrics?.[item.key]) > 0).map(item => (
                       <span key={item.key} className="whitespace-nowrap text-danger">{item.label} {visibleTask.metrics?.[item.key]}</span>
                     ))}
                   </div>
                 )}
                 {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
               </div>
-              <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
-                <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
-                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
-                </summary>
-                <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{currentTaskStage(visibleTask)}</p>
-                <p className="mt-2 leading-5 text-muted">浏览器无反应时，请检查 BOSS 登录状态和 Chrome 连接。</p>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
-                  {taskMetricItems.filter(item => item.key in (visibleTask.metrics || {})).map(item => (
-                    <span key={item.key} className="text-muted">{item.label} <strong className="font-medium tabular-nums text-foreground">{visibleTask.metrics?.[item.key] ?? 0}</strong></span>
-                  ))}
-                </div>
-              </details>
+              {(hasStageDetails || detailMetrics.length > 0) && (
+                <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
+                  <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />任务详情
+                  </summary>
+                  {hasStageDetails && <p className="mt-2 whitespace-pre-line break-words leading-5 text-muted">{fullStage}</p>}
+                  {detailMetrics.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2" aria-label="任务详细统计">
+                      {detailMetrics.map(item => (
+                        <span key={item.key} className="text-muted">{item.label} <strong className="font-medium tabular-nums text-foreground">{visibleTask.metrics?.[item.key]}</strong></span>
+                      ))}
+                    </div>
+                  )}
+                </details>
+              )}
               {Boolean(visibleTask.metrics?.greet_paused) && (
                 <div className="mt-2 rounded-xl border border-warning-border bg-warning-soft px-3 py-2 text-xs font-bold leading-5 text-warning-strong">
                   提前暂停原因：{greetPauseReasonLabel(visibleTask.metrics?.greet_pause_reason) || 'AI 服务异常'}。已生成内容已保存，剩余岗位下次运行会继续处理。
@@ -1293,7 +1307,7 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
         <span className="flex items-center gap-1.5 font-semibold"><ChevronDown className="h-3.5 w-3.5 text-muted transition-transform group-open:rotate-180" />采集详情</span>
         <span className="text-muted">{outcome}</span>
         {platforms.map(([platform, state]) => (
-          <span key={platform} className="text-muted">{PLATFORM_LABELS[platform] || platform} · 新增 {state.new}
+          <span key={platform} className="text-muted">{PLATFORM_LABELS[platform] || platform} · 新增 {state.new || 0} 条
             {collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`) && <span className="ml-2 text-warning">{collectionReasonLabel(`${state.reason_code || ''} ${state.message || ''}`)}</span>}
           </span>
         ))}
@@ -1306,7 +1320,44 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
               <span className="text-muted">{state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}</span>
             </div>
             <p className="text-muted">扫描 {state.seen || 0} · 新增 {state.new} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</p>
-            {(state.message || state.reason_code) && <p className="mt-1 break-words text-muted">{state.message || state.reason_code}</p>}
+            {Number(state.filtered) > 0 && (
+              <details className="mt-2 rounded-lg border border-card-border bg-secondary/40 p-2" open>
+                <summary className="cursor-pointer font-medium">过滤记录 · {state.filtered} 条</summary>
+                <p className="mt-1 text-xs text-muted">每个平台保留本次采集最近 200 条记录；过滤岗位未进入岗位池。</p>
+                {state.filter_records?.length ? (
+                  <>
+                    <p className="text-xs text-muted">已保留 {state.filter_records.length} 条{state.filter_records.length < Number(state.filtered) ? '，其余记录未保留或来自旧版采集' : ''}</p>
+                    <ol tabIndex={0} aria-label={`${PLATFORM_LABELS[platform] || platform}过滤记录`} className="mt-2 max-h-60 space-y-2 overflow-y-auto overscroll-contain pr-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                      {state.filter_records.map((record, index) => (
+                        <li key={`${record.source_job_id}-${index}`} className="rounded-md bg-card p-2">
+                          <p className="break-words font-medium">{record.title || '职位名称未提供'} · {record.company || '公司名称未提供'}</p>
+                          <p className="break-words text-muted">{record.reason}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                ) : <p className="mt-2 text-muted">本次采集未保存过滤明细，旧记录无法补回；新版本启动的采集会记录原因。</p>}
+              </details>
+            )}
+            {(Number(state.parse_failed || 0) + Number(state.save_failed || 0)) > 0 && (
+              <details open className="mt-2 rounded-lg border border-danger-border bg-danger-soft p-2">
+                <summary className="cursor-pointer font-medium text-danger">采集异常记录 · {(state.parse_failed || 0) + (state.save_failed || 0)} 次</summary>
+                <p className="mt-1 text-xs text-muted">每个平台保留本次采集最近 200 条异常；已保留 {state.error_records?.length || 0} 条。</p>
+                {state.error_records?.length ? (
+                  <ol tabIndex={0} aria-label={`${PLATFORM_LABELS[platform] || platform}采集异常记录`} className="mt-2 max-h-60 space-y-2 overflow-y-auto overscroll-contain pr-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                    {state.error_records.map((record, index) => (
+                      <li key={index} className="rounded-md bg-card p-2">
+                        <p className="font-medium text-danger">{record.kind === 'save' ? '保存失败' : '解析失败'}</p>
+                        {record.title && <p className="break-words">{record.title}{record.company ? ` · ${record.company}` : ''}</p>}
+                        <p className="break-words text-muted">{[record.city, record.keyword, record.page ? `第 ${record.page} 页` : ''].filter(Boolean).join(' · ') || '未取得页面上下文'}</p>
+                        <p className="break-words">{record.reason}</p>
+                      </li>
+                    ))}
+                  </ol>
+                ) : <p className="mt-2 text-muted">本次采集未保存异常明细，旧记录无法补回。</p>}
+              </details>
+            )}
+            {(state.message || state.reason_code) && !state.filter_records?.some(record => record.reason === state.message) && !state.error_records?.some(record => record.reason === state.message) && <p className="mt-1 break-words text-muted">{state.message?.replace(/；本轮新增 \d+ 条，读取 \d+ 条，重复 \d+ 条，过滤 \d+ 条，解析失败 \d+ 条，保存失败 \d+ 条$/, '') || state.reason_code}</p>}
           </div>
         ))}
       </div>

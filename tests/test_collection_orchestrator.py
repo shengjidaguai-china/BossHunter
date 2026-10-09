@@ -77,6 +77,90 @@ class _BlockedCollector:
 
 
 class CollectionOrchestratorTests(TestCase):
+    def test_collection_failures_preserve_context_and_remain_bounded(self):
+        from bosshunter.collection_run_store import get_collection_run
+
+        class FailureCollector:
+            def collect(self, request, hooks):
+                hooks.on_event(city="深圳", keyword="AI", page=2)
+                for i in range(201):
+                    hooks.on_parse_failed(f"详情缺少字段 {i}")
+                candidate = _candidate("boss", "save-error", "保存失败测试岗位")
+                if hooks.on_list_candidate(candidate):
+                    hooks.on_candidate(candidate)
+                return PlatformCollectionResult("boss", "completed_with_shortage", "incomplete", "部分岗位处理失败")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "errors.db"
+            with patch("bosshunter.collection.orchestrator.insert_job_if_new", side_effect=RuntimeError("private data")):
+                result = CollectionOrchestrator({}, db_path=path, registry=CollectorRegistry({"boss": FailureCollector})).run(_options())
+            state = get_collection_run(path, result["run_id"])["platform_states"]["boss"]
+            self.assertEqual(state["parse_failed"], 201)
+            self.assertEqual(state["save_failed"], 1)
+            records = state["error_records"]
+            self.assertEqual(len(records), 200)
+            self.assertEqual(records[0]["reason"], "详情缺少字段 2")
+            self.assertEqual(records[0]["kind"], "parse")
+            self.assertEqual(records[0]["city"], "深圳")
+            self.assertEqual(records[0]["keyword"], "AI")
+            self.assertEqual(records[0]["page"], 2)
+            self.assertEqual(records[0]["title"], "")
+            self.assertEqual(records[-1]["kind"], "save")
+            self.assertEqual(records[-1]["title"], "保存失败测试岗位")
+            self.assertEqual(records[-1]["reason"], "保存岗位失败：RuntimeError")
+            self.assertNotIn("private data", str(records))
+            self.assertEqual(result["collected_job_ids"], [])
+
+    def test_filter_records_are_bounded_persisted_and_separate_from_jobs(self):
+        from bosshunter.collection_run_store import get_collection_run
+
+        candidates = [_candidate("boss", str(i), "外包岗位") for i in range(205)]
+        registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], candidates)})
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "collection.db"
+            result = CollectionOrchestrator(
+                {"profile": {"deal_breakers": ["外包"]}}, db_path=db_path, registry=registry,
+            ).run(_options())
+            saved = get_collection_run(db_path, result["run_id"])
+            state = saved["platform_states"]["boss"]
+            self.assertEqual(state["filtered"], 205)
+            self.assertEqual(len(state["filter_records"]), 200)
+            self.assertEqual(state["filter_records"][0]["source_job_id"], "5")
+            self.assertEqual(state["filter_records"][-1]["source_job_id"], "204")
+            self.assertIn("外包", state["filter_records"][0]["reason"])
+            self.assertEqual(state["filter_records"][0]["company"], "示例公司")
+            conn = get_db(db_path)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
+            conn.close()
+
+    def test_filter_records_preserve_platform_event_company_and_jd_reasons(self):
+        class FilterCollector:
+            def collect(self, request, hooks):
+                candidate = _candidate(request.platform, "salary")
+                hooks.on_event(message="薪资低于硬性要求: 10K < 12K", increment_filtered=True,
+                               filtered_candidate=candidate)
+                blocked = _candidate(request.platform, "blocked")
+                blocked.company = "屏蔽公司"
+                hooks.on_list_candidate(blocked)
+                jd = _candidate(request.platform, "jd")
+                jd.jd = "要求驻场"
+                if hooks.on_list_candidate(jd):
+                    hooks.on_candidate(jd)
+                return PlatformCollectionResult(request.platform, "completed", "search_exhausted", "无更多结果")
+
+        registry = CollectorRegistry({p: FilterCollector for p in ("boss", "zhilian")})
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CollectionOrchestrator(
+                {"profile": {"blocked_companies": ["屏蔽公司"], "jd_deal_breakers": ["驻场"]}},
+                db_path=Path(tmp) / "collection.db", registry=registry,
+            ).run(_options(order=["boss", "zhilian"]))
+        for state in result["platforms"].values():
+            self.assertEqual(state["filtered"], 3)
+            self.assertEqual([r["source_job_id"] for r in state["filter_records"]], ["salary", "blocked", "jd"])
+            self.assertIn("10K < 12K", state["filter_records"][0]["reason"])
+            self.assertIn("屏蔽公司", state["filter_records"][1]["reason"])
+            self.assertIn("驻场", state["filter_records"][2]["reason"])
+
     def test_boss_zero_new_reports_duplicate_and_filtered_counts(self):
         candidates = [_candidate("boss", "duplicate"), _candidate("boss", "filtered", "外包岗位")]
         registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], candidates)})

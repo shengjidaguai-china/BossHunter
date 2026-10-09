@@ -552,7 +552,11 @@ class Job51Collector:
             return False
         return True
 
-    def _passes_collector_filters(
+    def _passes_collector_filters(self, candidate, kw, *, allow_internship, salary_min, salary_max) -> bool:
+        return not self._collector_filter_reason(candidate, kw, allow_internship=allow_internship,
+                                                 salary_min=salary_min, salary_max=salary_max)
+
+    def _collector_filter_reason(
         self,
         candidate: JobCandidate,
         kw: str,
@@ -560,19 +564,19 @@ class Job51Collector:
         allow_internship: bool,
         salary_min: float,
         salary_max: float,
-    ) -> bool:
+    ) -> str:
         """正式入库阶段 collector 自己做的那部分过滤（官方不重复的增值层）。
 
         deal_breakers / blocked_company / jd_deal_breakers 在正式入库时交给官方
         ``_SharedProcessor`` 的 hooks 回调处理，这里只做官方没有的增值过滤。
         """
         if not allow_internship and _is_internship(candidate.title, candidate.experience):
-            return False
+            return "当前设置不接受实习岗位"
         if not _is_relevant_to_keyword(candidate.title, candidate.jd, kw):
-            return False
+            return "职位与搜索关键词不相关"
         if not _salary_within_range(candidate.salary, salary_min, salary_max, self.config.get("profile")):
-            return False
-        return True
+            return "薪资不符合设置范围"
+        return ""
 
     @staticmethod
     def _item_to_candidate(
@@ -964,8 +968,10 @@ class Job51Collector:
                 if cand is None:
                     continue
                 # collector 增值层过滤（官方无：实习 / 相关性 / 薪资）
-                if not self._passes_collector_filters(cand, kw, allow_internship=allow_internship,
-                                                      salary_min=salary_min, salary_max=salary_max):
+                filter_reason = self._collector_filter_reason(cand, kw, allow_internship=allow_internship,
+                                                             salary_min=salary_min, salary_max=salary_max)
+                if filter_reason:
+                    hooks.on_event(message=filter_reason, increment_filtered=True, filtered_candidate=cand)
                     continue
                 # 官方统一层：去重 + title deal_breakers + blocked_company
                 if not hooks.on_list_candidate(cand):

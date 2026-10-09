@@ -647,7 +647,7 @@ class BossCollector:
                             )
                         score, filter_reason = quick_score(raw, list_config) if self.config else (100, "")
                         if score <= 0:
-                            hooks.on_event(message=f"BOSS 列表预筛：{filter_reason}", increment_filtered=True)
+                            hooks.on_event(message=f"BOSS 列表预筛：{filter_reason}", increment_filtered=True, filtered_candidate=candidate)
                             continue
                         if throttle.wait(hooks.stop_event):
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")

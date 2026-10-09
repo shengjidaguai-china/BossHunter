@@ -75,6 +75,8 @@ export interface WorkbenchTask {
 }
 
 export interface CollectionPlatformProgress {
+  error_records?: { kind: 'parse' | 'save'; reason: string; title: string; company: string; city?: string; keyword?: string; page?: number }[]
+  filter_records?: { title: string; company: string; source_job_id: string; reason: string }[]
   status: string
   new: number
   target: number | null
