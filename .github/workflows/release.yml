@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows x64 portable package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: src/bosshunter/web/frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: src/bosshunter/web/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel --outdir .tmp_dist .
+
+      - name: Download bundled Python
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz" -OutFile python.tar.gz
+          New-Item -ItemType Directory -Path pkg -Force
+          tar -xzf python.tar.gz -C pkg
+
+      - name: Assemble portable package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path pkg/scripts -Force
+          Copy-Item scripts/dist/start_windows.ps1 pkg/scripts/
+          Copy-Item scripts/dist/README_WINDOWS.txt pkg/README.txt
+          $Wheel = (Get-Item .tmp_dist/*.whl).FullName
+          & "pkg/python/python.exe" -m pip install --quiet --no-warn-script-location $Wheel
+          if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+          # Verify the bundled Node.js runtime and frontend assets shipped.
+          if (-not (Test-Path "pkg/python/Lib/site-packages/patchright/driver/node.exe")) { throw "bundled node.exe missing" }
+          if (-not (Test-Path "pkg/python/Lib/site-packages/bosshunter/web/frontend/dist/index.html")) { throw "frontend dist missing" }
+
+      - name: Smoke test portable package
+        shell: pwsh
+        run: |
+          & "pkg/python/python.exe" -m bosshunter.main --version
+          & "pkg/python/python.exe" -c "import bosshunter; print('import OK')"
+          & "pkg/python/python.exe" -m bosshunter.main web --no-open --port 8799 &
+          $Ready = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            try {
+              $null = Invoke-WebRequest -Uri "http://127.0.0.1:8799/" -UseBasicParsing -TimeoutSec 2
+              $Ready = $true
+              break
+            } catch { }
+          }
+          if (-not $Ready) { throw "portable package web server did not start" }
+          Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | Where-Object { $_.CommandLine -like '*8799*' -or ($_.CommandLine -like '*bosshunter.main*web*' -and $_.ExecutablePath -like '*pkg*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $Version = "${{ github.ref_name }}"
+          Compress-Archive -Path pkg/* -DestinationPath "BossHunter-$Version-windows-x64.zip"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BossHunter-*-windows-x64.zip
+
+  build-macos:
+    name: macOS ${{ matrix.arch }} portable package
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [aarch64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: src/bosshunter/web/frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: src/bosshunter/web/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel --outdir .tmp_dist .
+
+      - name: Download bundled Python
+        run: |
+          curl -sL -o python.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15+20261003-${{ matrix.arch }}-apple-darwin-install_only.tar.gz"
+          mkdir -p pkg
+          tar -xzf python.tar.gz -C pkg
+
+      - name: Assemble portable package
+        run: |
+          mkdir -p pkg/scripts
+          cp scripts/dist/start_macos.command pkg/scripts/
+          chmod +x pkg/scripts/start_macos.command
+          cp scripts/dist/README_MACOS.txt pkg/README.txt
+          Wheel=$(ls .tmp_dist/*.whl)
+          "./pkg/python/bin/python3" -m pip install --quiet --no-warn-script-location "$Wheel"
+          test -x "pkg/python/lib/python3.12/site-packages/patchright/driver/node" || { echo "bundled node missing"; exit 1; }
+          test -f "pkg/python/lib/python3.12/site-packages/bosshunter/web/frontend/dist/index.html" || { echo "frontend dist missing"; exit 1; }
+
+      - name: Smoke test portable package
+        run: |
+          "./pkg/python/bin/python3" -m bosshunter.main --version
+          "./pkg/python/bin/python3" -c "import bosshunter; print('import OK')"
+
+      - name: Package tar.gz
+        run: |
+          VERSION="${{ github.ref_name }}"
+          tar -czf "BossHunter-$VERSION-macos-${{ matrix.arch }}.tar.gz" -C pkg .
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BossHunter-*-macos-*.tar.gz
