@@ -388,7 +388,7 @@ class MonitorIdempotencyAndLimitTests(unittest.TestCase):
         self.assertEqual(later_action, "auto_replied")
         self.assertEqual(auto_reply_count, 2)
         generate_reply.assert_called_once()
-        send_message.assert_called_once_with("later-target", "第二轮自动回复")
+        send_message.assert_called_once_with("later-target", "第二轮自动回复", config)
 
     def test_chat_list_skips_same_pending_before_opening_and_caps_new_items(self):
         from bosshunter.executor import monitor

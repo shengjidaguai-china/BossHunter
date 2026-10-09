@@ -367,7 +367,10 @@ def _navigate_to_chat_redirect(target_id: str, click_result: dict) -> bool:
     return navigate(target_id, urljoin("https://www.zhipin.com", redirect_url))
 
 
-def _handle_greet_popup(target_id: str, greeting: str, click_result: dict | None = None) -> dict:
+def _handle_greet_popup(
+    target_id: str, greeting: str, click_result: dict | None = None,
+    window_checker: SendWindowChecker | None = None,
+) -> dict:
     state = _detect_greet_popup(target_id)
     if not state.get("success"):
         return {
@@ -377,6 +380,8 @@ def _handle_greet_popup(target_id: str, greeting: str, click_result: dict | None
             "skip_backoff": True,
         }
     if _is_preset_greeting_popup(state):
+        if window_checker and not window_checker.is_active():
+            return {"success": False, "error": "outside_window", "skip_backoff": True}
         return _confirm_preset_greeting(target_id)
     if state.get("kind") == "startchat_dialog":
         if click_result and _navigate_to_chat_redirect(target_id, click_result):
@@ -449,11 +454,15 @@ def _wait_for_chat_page(
     return {"success": False, "error": "chat_navigation_timeout"}
 
 
-def _click_chat_button(target_id: str, stop_event, attempts: int = 30) -> dict:
+def _click_chat_button(
+    target_id: str, stop_event, attempts: int = 30, window_checker: SendWindowChecker | None = None,
+) -> dict:
     click_chat_js = CHAT_BUTTON_SCRIPT_FOR_TESTS
 
     last_result: dict = {"success": False, "error": "no_chat_button"}
     for attempt in range(max(1, attempts)):
+        if window_checker and not window_checker.is_active():
+            return {"success": False, "error": "outside_window", "skip_backoff": True}
         if _stop_requested(stop_event):
             return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
         last_result = _parse_js_result(evaluate(target_id, click_chat_js))
@@ -752,6 +761,12 @@ def _detect_job_closed_on_page(target_id: str) -> dict | None:
 
 def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tuple[dict, str | None]:
     stop_event = throttle_config.get("_workbench_stop_event")
+    window_checker = throttle_config.get("_send_window_checker")
+    def window_closed() -> bool:
+        return bool(window_checker and not window_checker.is_active())
+
+    if window_closed():
+        return {"success": False, "error": "outside_window", "skip_backoff": True}, None
     existing_target_ids = {
         str(target.get("targetId") or "")
         for target in get_page_targets()
@@ -809,8 +824,11 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         return page_check, None
 
     chat_button_attempts = int(throttle_config.get("_chat_button_attempts", 30))
-    result1a = _click_chat_button(target_id, stop_event, chat_button_attempts)
+    result1a = _click_chat_button(target_id, stop_event, chat_button_attempts, window_checker)
     if not result1a.get("success"):
+        if result1a.get("error") == "outside_window":
+            close_tab(target_id)
+            return result1a, None
         closed_result = _detect_job_closed_on_page(target_id)
         close_tab(target_id)
         if closed_result:
@@ -821,7 +839,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
-    popup_result = _handle_greet_popup(target_id, greeting, result1a)
+    popup_result = _handle_greet_popup(target_id, greeting, result1a, window_checker)
     if not popup_result.get("success"):
         return popup_result, target_id
     contact_action = str(popup_result.get("action") or "no_popup")
@@ -843,11 +861,14 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         "startchat_redirected",
     }:
         console.print("[yellow]    ! 沟通按钮未跳转聊天页，尝试真实点击兜底[/yellow]")
+        if window_closed():
+            close_tab(target_id)
+            return {"success": False, "error": "outside_window", "skip_backoff": True}, None
         if click_at(target_id, CHAT_BUTTON_SELECTOR):
             if _sleep_or_stop(1, stop_event):
                 close_tab(target_id)
                 return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
-            popup_result = _handle_greet_popup(target_id, greeting, result1a)
+            popup_result = _handle_greet_popup(target_id, greeting, result1a, window_checker)
             if not popup_result.get("success"):
                 return popup_result, target_id
             contact_action = str(popup_result.get("action") or "no_popup")
@@ -952,6 +973,9 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             "skip_backoff": True,
         }, target_id
 
+    if window_closed():
+        close_tab(target_id)
+        return {"success": False, "error": "outside_window", "skip_backoff": True}, None
     submit_result = _submit_chat_message_background(target_id, greeting)
     if not submit_result.get("success"):
         input_result = _fill_chat_input(target_id, greeting)
@@ -964,6 +988,9 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                 "history_detail": "招呼语已填入，但发送按钮不可用，未标记成功",
                 "skip_backoff": True,
             }, target_id
+        if window_closed():
+            close_tab(target_id)
+            return {"success": False, "error": "outside_window", "skip_backoff": True}, None
         if not click_at(target_id, ".btn-send:not(.disabled)"):
             return {
                 "success": False,
@@ -1027,8 +1054,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     ``db_path`` lets web callers pin the runtime database; without it the
     module-level default (CWD-relative) is used for CLI compatibility.
     """
-    db = get_db(db_path)
     throttle_config = dict(config.get("throttle", {}))
+    window_checker = SendWindowChecker(throttle_config.get("send_windows", ["09:00-16:00"]))
+    if not force:
+        throttle_config["_send_window_checker"] = window_checker
+    db = get_db(db_path)
     stop_event = config.get("_workbench_stop_event")
     workbench_job_ids = {str(job_id) for job_id in config.get("_workbench_job_ids", [])}
     send_report = {
@@ -1070,8 +1100,6 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         return 0
 
     # Anti-ban: send window check (可通过 --force 跳过)
-    send_windows = throttle_config.get("send_windows", [])
-    window_checker = SendWindowChecker(send_windows)
     if not force and not window_checker.is_active():
         info = window_checker.next_window_info()
         console.print("[yellow]⏰ 当前不在发送时间窗口内，暂不发送[/yellow]")
@@ -1178,6 +1206,10 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     send_report["stop_reason"] = "stopped"
                     break
 
+            if not force and not window_checker.is_active():
+                send_report["stop_reason"] = "outside_window"
+                break
+
             activity_guard = config.get("_workbench_greeting_activity")
             with activity_guard(job["id"], "sending") if callable(activity_guard) else nullcontext(True) as acquired:
                 if not acquired:
@@ -1205,6 +1237,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                 progress.update(task, description=f"发送: {job['company'][:10]} - {job['title'][:15]}")
 
                 result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
+                if result_data.get("error") == "outside_window":
+                    if failed_target_id:
+                        close_tab(failed_target_id)
+                    send_report["stop_reason"] = "outside_window"
+                    break
                 if result_data.get("error") == "stopped":
                     send_report["stop_reason"] = "stopped"
                     break
@@ -1212,6 +1249,11 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     console.print("[yellow]    ! 未进入具体聊天会话，重新打开岗位页再试一次[/yellow]")
                     close_tab(failed_target_id)
                     result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
+                    if result_data.get("error") == "outside_window":
+                        if failed_target_id:
+                            close_tab(failed_target_id)
+                        send_report["stop_reason"] = "outside_window"
+                        break
                     if result_data.get("error") == "stopped":
                         send_report["stop_reason"] = "stopped"
                         break

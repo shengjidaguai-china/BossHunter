@@ -870,8 +870,12 @@ def _generate_auto_reply(messages: list[dict], job: dict, config: dict) -> str |
     return _call_claude(prompt, config)
 
 
-def _send_message_in_chat(target_id: str, message: str) -> bool:
+def _send_message_in_chat(target_id: str, message: str, config: dict | None = None) -> bool:
     """Send a text message in the current open chat via Vue handleSubmit."""
+    if config is not None:
+        windows = config.get("throttle", {}).get("send_windows", ["09:00-16:00"])
+        if stop_requested(config) or not SendWindowChecker(windows).is_active():
+            return False
     js_send = f"""
     (() => {{
         const input = document.querySelector('#chat-input');
@@ -1632,7 +1636,7 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
                 if stop_requested(config):
                     close_tab(target_id)
                     return "stopped"
-                if _send_message_in_chat(target_id, link_msg):
+                if _send_message_in_chat(target_id, link_msg, config):
                     portfolio_status = "在线简历已发送"
                     console.print("[green]    ✓ 在线简历链接已发送[/green]")
                 else:
@@ -1723,7 +1727,7 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
     if stop_requested(config):
         close_tab(target_id)
         return "stopped"
-    if _send_message_in_chat(target_id, reply):
+    if _send_message_in_chat(target_id, reply, config):
         console.print("[green]    ✓ 自动回复已发送[/green]")
         db = get_db()
         add_history(
@@ -2040,7 +2044,7 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
         if stop_event and stop_event.is_set():
             close_tab(target_id)
             break
-        if _send_message_in_chat(target_id, follow_up_msg):
+        if _send_message_in_chat(target_id, follow_up_msg, config):
             console.print(f"[green]  ✓ 跟进: {job['company']} - {job['title']}[/green]")
             update_job_status(db, job["id"], "follow_up_sent")
             add_history(db, job["id"], "follow_up_sent", follow_up_msg[:100])
@@ -2092,7 +2096,7 @@ def monitor_and_send_resumes(config: dict) -> dict:
     # Time window check (09:00-16:00)
     window_checker = SendWindowChecker(throttle_config.get("send_windows", ["09:00-16:00"]))
     if not window_checker.is_active():
-        console.print("[yellow]当前不在工作时间窗口内 (09:00-16:00)[/yellow]")
+        console.print("[yellow]当前不在配置的发送时间窗口内[/yellow]")
         return {"skipped": 0, "pending": 0, "replied": 0, "needs_resume": 0, "rejected": 0, "failed": 0}
 
     operation_multiplier = get_boss_operation_interval_multiplier(config)

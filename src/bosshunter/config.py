@@ -234,11 +234,13 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
         _deep_merge(cfg, user_cfg)
     _normalize_config_sections(cfg)
     _validate_ai_provider(cfg)
+    validate_config_send_windows(cfg)
     return cfg
 
 
 def save_config(config: dict[str, Any], config_path: Path | None = None) -> None:
     """Persist settings without writing AI credentials to config.yaml."""
+    validate_config_send_windows(config)
     config_path = Path(config_path or "config.yaml")
     public_config = _deep_copy_dict(config)
     _normalize_internship_salary_filter(public_config)
@@ -261,6 +263,16 @@ def save_config(config: dict[str, Any], config_path: Path | None = None) -> None
             private_path.unlink()
         except FileNotFoundError:
             pass
+
+
+def validate_config_send_windows(config: dict[str, Any]) -> None:
+    """Reject invalid windows before persisting settings or starting a task."""
+    from bosshunter.throttle import validate_send_windows
+
+    throttle = config.get("throttle", {})
+    if not isinstance(throttle, dict):
+        raise ValueError("throttle 必须是配置对象")  # noqa: TRY004 - configuration validation reports ValueError
+    validate_send_windows(throttle.get("send_windows", DEFAULTS["throttle"]["send_windows"]))
 
 
 def migrate_legacy_credentials(config_path: Path | None = None) -> bool:

@@ -88,7 +88,7 @@
         {"key": "browse_before_greet", "label": "发送前模拟浏览", "type": "switch", "default": true},
         {"key": "browse_duration_min", "label": "浏览最短时长 (秒)", "type": "number", "min": 5, "max": 120, "default": 15},
         {"key": "browse_duration_max", "label": "浏览最长时长 (秒)", "type": "number", "min": 5, "max": 120, "default": 30},
-        {"key": "send_windows", "label": "发送时间窗口", "type": "tags", "default": ["09:00-16:00"], "description": "格式: HH:MM-HH:MM；后台任务会在最后一个窗口结束时自动停止"},
+        {"key": "send_windows", "label": "发送时间窗口", "type": "tags", "default": ["09:00-16:00"], "description": "本机时间，包含开始、不包含结束；不支持跨午夜、重复或重叠；后台任务在最后一个窗口结束时停止。空列表沿用不限制时间的旧行为"},
         {"key": "day_off_probability", "label": "随机休息概率", "type": "number", "min": 0, "max": 1, "step": 0.01, "default": 0.05}
       ]
     },

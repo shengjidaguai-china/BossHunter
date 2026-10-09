@@ -35,7 +35,13 @@ from bosshunter import __version__
 from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_models
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
-from bosshunter.config import AI_SERVICE_PRESETS, load_config, remove_retired_collection_settings, save_config
+from bosshunter.config import (
+	AI_SERVICE_PRESETS,
+	load_config,
+	remove_retired_collection_settings,
+	save_config,
+	validate_config_send_windows,
+)
 from bosshunter.db import (
 	GREETING_ALLOWED_STATUSES,
 	REJECT_ALLOWED_STATUSES,
@@ -2552,6 +2558,10 @@ def api_config_post():
 		if not isinstance(data, dict):
 			return _json_response({"error": "Config body must be an object"}, 400)
 		data = _sanitize_config_for_write(data)
+		try:
+			validate_config_send_windows(data)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 
 		# Basic validation
 		profile = data.get("profile", {})

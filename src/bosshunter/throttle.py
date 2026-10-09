@@ -1,9 +1,11 @@
 """Throttle module - Gaussian delay + burst penalty for anti-detection."""
 
 import random
+import re
 import time
 from collections import deque
 from datetime import datetime
+from itertools import pairwise
 from threading import Event
 
 
@@ -76,20 +78,36 @@ class PageThrottle:
         return False
 
 
+def validate_send_windows(windows: object) -> list[tuple[int, int, int, int]]:
+    """Validate legacy YAML string windows without silently removing restrictions."""
+    if not isinstance(windows, list):
+        raise ValueError("throttle.send_windows 必须是 HH:MM-HH:MM 字符串列表")  # noqa: TRY004
+    parsed = []
+    for window in windows:
+        if not isinstance(window, str):
+            raise ValueError("throttle.send_windows 中的时间段必须是字符串")  # noqa: TRY004
+        match = re.fullmatch(r"\s*([0-9]{2}):([0-9]{2})\s*-\s*([0-9]{2}):([0-9]{2})\s*", window)
+        if not match:
+            raise ValueError("发送时间窗口格式必须为 HH:MM-HH:MM")
+        start_h, start_m, end_h, end_m = map(int, match.groups())
+        if start_h > 23 or end_h > 23 or start_m > 59 or end_m > 59:
+            raise ValueError("发送时间窗口必须使用有效的 00:00 至 23:59 时间")
+        if start_h * 60 + start_m >= end_h * 60 + end_m:
+            raise ValueError("发送时间窗口的结束时间必须晚于开始时间，不支持跨午夜")
+        parsed.append((start_h, start_m, end_h, end_m))
+    ordered = sorted(parsed)
+    for previous, current in pairwise(ordered):
+        if current[0] * 60 + current[1] < previous[2] * 60 + previous[3]:
+            raise ValueError("发送时间窗口不能重复或重叠；相邻时间段可以共用边界")
+    return ordered
+
+
 class SendWindowChecker:
     """Checks if current time falls within configured send windows."""
 
     def __init__(self, windows: list[str]) -> None:
         """Parse windows like ["09:00-12:00", "14:00-16:00"]."""
-        self._windows: list[tuple[int, int, int, int]] = []
-        for w in windows:
-            parts = w.strip().split("-")
-            if len(parts) != 2:
-                continue
-            start_h, start_m = self._parse_time(parts[0])
-            end_h, end_m = self._parse_time(parts[1])
-            if start_h >= 0 and end_h >= 0:
-                self._windows.append((start_h, start_m, end_h, end_m))
+        self._windows = validate_send_windows(windows)
 
     def is_active(self) -> bool:
         """Check if current local time is within any send window."""

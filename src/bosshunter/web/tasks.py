@@ -222,7 +222,5 @@ def _deadline_from_config(mode: str, config: dict) -> datetime | None:
     if mode not in DEADLINE_MODES:
         return None
     throttle = config.get("throttle", {}) if isinstance(config, dict) else {}
-    windows = throttle.get("send_windows", [])
-    if not isinstance(windows, list):
-        return None
+    windows = throttle.get("send_windows", ["09:00-16:00"])
     return SendWindowChecker(windows).latest_end_datetime()

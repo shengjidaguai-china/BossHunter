@@ -82,6 +82,22 @@ def _agent_score() -> dict:
 
 
 class WebApiRouteTests(unittest.TestCase):
+    def test_send_window_save_reload_and_invalid_update_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            windows = ["14:00-16:00", "09:00-12:00"]
+            status, _, body = self._request("/api/config", "POST", {"throttle": {"send_windows": windows}})
+            self.assertTrue(status.startswith("200"), body)
+            status, _, body = self._request("/api/config")
+            self.assertEqual(json.loads(body)["throttle"]["send_windows"], windows)
+            original = server.CONFIG_PATH.read_bytes()
+            for invalid in (None, "09:00-16:00", ["bad"], ["09:00-12:00", "11:00-16:00"]):
+                with self.subTest(invalid=invalid):
+                    status, _, body = self._request("/api/config", "POST", {"throttle": {"send_windows": invalid}})
+                    self.assertTrue(status.startswith("400"), body)
+                    self.assertIn("error", json.loads(body))
+                    self.assertEqual(server.CONFIG_PATH.read_bytes(), original)
+
     def setUp(self):
         # Arrange
         self.original_base_dir = server.BASE_DIR
@@ -1270,7 +1286,7 @@ class WebApiRouteTests(unittest.TestCase):
             server.set_base_dir(base_dir)
 
             with patch.object(server, "_execute_collect", side_effect=fake_collect):
-                task = runner.start("full", {})
+                task = runner.start("full", {"throttle": {"send_windows": []}})
                 for _ in range(20):
                     status = runner.status()
                     active = status["active"]
@@ -1312,10 +1328,10 @@ class WebApiRouteTests(unittest.TestCase):
             stopped = runner.stop(task["id"])
             status_after_stop = runner.status()
             with self.assertRaises(TaskAlreadyRunningError):
-                runner.start("monitor", {})
+                runner.start("monitor", {"throttle": {"send_windows": []}})
             release.set()
             runner.wait(timeout=1)
-            second_task = runner.start("monitor", {})
+            second_task = runner.start("monitor", {"throttle": {"send_windows": []}})
             runner.wait(timeout=1)
         finally:
             release.set()
@@ -1338,7 +1354,7 @@ class WebApiRouteTests(unittest.TestCase):
             release.wait(timeout=1)
 
         runner = WorkbenchTaskRunner({"monitor": monitor_executor})
-        task = runner.start("monitor", {})
+        task = runner.start("monitor", {"throttle": {"send_windows": []}})
         self.assertTrue(waiting.wait(timeout=1))
 
         # Act
@@ -1389,7 +1405,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIsNone(runner.status()["active"])
 
     def test_send_window_checker_uses_last_window_end_as_daily_deadline(self):
-        checker = SendWindowChecker(["09:00-12:00", "14:00-17:30", "99:00-100:00"])
+        checker = SendWindowChecker(["09:00-12:00", "14:00-17:30"])
 
         deadline = checker.latest_end_datetime(datetime(2026, 7, 28, 10, 15, 45))
 
@@ -1409,7 +1425,7 @@ class WebApiRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server.set_base_dir(Path(tmp))
             with patch.object(server, "_execute_collect", side_effect=fake_collect):
-                task = runner.start("full", {})
+                task = runner.start("full", {"throttle": {"send_windows": []}})
                 runner.wait(timeout=1)
                 status = runner.status()
                 last_task = status["last_task"]
@@ -2181,7 +2197,7 @@ class WebApiRouteTests(unittest.TestCase):
                  patch.object(server, "_execute_deliver", side_effect=fake_deliver), \
                  patch.object(server, "_execute_monitor", side_effect=fake_monitor), \
                  patch.object(server, "load_config", return_value={"throttle": {"daily_limit": 40}}):
-                task = runner.start("full", {})
+                task = runner.start("full", {"throttle": {"send_windows": []}})
                 for _ in range(50):
                     running_task = runner._tasks[task["id"]]
                     confirmation_event = running_task.context.get("confirmation_event")
