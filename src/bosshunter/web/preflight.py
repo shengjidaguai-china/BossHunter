@@ -328,9 +328,12 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 		if any("non-BossHunter" in error for error in errors):
 			message = "浏览器连接端口被其他程序占用"
 			detail = "请停止占用本地 Runtime 端口的程序，或修改 browser.proxy_port 后重启。"
+		elif any("could not be started" in error for error in errors):
+			message = "BossHunter 浏览器运行组件进程启动失败"
+			detail = "请检查 Node.js 可执行文件及运行权限；运行 bosshunter connect 重新诊断。"
 		else:
-			message = "BossHunter 浏览器运行组件未启动"
-			detail = "请重新启动 BossHunter；若仍失败，运行 bosshunter connect 查看终端诊断。"
+			message = "无法连接 BossHunter 浏览器运行组件"
+			detail = f"本地连接地址：{result.get('runtime_url') or '未知'}。请重新启动 BossHunter；若仍失败，运行 bosshunter connect 查看终端诊断。"
 		checks.append(_check("browser_runtime", "浏览器运行组件", "error", message, detail, "browser"))
 
 	if result.get("runtime") and not result.get("chrome"):
