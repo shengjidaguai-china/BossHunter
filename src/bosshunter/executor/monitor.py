@@ -16,7 +16,9 @@ from bosshunter.cancellation import (
 from bosshunter.db import (
     get_db, get_jobs_by_status,
     update_job_status, add_history, add_risk_event, set_platform_safety_lock,
+    record_outsourcing_reply_evidence,
 )
+from bosshunter.outsourcing import load_rules
 from bosshunter.throttle import RequestThrottle, SendWindowChecker
 from bosshunter.platform_safety import (
     PlatformAccessGuard,
@@ -1342,6 +1344,12 @@ def _check_boss_replies(config: dict, tracked_jobs: list[dict] | None = None) ->
                     "hr_reply_detected",
                     f"HR回复: {conv.get('last_message', '')[:50]}",
                 )
+            record_outsourcing_reply_evidence(
+                db,
+                str(matched_job["id"]),
+                str(conv.get("last_message") or ""),
+                load_rules(config),
+            )
 
             results.append({
                 "job": matched_job,
