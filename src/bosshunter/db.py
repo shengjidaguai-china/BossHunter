@@ -934,32 +934,33 @@ def update_job_status(conn: sqlite3.Connection, job_id: str, status: str) -> Non
 
 
 def update_jobs_manual_status(conn: sqlite3.Connection, job_ids: Any, status: str) -> dict[str, Any]:
-    """Apply a safe, user-selected status to active jobs and record history."""
+    """Update active jobs atomically, preserving concurrent send/reply changes."""
     ids = _normalize_job_ids(job_ids, required=True)
     target = str(status or "").strip()
     if target not in MANUAL_STATUS_TARGETS:
         raise ValueError("不支持的手动岗位状态")
-    rows = _job_rows_by_ids(conn, ids)
-    by_id = {str(row["id"]): row for row in rows}
-    not_found = [job_id for job_id in ids if job_id not in by_id]
-    blocked = []
-    for job_id in ids:
-        row = by_id.get(job_id)
-        if row is None:
-            continue
-        current = str(row.get("status") or "")
-        if current in MANUAL_STATUS_PROTECTED:
-            blocked.append({"job_id": job_id, "reasons": ["已发送或已有回复记录的岗位不可手动回退"]})
-    if not_found or blocked:
-        raise ValueError("存在不能手动修改状态的岗位")
-    changed = [job_id for job_id in ids if str(by_id[job_id].get("status") or "") != target]
     with conn:
+        # The web lock cannot exclude separate CLI/monitor database connections.
+        conn.execute("BEGIN IMMEDIATE")
+        rows = _job_rows_by_ids(conn, ids)
+        by_id = {str(row["id"]): row for row in rows}
+        if any(
+            job_id not in by_id
+            or by_id[job_id].get("deleted_at") is not None
+            or str(by_id[job_id].get("status") or "") in MANUAL_STATUS_PROTECTED
+            for job_id in ids
+        ):
+            raise ValueError("存在不能手动修改状态的岗位")
+        changed = [job_id for job_id in ids if str(by_id[job_id].get("status") or "") != target]
         for job_id in changed:
             previous = str(by_id[job_id].get("status") or "")
-            conn.execute(
-                "UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
-                (target, job_id),
+            cursor = conn.execute(
+                "UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND deleted_at IS NULL AND COALESCE(status, '') = ?",
+                (target, job_id, previous),
             )
+            if cursor.rowcount != 1:
+                raise ValueError("岗位状态已变化，手动修改已回滚")
             conn.execute(
                 "INSERT INTO history (job_id, action, detail) VALUES (?, 'status_changed', ?)",
                 (job_id, f"用户手动将状态从 {previous or '未知'} 修改为 {target}"),
