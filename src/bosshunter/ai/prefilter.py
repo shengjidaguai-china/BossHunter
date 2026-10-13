@@ -79,7 +79,19 @@ def _contains_internship_signal(job: dict) -> bool:
     return any(keyword.lower() in title for keyword in _INTERNSHIP_KEYWORDS)
 
 
+# 日薪/周薪/时薪的时间单位（年由 _YEARLY_RE 单独折算为月薪）。
+_NON_MONTHLY_UNIT_RE = re.compile(
+    r"/\s*(?:天|日|周|星期|小时|时)|每(?:天|日|周|星期)|日结"
+)
+
+
 def _parse_salary_range_k(salary: str) -> tuple[float, float] | None:
+    # 日薪/周薪/时薪不是月薪，无法与 salary_min/max（K/月）直接比较：按“无法解析”
+    # 处理，交给 profile.filter_unparsed_salary（开启“接受实习”时会自动关闭）与 AI
+    # 判断，避免「200-300元/天」被误解析成 0.2-0.3K 后当作低薪岗位拦截。
+    if _NON_MONTHLY_UNIT_RE.search(salary or ""):
+        return None
+
     range_match = re.search(r"(\d+(?:\.\d+)?)\s*[kK]?\s*-\s*(\d+(?:\.\d+)?)\s*[kK]", salary)
     if range_match:
         low = float(range_match.group(1))
