@@ -11,7 +11,7 @@ import { SendWindowsInput, sendWindowsError } from '@/components/config/SendWind
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Save, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
-import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
+import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS, DELIVERY_ONLY_PLATFORMS, PLATFORM_SAFETY_FIELDS, PLATFORM_DELIVERY_NOTICE, PLATFORM_SAFETY_NOTICE, platformSafetyError } from '@/lib/platforms'
 
 const AI_SERVICES = {
   anthropic: {
@@ -58,6 +58,7 @@ const BOSS_FILTER_OPTIONS = {
 export default function ConfigPage() {
   const { config, schema, loading, saving, dirty, error, message, updateConfig, saveConfig, resetConfig } = useConfig()
   const windowError = config ? sendWindowsError(config.throttle?.send_windows ?? ['09:00-16:00']) : null
+  const safetyError = config ? platformSafetyError(config) : null
   const requestedSection = new URLSearchParams(window.location.search).get('section')
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => ({
     profile: true,
@@ -301,11 +302,13 @@ export default function ConfigPage() {
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={resetConfig}><RotateCcw className="w-3 h-3 mr-1" />重置</Button>
-            <Button data-tour="config-save" size="sm" onClick={saveConfig} disabled={saving || !dirty || !!windowError}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
+            <Button data-tour="config-save" size="sm" onClick={saveConfig} disabled={saving || !dirty || !!windowError || !!safetyError}><Save className="w-3 h-3 mr-1" />{saving ? '保存中...' : '保存'}</Button>
           </div>
         </div>
 
-        {windowError && <p className="text-xs text-danger">发送时间窗口有误，请展开「反监测设置」修正后保存：{windowError}</p>}
+        {windowError && <p className="text-xs text-danger">发送时间窗口有误，请展开「安全设置」修正后保存：{windowError}</p>}
+
+        {safetyError && <p role="alert" className="text-xs text-danger">{safetyError}，请展开「安全设置」修正后保存。</p>}
 
         {/* Profile Section */}
         <SectionCard title="个人信息" sectionKey="profile" expanded={expandedSections} toggle={toggleSection}>
@@ -423,7 +426,7 @@ export default function ConfigPage() {
         <SectionCard title="搜索设置" sectionKey="search" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-              智联、前程无忧和猎聘只自动采集、评分和生成招呼语；岗位池会提供原平台链接，你完成投递后可手动标记“已发送”。BossHunter 不会替你在这些平台发送、回复或监听。
+              {PLATFORM_DELIVERY_NOTICE}
             </p>
             {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
               const search = platformSearch(platform)
@@ -702,8 +705,36 @@ export default function ConfigPage() {
         </SectionCard>
 
         {/* Anti-monitoring Section */}
-        <SectionCard title="反监测设置" sectionKey="collection" expanded={expandedSections} toggle={toggleSection}>
+        <SectionCard title="安全设置" sectionKey="collection" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
+            <p className="text-xs leading-6 text-muted">{PLATFORM_SAFETY_NOTICE}</p>
+            {DELIVERY_ONLY_PLATFORMS.map(platform => (
+              <fieldset key={platform} className="rounded-2xl border border-card-border p-4">
+                <legend className="px-2 text-sm font-bold">{PLATFORM_LABELS[platform]}独立安全额度</legend>
+                <div className="grid gap-4 md:grid-cols-2">
+                  {PLATFORM_SAFETY_FIELDS.map(field => (
+                    <Field key={field.key} label={field.label}>
+                      <Input
+                        aria-label={`${PLATFORM_LABELS[platform]}${field.label}`}
+                        type="number" min={1} step={1}
+                        value={config.platforms?.[platform]?.safety?.[field.key] ?? field.defaultValue}
+                        onChange={event => updateConfig(`platforms.${platform}.safety.${field.key}`, event.target.value === '' ? '' : Number(event.target.value))}
+                      />
+                    </Field>
+                  ))}
+                </div>
+                {platform === 'zhilian' && (
+                  <div className="mt-4">
+                    <Field label="智联投递 PDF 文件名">
+                      <Input aria-label="智联投递 PDF 文件名" value={config.platforms?.zhilian?.delivery?.resume_name || ''}
+                        onChange={event => updateConfig('platforms.zhilian.delivery.resume_name', event.target.value)}
+                        placeholder="与智联已有附件的文件名完全一致" />
+                    </Field>
+                    <p className="mt-1 text-xs text-muted">确认投递后，自动选中这个唯一匹配的 PDF 并提交；文件缺失、重名或出现其他弹窗时暂停。留空则由你手动选择。</p>
+                  </div>
+                )}
+              </fieldset>
+            ))}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="BOSS 单日搜索页上限">
                 <Input type="number" value={config.collection?.daily_search_page_limit ?? 60} onChange={e => updateConfig('collection.daily_search_page_limit', Number(e.target.value))} min={1} max={200} />

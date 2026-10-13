@@ -721,7 +721,7 @@ class EnsureHostTabTests(TestCase):
         collector = Job51Collector(browser=browser, sleep=Mock())
         with self.assertRaises(CollectionBlockedError) as raised:
             collector._ensure_host_tab(self._make_request())
-        self.assertEqual(raised.exception.code, "rate_limit")
+        self.assertEqual(raised.exception.code, "browser_disconnected")
 
 
 class CollectEntryTests(TestCase):
@@ -969,3 +969,15 @@ class Job51FilterRegressionTests(TestCase):
             conn = get_db(db_path)
             self.assertEqual(conn.execute("select count(*) from jobs").fetchone()[0], 5)
             conn.close()
+
+
+import pytest
+from collector_safety_fixtures import install_safety_fixtures
+
+
+@pytest.fixture(autouse=True)
+def persistent_safety_fakes(monkeypatch):
+    connections = install_safety_fixtures(monkeypatch, Job51Collector, Job51Browser)
+    yield
+    for conn in connections:
+        conn.close()

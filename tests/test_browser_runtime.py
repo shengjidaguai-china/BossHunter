@@ -273,7 +273,9 @@ class BrowserRuntimeSourceTests(unittest.TestCase):
 
         self.assertIn("q.background === '1'", source)
         self.assertIn("{ url: targetUrl, background }", source)
-        self.assertNotIn("'Page.bringToFront'", source)
+        new_tab_route = source.split("pathname === '/new'", 1)[1].split("pathname === '/activate'", 1)[0]
+        self.assertNotIn("'Page.bringToFront'", new_tab_route)
+        self.assertIn("pathname === '/activate'", source)
         self.assertIn("process.platform === 'darwin'", source)
         self.assertIn("pathname === '/key'", source)
 

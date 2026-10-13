@@ -57,6 +57,11 @@ platforms:
       sort: newest
   zhilian:
     enabled: false
+    safety:
+      daily_search_page_limit: 20
+      daily_detail_page_limit: 50
+      daily_platform_page_limit: 80  # 采集与投递共享的平台总访问额度
+      daily_delivery_limit: 10       # 也受 throttle.daily_limit 总额度限制
     search:
       keywords: []
       cities: []
@@ -66,7 +71,12 @@ platforms:
       sort: default
   51job:
     enabled: false
-    # 51job 目前只开放采集/评分/招呼语生成，真实发送和监听仍锁定。
+    safety:
+      daily_search_page_limit: 20
+      daily_detail_page_limit: 50
+      daily_platform_page_limit: 80  # 采集与投递共享的平台总访问额度
+      daily_delivery_limit: 10       # 也受 throttle.daily_limit 总额度限制
+    # 确认后使用网站默认简历申请；需人工处理的页面暂停，不监测聊天。
     search:
       keywords: []
       cities: ["上海"]
@@ -75,7 +85,12 @@ platforms:
       sort: default
   liepin:
     enabled: false
-    # 猎聘目前只开放采集/评分/招呼语生成，真实发送和监听仍锁定。
+    safety:
+      daily_search_page_limit: 20
+      daily_detail_page_limit: 50
+      daily_platform_page_limit: 80  # 采集与投递共享的平台总访问额度
+      daily_delivery_limit: 10       # 也受 throttle.daily_limit 总额度限制
+    # 确认后使用网站默认简历申请；需人工处理的页面暂停，不监测聊天。
     search:
       keywords: []
       cities: []

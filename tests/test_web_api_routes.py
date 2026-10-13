@@ -1258,7 +1258,7 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual([job["id"] for job in payload["pending_confirmation"]], ["ready-job"])
 
-    def test_workbench_excludes_collection_only_platforms_from_automatic_delivery(self):
+    def test_workbench_includes_native_platforms_for_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
             db = get_db(base_dir / "data" / "bosshunter.db")
@@ -1276,7 +1276,7 @@ class WebApiRouteTests(unittest.TestCase):
 
         payload = json.loads(body)
         self.assertTrue(status.startswith("200"), body)
-        self.assertEqual(payload["pending_confirmation"], [])
+        self.assertEqual([job["id"] for job in payload["pending_confirmation"]], ["zhilian-ready"])
 
     def test_web_api_workbench_reports_daily_send_quota(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1328,7 +1328,7 @@ class WebApiRouteTests(unittest.TestCase):
             try:
                 # Funnel "today" uses the machine's local calendar day. Keep fixtures
                 # in the same clock so this remains stable around local midnight.
-                now = datetime.now()
+                now = datetime.fromisoformat(db.execute("SELECT datetime('now', 'localtime', 'start of day', '+12 hours', 'utc')").fetchone()[0])
                 fixtures = (
                     ("today-ready", "ready", now),
                     ("today-sent", "sent", now - timedelta(hours=1)),
@@ -1590,6 +1590,15 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(json.loads(response_body)["id"], "full-task")
 
     def test_web_api_deliver_batch_continues_send_when_some_greetings_fail(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        server.set_base_dir(Path(temp.name))
+        db = get_db(server.DATA_DIR / "bosshunter.db")
+        try:
+            for job_id in ['job-1', 'job-2']:
+                insert_job(db, _job(job_id))
+        finally:
+            db.close()
         task = WorkbenchTask(id="deliver-partial", mode="full", label="运行全流程")
         config = {
             "_workbench_job_ids": ["job-1", "job-2"],
@@ -2404,7 +2413,7 @@ class WebApiRouteTests(unittest.TestCase):
             server._execute_deliver(task, config)
 
         # Assert
-        self.assertIn("招呼语发送结果：成功 1，失败 1，待下次发送 1（共 3）", task.logs)
+        self.assertIn("投递结果：成功 1，失败 1，待下次发送 1（共 3）", task.logs)
         self.assertIn("1 个岗位发送失败已单独记录，继续后续流程", task.logs)
         self.assertIn("1 个岗位因今日发送额度未执行，已保留在“待发送招呼语”", task.logs)
         self.assertEqual(task.stop_reason, "daily_limit")
@@ -2412,6 +2421,15 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(task.metrics["send_deferred"], 1)
 
     def test_deliver_counts_preserved_greetings_as_ready(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        server.set_base_dir(Path(temp.name))
+        db = get_db(server.DATA_DIR / "bosshunter.db")
+        try:
+            for job_id in ['job-a', 'job-b', 'job-c']:
+                insert_job(db, _job(job_id))
+        finally:
+            db.close()
         task = WorkbenchTask(id="preserved-greeting", mode="deliver", label="投递")
         config = {"_workbench_job_ids": ["job-a", "job-b", "job-c"]}
 

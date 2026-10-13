@@ -31,10 +31,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from bosshunter.ai.prefilter import salary_filter_result
 from bosshunter.browser import close_tab, evaluate, get_page_targets, new_tab
+from bosshunter.collection.safety import CollectionSafety, protected_collection
+from bosshunter.platform_safety import PlatformSafetyStop
 from bosshunter.collection.base import CollectionBlockedError, CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
 from bosshunter.db import (
@@ -498,8 +500,9 @@ class Job51Collector:
     ):
         self.config = config or {}
         # safety_conn 由 orchestrator 注入（学 BossCollector）：用于断点读写与去重判断。
-        # 为 None 时（registry 无参实例化/部分测试）断点与去重退化为不校验。
+        # 无连接仍可构造/解析，但 collect 拒绝执行未计量的访问。
         self.safety_conn = safety_conn
+        self._safety = CollectionSafety(self.config, safety_conn, self.platform)
         self.browser = browser or Job51Browser()
         self.sleep = sleep
         self.uniform = uniform or random.SystemRandom().uniform
@@ -508,6 +511,8 @@ class Job51Collector:
     def _log(self, hooks: CollectorHooks, message: str, **values: Any) -> None:
         try:
             hooks.on_event(message=message, **values)
+        except PlatformSafetyStop:
+            raise
         except Exception:
             pass
 
@@ -615,8 +620,7 @@ class Job51Collector:
         """找一个 51job 搜索页作为 fetch 宿主（与 API 同源）。
 
         ⚠️ 必须精确匹配 we.51job.com：www/jobs 子域名跨域，fetch 会被 CORS 拦截。
-        ⚠️ 不盲目复用旧宿主页：旧 tab 可能后台节流/冻结导致 fetch 挂起；复用前先
-        「fetch 探活」，能真正拿到 API 响应的才复用，否则新开前台 tab。
+        复用宿主不额外发探活请求；首个有超时、限速与预算的请求检查响应。
 
         返回 ``(target_id, owned)``；复用用户已有页面时 ``owned=False``，采集结束
         不能把用户的页面关闭。
@@ -624,42 +628,45 @@ class Job51Collector:
         keyword = request.keywords[0]
         code = request.city_codes.get(request.cities[0]) if request.cities else "020000"
 
+        self._safety.check()
         for t in self.browser.get_page_targets():
-            if "we.51job.com" in str(t.get("url", "")):
-                candidate_target = t.get("targetId")
-                if not candidate_target:
-                    continue
-                try:
-                    alive_js = JS_FETCH_API_PAGE.replace("__KW__", quote(keyword)).replace("__AREA__", code).replace("__PAGE__", "1")
-                    alive = self.browser.evaluate(candidate_target, alive_js, timeout=8)
-                    if alive and "error" not in str(alive):
-                        return str(candidate_target), False
-                except Exception:
-                    continue
+            if urlparse(str(t.get("url", ""))).hostname in {"we.51job.com"} and t.get("targetId"):
+                # Reuse without a hidden API probe. The first paced, budgeted
+                # request performs response validation like every later request.
+                self._safety.inspect_page(self.browser.evaluate, str(t["targetId"]))
+                return str(t["targetId"]), False
 
         tmp_url = SEARCH_URL.format(area=code, keyword=quote(keyword))
+        self._safety.reserve("search_page")
         host_target = self.browser.new_tab(tmp_url, background=False)
         if not host_target:
-            raise CollectionBlockedError("rate_limit", "无法打开 51job 页面作为 API 宿主")
-        self.sleep(5)  # 等宿主页加载出 cookie
+            raise CollectionBlockedError("browser_disconnected", "无法打开 51job 页面作为 API 宿主")
+        try:
+            self._safety.wait(5, self.sleep)  # 等宿主页加载出 cookie
+            self._safety.inspect_page(self.browser.evaluate, host_target)
+        except BaseException:
+            self.browser.close_tab(host_target)
+            raise
         return host_target, True
 
     def _fetch_page(self, host_target: str, kw_encoded: str, area: str, page: int) -> dict:
         """在宿主页上下文发一次 API 请求并分析返回，返回 _analyze_api_response 结果。"""
         js = JS_FETCH_API_PAGE.replace("__KW__", kw_encoded).replace("__AREA__", area).replace("__PAGE__", str(page))
+        self._safety.reserve("search_page")
         raw = self.browser.evaluate(host_target, js, timeout=API_FETCH_TIMEOUT)
         if raw is None:
-            return {"ok": False, "level": 3, "signal": "empty_result",
-                    "note": "evaluate 返回空（超时/断连）", "jobs": [], "total": 0}
+            return self._safety.api_result({"ok": False, "level": 3, "signal": "empty_result",
+                    "note": "evaluate 返回空（超时/断连）", "jobs": [], "total": 0})
         wrapper = _payload(raw)
         if not isinstance(wrapper, dict) or "error" in wrapper:
-            return {"ok": False, "level": 3, "signal": "fetch_error",
-                    "note": f"API fetch 执行出错: {str(wrapper)[:120]}", "jobs": [], "total": 0}
-        return _analyze_api_response(
+            return self._safety.api_result({"ok": False, "level": 3, "signal": "fetch_error",
+                    "note": f"API fetch 执行出错: {str(wrapper)[:120]}", "jobs": [], "total": 0})
+        self._safety.check_api_response(wrapper)
+        return self._safety.api_result(_analyze_api_response(
             int(wrapper.get("http_status") or 0),
             str(wrapper.get("content_type") or ""),
             str(wrapper.get("body") or ""),
-        )
+        ))
 
     # ---------------------------------------------------------------- collect
     def _resume_ttl_hours(self) -> int:
@@ -677,6 +684,7 @@ class Job51Collector:
         except (TypeError, ValueError):
             return 24
 
+    @protected_collection
     def collect(
         self, request: PlatformCollectionRequest, hooks: CollectorHooks
     ) -> PlatformCollectionResult:
@@ -724,6 +732,8 @@ class Job51Collector:
         try:
             host_target, owns_host_target = self._ensure_host_tab(request)
         except CollectionBlockedError:
+            raise
+        except PlatformSafetyStop:
             raise
         except Exception as exc:  # pragma: no cover - 防御性兜底
             raise CollectionBlockedError("browser_disconnected", f"打开 51job 宿主页失败：{exc}")
@@ -783,6 +793,7 @@ class Job51Collector:
         # 边界守卫：续采起点已超过最大页（理论上该词已采完），直接标记完成并跳过
         if start_page > max_pages:
             if self.safety_conn is not None:
+                self._safety.check()
                 mark_combo_collected(self.safety_conn, "51job", city, kw)
                 delete_page_progress(self.safety_conn, "51job", city, kw)
             self._log(hooks, f"51job {kw} 页级断点已超最大页（{saved_page}/{max_pages}），视为已采完，跳过",
@@ -909,6 +920,7 @@ class Job51Collector:
         # 探针全空 → 饱和，整词跳过（记词级断点 + 清页级断点，避免下次重复探测）
         if not hot_pages:
             if self.safety_conn is not None:
+                self._safety.check()
                 mark_combo_collected(self.safety_conn, "51job", city, kw)
                 delete_page_progress(self.safety_conn, "51job", city, kw)
             self._log(hooks, f"51job {kw} 分布式探针全空（已饱和）：命中 {probe_hits or '无'}，跳过 {effective_max} 页",
@@ -964,6 +976,7 @@ class Job51Collector:
                       phase="saving", keyword=kw, city=city, page=page)
 
             for item in jobs_list:
+                self._safety.check()
                 cand = self._item_to_candidate(item, city, area, kw)
                 if cand is None:
                     continue
@@ -982,6 +995,7 @@ class Job51Collector:
 
             # 页级断点：每采完一页立即记录页码
             if self.safety_conn is not None:
+                self._safety.check()
                 upsert_page_progress(self.safety_conn, "51job", city, kw, page)
 
             # 末页判定（可靠版）：本页条数 < 每页上限说明已到末页
@@ -992,6 +1006,7 @@ class Job51Collector:
 
         # 词结束：标记词级断点 + 清页级断点
         if self.safety_conn is not None:
+            self._safety.check()
             mark_combo_collected(self.safety_conn, "51job", city, kw)
             delete_page_progress(self.safety_conn, "51job", city, kw)
 
