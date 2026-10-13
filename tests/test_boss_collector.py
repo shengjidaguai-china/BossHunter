@@ -14,6 +14,7 @@ from bosshunter.collection.platforms.boss import (
     JS_DETECT_COLLECTION_RISK,
     JS_EXTRACT_DETAIL,
     JS_EXTRACT_LIST,
+    JS_VERIFY_SEARCH_PAGE,
     SEARCH_URL,
     BossBrowser,
     BossCollector,
@@ -121,6 +122,8 @@ class BossCollectorCollectionTests(TestCase):
                 return json.dumps(list_jobs)
             if script == JS_EXTRACT_DETAIL:
                 return json.dumps(detail)
+            if script == JS_VERIFY_SEARCH_PAGE:
+                return json.dumps({"ready": True, "reason": "structure_present"})
             return "{}"
 
         return BossBrowser(
@@ -215,6 +218,36 @@ class BossCollectorCollectionTests(TestCase):
         self.assertEqual(result.status, "completed_with_shortage")
         self.assertEqual(result.reason_code, "no_jobs_extracted")
         self.assertNotIn("已采集完毕", result.message)
+
+    def test_cdp_empty_shell_page_reports_distinct_reason(self):
+        risk_raw = json.dumps({"risk": None})
+        def evaluate(_target, script):
+            if script == JS_DETECT_COLLECTION_RISK:
+                return risk_raw
+            if script == JS_EXTRACT_LIST:
+                return json.dumps([])
+            if script == JS_VERIFY_SEARCH_PAGE:
+                return json.dumps({"ready": False, "reason": "generic_shell_title"})
+            return "{}"
+        browser = BossBrowser(
+            new_tab=lambda url, **_kw: "tab-1",
+            close_tab=lambda _t: True,
+            evaluate=evaluate,
+            navigate=lambda _t, _u: True,
+            scroll=lambda *_a, **_kw: True,
+            wait_for_load=lambda *_a, **_kw: True,
+        )
+        hooks, _ = self._make_hooks()
+        result = BossCollector(
+            browser=browser,
+            throttle_factory=lambda **_kw: self._make_throttle(),
+        ).collect(
+            PlatformCollectionRequest("boss", ["AI"], ["北京"], {"北京": "101010100"}, max_pages=1),
+            hooks,
+        )
+        self.assertEqual(result.status, "completed_with_shortage")
+        self.assertEqual(result.reason_code, "cdp_empty_shell")
+        self.assertIn("CDP", result.message)
 
     def test_collection_extracts_candidates(self):
         list_jobs = [
@@ -577,6 +610,8 @@ class BossFreshSearchTests(TestCase):
                 return json.dumps(list_jobs)
             if script == JS_EXTRACT_DETAIL:
                 return json.dumps(detail)
+            if script == JS_VERIFY_SEARCH_PAGE:
+                return json.dumps({"ready": True, "reason": "structure_present"})
             return "{}"
 
         return BossBrowser(
