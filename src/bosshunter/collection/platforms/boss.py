@@ -31,6 +31,57 @@ from bosshunter.throttle import PageThrottle
 
 
 SEARCH_URL = "https://www.zhipin.com/web/geek/job?query={keyword}&city={city_code}"
+# The 校园 tab searches /jobs (plural) with experience=102. The main /job endpoint
+# mixes in 社招 postings carrying "3-5年"/"5-10年" requirements, which is how a
+# campus candidate ends up being told "这是社招，需要毕业证".
+CAMPUS_SEARCH_URL = "https://www.zhipin.com/web/geek/jobs?city={city_code}&query={keyword}"
+CAMPUS_EXPERIENCE = "应届生"
+
+# Searching these returns the whole country, so every row is stored under the
+# pseudo-city instead of its real workplace. BOSS list rows already carry the
+# actual location ("广州·黄埔区·大沙"), so the collector prefers that.
+PSEUDO_CITIES = {"全国", "不限", "所有", "全部"}
+
+
+def location_city(location: Any) -> str:
+    """Extract the city from a BOSS list row's location string.
+
+    BOSS renders ``广州·黄埔区·大沙`` (city · district · block) or just ``上海``.
+    Only the city segment is meaningful for downstream city-priority ordering.
+    """
+    text = str(location or "").strip()
+    if not text:
+        return ""
+    return text.split("·")[0].split(" ")[0].strip()
+
+
+def resolve_list_city(search_city: str, location: Any, city_code: str) -> tuple[str, str]:
+    """Pick the city to store for a list row, plus a matching BOSS city code.
+
+    A real city search keeps the requested city (existing behaviour). A
+    nationwide search stores the row's own workplace, otherwise every job would
+    be filed under "全国" and the configured priority cities could no longer be
+    ordered first.
+    """
+    city = str(search_city or "").strip()
+    if city in PSEUDO_CITIES:
+        found = location_city(location)
+        if found:
+            return found, str(CITY_CODES.get(found) or city_code or "")
+    return search_city, city_code
+
+
+def is_campus_mode(config: Any) -> bool:
+    """Whether the profile targets campus (校招) roles.
+
+    ``both`` keeps the broader social-hire feed, because the user explicitly
+    wants experienced postings as well; only a pure ``campus`` profile switches
+    to the 校园 channel.
+    """
+    profile = config.get("profile") if isinstance(config, dict) else None
+    if not isinstance(profile, dict):
+        return False
+    return str(profile.get("recruitment_type") or "").strip().lower() == "campus"
 
 BOSS_FILTER_OPTIONS: dict[str, dict[str, str]] = {
     "job_type": {"全职": "1901", "兼职": "1903", "实习": "1902"},
@@ -336,6 +387,24 @@ class BossCollector:
     def resolve_city_code(city: str, request: PlatformCollectionRequest) -> str | None:
         return str(request.city_codes.get(city) or CITY_CODES.get(city) or "") or None
 
+    @staticmethod
+    def campus_filters(filters: Any) -> dict[str, Any]:
+        """Adapt a social-hire filter set to BOSS's campus channel.
+
+        ``job_type`` has to go: BOSS does not tag 校招/应届 postings as 全职(1901),
+        and sending both together yields an empty result set (verified live
+        2026-10-13 — each filter alone returns cards, the pair returns none).
+        Experience is pinned to 应届生 because that is what the 校园 channel scopes
+        on, and any 1-3年/3-5年 bucket would readmit social-hire postings.
+        """
+        cleaned = {
+            key: value
+            for key, value in (filters or {}).items()
+            if key != "job_type" and value not in (None, "", [], {})
+        } if isinstance(filters, dict) else {}
+        cleaned["experience"] = [CAMPUS_EXPERIENCE]
+        return cleaned
+
     def collect(self, request: PlatformCollectionRequest, hooks: CollectorHooks) -> PlatformCollectionResult:
         type_config = {
             "profile": self.config.get("profile", {}),
@@ -344,6 +413,7 @@ class BossCollector:
         if conflict := internship_config_error(type_config):
             return PlatformCollectionResult(self.platform, "failed", "internship_config_conflict", conflict)
         collection_cfg = self.config.get("collection", {}) if isinstance(self.config.get("collection"), dict) else {}
+        campus_mode = is_campus_mode(self.config)
         delay_multiplier = _bounded_float(
             collection_cfg.get("collection_delay_multiplier", 1.5),
             1.5,
@@ -539,8 +609,16 @@ class BossCollector:
                     if hooks.stop_event is not None and hooks.stop_event.is_set():
                         return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                     hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
-                    search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code)
-                    filter_query = build_boss_filter_query(request.filters)
+                    if campus_mode:
+                        search_url = CAMPUS_SEARCH_URL.format(keyword=quote(keyword), city_code=city_code)
+                    else:
+                        search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code)
+                    # The campus channel is already scoped to 在校/应届; see
+                    # campus_filters() for why jobType must be dropped here.
+                    effective_filters = (
+                        self.campus_filters(request.filters) if campus_mode else request.filters
+                    )
+                    filter_query = build_boss_filter_query(effective_filters)
                     if filter_query: search_url += f"&{filter_query}"
                     if request.sort == "newest": search_url += "&sortType=2"
                     if page > 1: search_url += f"&page={page}"
@@ -765,14 +843,15 @@ class BossCollector:
         url = str(raw.get("url") or "").strip()
         if not url:
             return None
+        resolved_city, resolved_code = resolve_list_city(city, raw.get("location"), city_code)
         return JobCandidate(
             platform="boss",
             source_job_id=generate_boss_job_id(url),
             title=str(raw.get("title") or "").strip(),
             company=str(raw.get("company") or "").strip(),
             salary=str(raw.get("salary") or "").strip(),
-            city=city,
-            city_code=city_code,
+            city=resolved_city,
+            city_code=resolved_code,
             experience=str(raw.get("experience") or "").strip(),
             education=str(raw.get("education") or "").strip(),
             url=url,

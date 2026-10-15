@@ -1,6 +1,7 @@
 """AI Scorer - Match jobs against resume using Claude API."""
 
 import json
+import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -621,6 +622,56 @@ def _record_score_failure(db, job: dict, detail: str) -> None:
     add_history(db, job["id"], "score_failed", safe_detail)
 
 
+def _is_transient_server_error(exc: AIRequestError) -> bool:
+    """True when an upstream 5xx makes a retry worthwhile instead of aborting the run.
+
+    Gateways answer with statuses that never reach the dedicated classifiers:
+    Cloudflare's 520/524, a proxy's 502/503/504. Those arrive here as the generic
+    ``request_failed`` kind, which used to abort an entire scoring batch over what
+    is usually a single flaky hop.
+    """
+    return exc.kind == "request_failed" and 500 <= int(exc.status_code or 0) <= 599
+
+
+def _is_transient_error(exc: AIRequestError) -> bool:
+    """True when one more attempt is likely to succeed.
+
+    Two shapes show up in production: an upstream 5xx that no dedicated
+    classifier catches, and a connection-level ``network`` failure. Both clear up
+    within seconds — measured at roughly two failures per thirty requests, always
+    returning in ~5s rather than timing out — so discarding a whole batch over
+    them is what the previous behaviour did.
+    """
+    return exc.kind == "network" or _is_transient_server_error(exc)
+
+
+_TRANSIENT_RETRIES = 3
+_TRANSIENT_BACKOFF_SECONDS = 2.0
+
+
+def _retry_transient(job: dict, resume: str, config: dict, first_exc: AIRequestError):
+    """Retry a transient AI failure with linear backoff.
+
+    Returns ``(response, hard_error)``. ``response`` is the text from the first
+    retry that worked, or ``None`` when every attempt failed. ``hard_error`` is a
+    non-transient failure surfaced mid-retry (auth/quota/rate limit); the caller
+    must still pause the batch for those.
+    """
+    for attempt in range(1, _TRANSIENT_RETRIES + 1):
+        _notify(
+            config,
+            f"{job['company']}｜{job['title']} 的 AI 请求遇到瞬时故障"
+            f"（{first_exc.kind}），正在重试（{attempt}/{_TRANSIENT_RETRIES}）。",
+        )
+        time.sleep(_TRANSIENT_BACKOFF_SECONDS * attempt)
+        try:
+            return _call_claude(_build_scoring_prompt(job, resume, config), config), None
+        except AIRequestError as retry_exc:
+            if not _is_transient_error(retry_exc):
+                return None, retry_exc
+    return None, None
+
+
 def _request_score(
     job: dict,
     resume: str,
@@ -684,7 +735,28 @@ def _request_score(
             response = None
         else:
             # str(exc) 现在带 kind/status_code，UI 才能区分限流/鉴权/额度等失败原因（issue #101）。
-            return ScoreOutcome(pause_reason=str(exc))
+            if _is_transient_error(exc):
+                # 瞬时故障先退避重试。两种结局：
+                #  - 持续 5xx：服务在线但反复报错，只记本岗位失败，不拖停整批
+                #  - 持续连接失败：服务可能已下线，中断整批，避免继续猛打
+                retry_response, hard_error = _retry_transient(job, resume, config, exc)
+                if hard_error is not None:
+                    return ScoreOutcome(pause_reason=str(hard_error))
+                if retry_response is not None:
+                    response = retry_response
+                elif _is_transient_server_error(exc):
+                    return ScoreOutcome(
+                        failure_detail=(
+                            f"AI 服务持续返回瞬时错误（HTTP {exc.status_code}），"
+                            f"已重试 {_TRANSIENT_RETRIES} 次；请稍后重试该岗位"
+                        )
+                    )
+                else:
+                    return ScoreOutcome(
+                        pause_reason=f"{exc}（重试 {_TRANSIENT_RETRIES} 次后仍失败）"
+                    )
+            else:
+                return ScoreOutcome(pause_reason=str(exc))
 
     result = _validated_score_result(response) if response else None
     for attempt in range(2, max_attempts + 1):
@@ -697,7 +769,9 @@ def _request_score(
         try:
             response = _call_claude(_build_scoring_prompt(job, resume, config), config)
         except AIRequestError as retry_exc:
-            if retry_exc.kind in {"token_quota", "rate_limit", "auth", "network", "request_failed"}:
+            # 瞬时 5xx 与"未返回完整评分"同属可重试项：退回空结果走岗位级失败，
+            # 只有鉴权/额度/限流/网络等服务级故障才中断整批。
+            if retry_exc.kind in {"token_quota", "rate_limit", "auth", "network", "request_failed"} and not _is_transient_server_error(retry_exc):
                 return ScoreOutcome(pause_reason=str(retry_exc))
             response = None
         result = _validated_score_result(response) if response else None

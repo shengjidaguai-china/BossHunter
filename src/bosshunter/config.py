@@ -83,6 +83,9 @@ DEFAULTS: dict[str, Any] = {
         "deal_breakers": [],
         "jd_deal_breakers": [],
         "blocked_companies": [],
+        "priority_cities": [],
+        "resume_images": [],
+        "send_resume_images": False,
     },
     "search": {
         "keywords": [],

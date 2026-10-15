@@ -20,6 +20,7 @@ env/
 
 # Config with secrets
 config.yaml
+config.yaml.bak-*
 .*.credentials.yaml
 
 # Personal resume
@@ -42,6 +43,7 @@ src/bosshunter/web/frontend/dist/
 
 # Local generated artifacts
 output/
+outputs/
 tmp/
 
 # OS
@@ -50,6 +52,7 @@ Thumbs.db
 
 # Claude Code / local agent notes
 .claude/
+.workbuddy-ai/
 .superpowers/
 docs/superpowers/
 AGENTS.md
