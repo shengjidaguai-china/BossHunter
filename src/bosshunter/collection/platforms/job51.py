@@ -54,6 +54,9 @@ from bosshunter.throttle import SendWindowChecker, should_take_day_off
 SEARCH_URL = "https://we.51job.com/pc/search?jobArea={area}&keyword={keyword}"
 API_SEARCH_URL = "https://we.51job.com/api/job/search-pc"
 API_PAGE_SIZE = 20        # 每页条数（API 上限 20，实测稳定）
+# 接口调用返回空时的兜底阶梯：(等待秒数, 是否先降频)。前两次只是等一等再问；后两次先把采集节奏放慢一档再问；
+# 全部用完仍为空才按 L3 处理。真正的风控信号（HTML/状态码/风控词）不走这里，仍然直接停。
+EMPTY_RESULT_RECOVERY = ((8, False), (20, False), (60, True), (180, True))
 API_FETCH_TIMEOUT = 25.0  # 单次 fetch 超时（秒）
 
 # ---- 速率四层防护（共享一个 60s 窗口，堵「多阶段独立计数叠加」漏洞）----
@@ -418,6 +421,12 @@ class _ApiRateLimiter:
             self._break_range = (90.0, 180.0)
             self._per_min_limit = 12
 
+    def slow_down(self) -> None:
+        """Back off after the platform stops answering: double the gaps and breaks, halve the per-minute cap."""
+        self._gap_range = tuple(v * 2 for v in self._gap_range)
+        self._break_range = tuple(v * 2 for v in self._break_range)
+        self._per_min_limit = max(4, self._per_min_limit // 2)
+
     def set_tier(self, total_requests: int) -> None:
         self._set_tier(total_requests)
         self._no_burst = False
@@ -644,10 +653,27 @@ class Job51Collector:
         self.sleep(5)  # 等宿主页加载出 cookie
         return host_target, True
 
+    def _note_recovery(self, message: str) -> None:
+        hooks = getattr(self, "_hooks", None)
+        if hooks is not None:
+            self._log(hooks, message, phase="procuring")
+
     def _fetch_page(self, host_target: str, kw_encoded: str, area: str, page: int) -> dict:
         """在宿主页上下文发一次 API 请求并分析返回，返回 _analyze_api_response 结果。"""
         js = JS_FETCH_API_PAGE.replace("__KW__", kw_encoded).replace("__AREA__", area).replace("__PAGE__", str(page))
         raw = self.browser.evaluate(host_target, js, timeout=API_FETCH_TIMEOUT)
+        # An empty answer is usually a stalled tab or a dropped CDP call, not risk control. Climb down the ladder
+        # (wait, wait longer, slow the collection rhythm and wait, slow it again) before treating it as an L3 stop
+        # that ends the whole platform.
+        for wait, slow in EMPTY_RESULT_RECOVERY:
+            if raw is not None:
+                break
+            limiter = getattr(self, "_limiter", None)
+            if slow and limiter is not None:
+                limiter.slow_down()
+            self._note_recovery(f"51job 接口无响应，{'已降低采集频率，' if slow else ''}等待 {wait} 秒后重试")
+            self.sleep(wait)
+            raw = self.browser.evaluate(host_target, js, timeout=API_FETCH_TIMEOUT)
         if raw is None:
             return {"ok": False, "level": 3, "signal": "empty_result",
                     "note": "evaluate 返回空（超时/断连）", "jobs": [], "total": 0}
@@ -730,6 +756,7 @@ class Job51Collector:
 
         # ★ 全局限速器：探针/保底针/热区扫描三阶段共享同一个 60s 窗口，统一计数。
         rate_limiter = _ApiRateLimiter(total_requests=API_ADAPTIVE_MEDIUM, no_burst=False)
+        self._limiter, self._hooks = rate_limiter, hooks
 
         try:
             for city in request.cities:
