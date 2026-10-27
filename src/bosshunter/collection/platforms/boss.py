@@ -189,6 +189,10 @@ JS_EXTRACT_LIST = """
 })()
 """
 
+# HR activity labels shown on a BOSS detail card, e.g. 在线 / 刚刚活跃 / 3日内活跃 / 2周内活跃 / 两天内活跃 / 半年前活跃.
+# One pattern feeds both the label extraction and the name clean-up in JS_EXTRACT_DETAIL (and the tests), so they cannot drift.
+HR_ACTIVE_PATTERN = "在线|刚刚活跃|今日活跃|本周活跃|本月活跃|半年前活跃|[0-9一二两三四五六七八九十]+(?:日|天|周|个?月)内活跃"
+
 JS_EXTRACT_DETAIL = """
 (() => {
     const info = {};
@@ -223,14 +227,31 @@ JS_EXTRACT_DETAIL = """
         if (text.includes('人')) info.company_size = text;
         else if (!info.company_industry) info.company_industry = text;
     });
-    const bossSection = document.querySelector('.boss-info-attr') || document.querySelector('.job-boss-info');
-    info.hr_name = bossSection?.querySelector('.name')?.textContent?.trim() || '';
-    info.hr_title = bossSection?.querySelector('.title')?.textContent?.trim() || '';
-    info.hr_active = document.querySelector('.boss-active-time')?.textContent?.trim() || '';
+    // .job-boss-info holds the HR name and online tag; .boss-info-attr only holds "company · title".
+    const bossCard = document.querySelector('.job-boss-info');
+    const bossAttr = document.querySelector('.boss-info-attr');
+    const cardLines = (bossCard?.innerText || '').split('\\n').map(line => line.trim()).filter(Boolean);
+    const attrText = (bossAttr?.innerText || '').replace(/\\s+/g, ' ').trim();
+    // Status tags (online / active time) can sit inside the name node; keep only the person's name.
+    const nameNode = bossCard?.querySelector('.name') || bossAttr?.querySelector('.name');
+    const nameText = nameNode ? (nameNode.firstChild?.nodeType === 3 ? nameNode.firstChild.textContent : nameNode.textContent) : '';
+    info.hr_name = (nameText || (cardLines[0] || '').split(/\\s+/)[0] || '').trim()
+        .replace(new RegExp('__HR_ACTIVE_PATTERN__', 'g'), '').trim();
+    info.hr_title = bossCard?.querySelector('.title')?.textContent?.trim()
+        || bossAttr?.querySelector('.title')?.textContent?.trim()
+        || (attrText.includes('·') ? attrText.split('·').pop().trim() : '');
+    info.hr_active = document.querySelector('.boss-active-time')?.textContent?.trim()
+        || document.querySelector('.boss-online-tag')?.textContent?.trim() || '';
+    if (!info.hr_active) {
+        // An online HR has no .boss-active-time node; the status sits in the boss card text.
+        const bossText = `${bossCard?.innerText || ''} ${attrText}`;
+        const activeMatch = bossText.match(new RegExp('__HR_ACTIVE_PATTERN__'));
+        info.hr_active = activeMatch ? activeMatch[0] : '';
+    }
     info.url = window.location.pathname;
     return JSON.stringify(info);
 })()
-"""
+""".replace("__HR_ACTIVE_PATTERN__", HR_ACTIVE_PATTERN)
 
 JS_DETECT_COLLECTION_RISK = """
 (() => {
