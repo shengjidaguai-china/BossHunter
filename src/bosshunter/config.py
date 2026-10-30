@@ -83,6 +83,12 @@ DEFAULTS: dict[str, Any] = {
         "deal_breakers": [],
         "jd_deal_breakers": [],
         "blocked_companies": [],
+        # 0 = off. Postings the platform has not refreshed for more than this many days are filtered.
+        "max_job_update_days": 0,
+        # 0 = off, 1 = within a month, 2 = within ~3 days, 3 = online / active today.
+        "hr_active_min_level": 0,
+        # Postings without any HR activity label pass unless this is false.
+        "hr_active_unknown_pass": True,
     },
     "search": {
         "keywords": [],
