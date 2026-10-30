@@ -24,6 +24,7 @@ from bosshunter.collection_run_store import (
     boss_combo_key, boss_resume_options, claim_boss_resume, create_collection_run,
     save_boss_checkpoint, update_collection_run,
 )
+from bosshunter.company_dedup import cooldown_days, approved_within, matching_company, pool_companies
 from bosshunter.db import get_db, insert_job_if_new, job_identity_exists, recompute_outsourcing
 from bosshunter.employment import internship_config_error
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
@@ -245,6 +246,14 @@ class _SharedProcessor:
         self.emit = emit
         self.outsourcing_rules = load_rules(config)
         recompute_outsourcing(conn, self.outsourcing_rules)
+        # Cross-platform company dedup: a company with a job already in the pool, or applied to within the cooldown
+        # window on ANY platform, is not collected again. Opt-in: automation.collect_company_dedup: true.
+        automation = config.get("automation") if isinstance(config.get("automation"), dict) else {}
+        self.company_dedup = automation.get("collect_company_dedup", False) is True
+        self.pool_companies = pool_companies(conn) if self.company_dedup else []
+        self.recent_companies = (
+            [item["company"] for item in approved_within(conn, cooldown_days(config))] if self.company_dedup else []
+        )
         self.progress = CollectionProgress(
             run_id=run_id, platform=request.platform, platform_index=platform_index,
             platform_total=platform_total, phase="queued", target=None,
@@ -300,6 +309,12 @@ class _SharedProcessor:
         if matched := matching_blocked_company(candidate.company, profile.get("blocked_companies") or []):
             self.event(message=f"公司命中屏蔽规则：{matched}", increment_filtered=True, filtered_candidate=candidate)
             return False
+        if self.company_dedup and (matched := matching_company(candidate.company, self.recent_companies)):
+            self.event(message=f"公司近期已投递过（任一平台）：{matched}", increment_filtered=True, filtered_candidate=candidate)
+            return False
+        if self.company_dedup and (matched := matching_company(candidate.company, self.pool_companies)):
+            self.event(message=f"公司已有岗位在岗位池中：{matched}", increment_filtered=True, filtered_candidate=candidate)
+            return False
         self.event()
         return True
 
@@ -318,6 +333,7 @@ class _SharedProcessor:
             return True
         if inserted:
             self.new_job_ids.append(candidate.storage_id)
+            self.pool_companies.append(candidate.company)
         else:
             self.progress.duplicate += 1
         self.event(phase="saving")
