@@ -12,6 +12,7 @@ import { TrendChart } from '@/components/dashboard/TrendChart'
 import { TopCompanies } from '@/components/dashboard/TopCompanies'
 import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
 import { RecentActivity } from '@/components/dashboard/RecentActivity'
+import { RecontactPanel } from '@/components/dashboard/RecontactPanel'
 import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
@@ -72,6 +73,7 @@ function currentTaskStage(task: WorkbenchTask) {
   }
   const logs = task.logs || []
   for (const log of logs.slice().reverse()) {
+    if (log.includes('再次投递')) return log
     if (log.includes('AI 评分进度')) return log
     if (log.includes('招呼语进度')) return log
     if (log.includes('招呼语发送结果')) return log
@@ -454,6 +456,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
   const [preflightRunning, setPreflightRunning] = useState(false)
   const [generatingGreetings, setGeneratingGreetings] = useState(false)
+  const [bulkGreetingIds, setBulkGreetingIds] = useState<string[]>([])
+  const [bulkGreetingDraft, setBulkGreetingDraft] = useState('')
+  const [bulkGreetingSaving, setBulkGreetingSaving] = useState(false)
+  const [bulkGreetingError, setBulkGreetingError] = useState('')
   const startedGreetTaskIdRef = useRef<string | null>(null)
 
   const todayJobs = useMemo(
@@ -799,6 +805,57 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     )
   }
 
+  const openBulkGreetingEditor = () => {
+    const ids = reviewedGreetingJobs.map(job => job.id)
+    if (!ids.length) return
+    setBulkGreetingIds(ids)
+    setBulkGreetingDraft('')
+    setBulkGreetingError('')
+  }
+
+  const closeBulkGreetingEditor = () => {
+    if (bulkGreetingSaving) return
+    setBulkGreetingIds([])
+    setBulkGreetingDraft('')
+    setBulkGreetingError('')
+  }
+
+  const saveBulkGreeting = async () => {
+    const text = bulkGreetingDraft.trim()
+    if (!text) {
+      setBulkGreetingError('批量招呼语不能为空')
+      return
+    }
+    if (!bulkGreetingIds.length) return
+    setBulkGreetingSaving(true)
+    setBulkGreetingError('')
+    setNotice(`正在批量保存 ${bulkGreetingIds.length} 个岗位...`)
+    try {
+      const res = await fetch('/api/workbench/greetings/bulk-edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: bulkGreetingIds, greeting: text, confirmed: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 404 || res.status === 405) {
+        throw new Error('后台尚未加载批量编辑功能，请退出旧的 BossHunter 服务并重新启动后重试。')
+      }
+      if (!res.ok) throw new Error(data.error || '批量保存失败')
+      const count = Number(data.updated_count)
+      if (data.success !== true || count !== bulkGreetingIds.length) {
+        throw new Error('后台未确认所有岗位已保存，请刷新核对后重试。')
+      }
+      setBulkGreetingIds([])
+      setBulkGreetingDraft('')
+      await refresh()
+      setNotice(`已批量更新 ${count} 个岗位的最终招呼语。`)
+    } catch (err) {
+      setBulkGreetingError(err instanceof Error ? err.message : '批量保存失败')
+    } finally {
+      setBulkGreetingSaving(false)
+    }
+  }
+
   const openJobDetail = async (job: Job) => {
     try {
       const res = await fetch(`/api/jobs/${job.id}`)
@@ -1137,6 +1194,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </details>
       </section>
 
+      <RecontactPanel taskRunning={Boolean(activeTask)}
+        defaultGreeting={workbench.recontact_default_greeting || ''}
+        refreshKey={`${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })}:${visibleTask?.id || ''}:${visibleTask?.status || ''}:${(visibleTask?.logs || []).filter(log => log.startsWith('再次投递成功：')).length}`}
+        onStarted={async () => {
+        await refresh()
+        setNotice('已启动未回复岗位再次投递，可在当前任务中查看结果或停止。')
+      }} />
+
       {workbench.send_errors.length > 0 && (
         <section className="rounded-3xl border border-danger-border bg-danger-soft p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
@@ -1190,6 +1255,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </span>
               )}
               <Button
+                variant="secondary"
+                size="sm"
+                disabled={!reviewedGreetingJobs.length || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id) || Boolean(job.greeting_activity))}
+                onClick={openBulkGreetingEditor}
+              >
+                批量编辑已确认 {reviewedGreetingJobs.length} 个
+              </Button>
+              <Button
                 size="sm"
                 disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id) || Boolean(job.greeting_activity))}
                 onClick={() => sendReadyGreetings(reviewedGreetingJobs.map(job => job.id))}
@@ -1214,6 +1287,18 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             ))}
           </div>
         </section>
+      )}
+
+      {bulkGreetingIds.length > 0 && (
+        <BulkGreetingEditor
+          count={bulkGreetingIds.length}
+          value={bulkGreetingDraft}
+          saving={bulkGreetingSaving}
+          error={bulkGreetingError}
+          onChange={setBulkGreetingDraft}
+          onClose={closeBulkGreetingEditor}
+          onSave={() => void saveBulkGreeting()}
+        />
       )}
 
       <section className="rounded-2xl border border-card-border bg-card p-4">
@@ -1296,6 +1381,63 @@ function collectionReasonLabel(reason = '') {
   if (reason.includes('daily_platform_page_limit')) return '今日页面访问次数已用完'
   if (reason.includes('daily_search_page_limit')) return '今日搜索页次数已用完'
   return ''
+}
+
+function BulkGreetingEditor({
+  count,
+  value,
+  saving,
+  error,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  count: number
+  value: string
+  saving: boolean
+  error: string
+  onChange: (value: string) => void
+  onClose: () => void
+  onSave: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-label="批量编辑招呼语">
+      <div className="w-full max-w-2xl rounded-3xl border border-card-border bg-card p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-xs font-black tracking-[0.18em] text-primary">批量编辑</div>
+            <h3 className="mt-1 text-xl font-black">统一修改已确认招呼语</h3>
+            <p className="mt-2 text-sm leading-6 text-muted">这段文字会覆盖当前 {count} 个已确认且未发送岗位的最终发送版本，已发送岗位不会被修改。</p>
+          </div>
+          <Button variant="secondary" size="sm" disabled={saving} onClick={onClose}>关闭</Button>
+        </div>
+        <label className="mt-5 block text-sm font-black" htmlFor="bulk-greeting-editor">新的统一招呼语</label>
+        <textarea
+          id="bulk-greeting-editor"
+          value={value}
+          maxLength={300}
+          autoFocus
+          disabled={saving}
+          onChange={event => {
+            setConfirming(false)
+            onChange(event.target.value)
+          }}
+          placeholder="请输入要应用到这些岗位的招呼语（最多 300 字）"
+          className="mt-2 min-h-36 w-full resize-y rounded-2xl border border-card-border bg-surface p-3 text-sm leading-6 outline-none focus:border-primary"
+        />
+        {error && <p role="alert" className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
+        {confirming && !error && <p className="mt-3 text-sm text-primary">确认后将覆盖 {count} 个岗位的招呼语，请核对上方文案。</p>}
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <span className="text-xs text-muted">{value.length}/300</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" disabled={saving} onClick={onClose}>取消</Button>
+            <Button size="sm" disabled={saving || !value.trim()} onClick={() => confirming ? onSave() : setConfirming(true)}>{saving ? '保存中...' : confirming ? `确认覆盖 ${count} 个岗位` : `应用到 ${count} 个岗位`}</Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function CollectionProgressPanel({ progress }: { progress: CollectionProgress }) {
@@ -2554,9 +2696,9 @@ function MonitorExecutionView({
                   <div className="mt-3 space-y-3">
                     {isFollowUp && (
                       <div>
-                        <div className="text-xs font-black text-primary">自动跟进说明</div>
+                        <div className="text-xs font-black text-primary">{parsed.schema === 'follow_up.manual.v1' ? '手动再次投递' : '自动跟进说明'}</div>
                         <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-muted">
-                          HR 超过设定时间未回复，系统已自动执行一次跟进。
+                          {parsed.schema === 'follow_up.manual.v1' ? '人工确认再次联系，发送前已核验没有 HR 回复。' : 'HR 超过设定时间未回复，系统已自动执行一次跟进。'}
                         </p>
                       </div>
                     )}

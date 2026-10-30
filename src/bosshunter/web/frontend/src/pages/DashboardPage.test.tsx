@@ -6,6 +6,7 @@ import type { WorkbenchTask } from '@/hooks/useDashboard'
 let workbenchPayload: Record<string, unknown> = {}
 let stopResponse: () => Response = () => jsonResponse({})
 let preflightResponse: () => Response = () => jsonResponse({})
+let bulkGreetingResponse: () => Response = () => jsonResponse({ success: true, updated_count: 2 })
 
 function jsonResponse(body: unknown, ok = true) {
   return new Response(JSON.stringify(body), {
@@ -51,6 +52,9 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   }
   if (url.startsWith('/api/workbench/preflight')) {
     return preflightResponse()
+  }
+  if (url === '/api/workbench/greetings/bulk-edit' && init?.method === 'POST') {
+    return bulkGreetingResponse()
   }
   return jsonResponse({})
 })
@@ -148,6 +152,7 @@ describe('DashboardPage workbench task panel', () => {
     workbenchPayload = baseWorkbench()
     stopResponse = () => jsonResponse({})
     preflightResponse = () => jsonResponse({})
+    bulkGreetingResponse = () => jsonResponse({ success: true, updated_count: 2 })
     vi.stubGlobal('fetch', fetchMock)
     fetchMock.mockClear()
   })
@@ -222,6 +227,52 @@ describe('DashboardPage workbench task panel', () => {
     expect(screen.getByText('表达可以更简洁')).toBeTruthy()
     expect((screen.getByRole('button', { name: '发送招呼语' }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByRole('button', { name: '采用优化版' })).toBeTruthy()
+  })
+
+  it('saves a bulk greeting after confirmation and refreshes the reviewed cards without sending', async () => {
+    const greeting = '批量保存后的统一招呼语'
+    workbenchPayload = baseWorkbench({ pending_greetings: [
+      { id: 'reviewed-a', company: '公司甲', title: '开发实习', status: 'approved', greeting: '旧招呼语甲', greeting_selection: 'edited' },
+      { id: 'reviewed-b', company: '公司乙', title: '开发实习', status: 'approved', greeting: '旧招呼语乙', greeting_selection: 'original' },
+      { id: 'unreviewed', company: '公司丙', title: '开发实习', status: 'ready', greeting: '待确认原文', greeting_selection: 'pending' },
+    ] })
+    bulkGreetingResponse = () => {
+      workbenchPayload.pending_greetings = (workbenchPayload.pending_greetings as Array<Record<string, unknown>>).map(job =>
+        job.id === 'unreviewed' ? job : { ...job, greeting, greeting_selection: 'edited' }
+      )
+      return jsonResponse({ success: true, updated_count: 2 })
+    }
+    render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '批量编辑已确认 2 个' }))
+    const dialog = screen.getByRole('dialog', { name: '批量编辑招呼语' })
+    fireEvent.change(within(dialog).getByLabelText('新的统一招呼语'), { target: { value: greeting } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用到 2 个岗位' }))
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/workbench/greetings/bulk-edit')).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认覆盖 2 个岗位' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '批量编辑招呼语' })).toBeNull())
+    expect(screen.getAllByText(greeting)).toHaveLength(2)
+    expect(screen.getByText('待确认原文')).toBeTruthy()
+    const saved = fetchMock.mock.calls.find(([input]) => String(input) === '/api/workbench/greetings/bulk-edit')
+    expect(JSON.parse(String(saved?.[1]?.body))).toEqual({ job_ids: ['reviewed-a', 'reviewed-b'], greeting, confirmed: true })
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/workbench/deliver')).toBe(false)
+  })
+
+  it('keeps a failed bulk edit and its error visible inside the editor', async () => {
+    workbenchPayload = baseWorkbench({ pending_greetings: [
+      { id: 'reviewed-a', company: '公司甲', title: '开发实习', status: 'approved', greeting: '原来的招呼语', greeting_selection: 'edited' },
+    ] })
+    bulkGreetingResponse = () => new Response('<html>Method Not Allowed</html>', { status: 405 })
+    render(<DashboardPage view="workbench" />)
+    fireEvent.click(await screen.findByRole('button', { name: '批量编辑已确认 1 个' }))
+    const dialog = screen.getByRole('dialog', { name: '批量编辑招呼语' })
+    const editor = within(dialog).getByLabelText('新的统一招呼语') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: '保留我输入的新文案' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用到 1 个岗位' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认覆盖 1 个岗位' }))
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('后台尚未加载批量编辑功能')
+    expect(editor.value).toBe('保留我输入的新文案')
+    expect(screen.getByText('原来的招呼语')).toBeTruthy()
+    expect(screen.queryByText(/已批量更新/)).toBeNull()
   })
 
   it('shows the latest queue summary and preserves full progress in expandable details', async () => {

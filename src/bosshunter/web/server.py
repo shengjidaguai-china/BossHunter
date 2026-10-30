@@ -8,11 +8,14 @@ Serves:
 from bosshunter.employment import classify_employment, internship_rejection
 
 import json
+from contextlib import ExitStack
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 import math
 import mimetypes
 import random
+import socket
+import sys
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -44,6 +47,7 @@ from bosshunter.config import (
 )
 from bosshunter.db import (
 	GREETING_ALLOWED_STATUSES,
+	MAX_JOB_IDS,
 	REJECT_ALLOWED_STATUSES,
 	JobDeletionConflictError,
 	JobManualSentConflictError,
@@ -76,6 +80,7 @@ from bosshunter.db import (
 	select_job_greeting,
 	soft_delete_jobs,
 	edit_job_greeting,
+	edit_jobs_greeting,
 	update_job_status,
 	update_jobs_manual_status,
 )
@@ -101,6 +106,7 @@ from bosshunter.scoring_run_store import (
 )
 from bosshunter.scoring_selection import preview_scoring, select_scoring_jobs, validate_options
 from bosshunter.web.greeting_activity import GreetingActivityRegistry
+from bosshunter.executor.recontact import get_recontact_candidates, get_recontact_sent_today, recontact_hours, recontact_job_ids, resolve_recontact_greeting
 from bosshunter.web.preflight import check_ai_connection, collect_preflight_checks, error_messages
 from bosshunter.web.resume_info import (
 	build_resume_info_payload,
@@ -172,7 +178,13 @@ class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 	"""Handle Chrome preconnect sockets without blocking other requests."""
 
 	daemon_threads = True
-	allow_reuse_address = True
+	# Windows SO_REUSEADDR lets an older workbench share the port with a new one.
+	allow_reuse_address = sys.platform != "win32"
+
+	def server_bind(self):
+		if sys.platform == "win32":
+			self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+		super().server_bind()
 
 # Paths
 FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
@@ -1047,6 +1059,35 @@ def _execute_greet(task: WorkbenchTask, config: dict) -> None:
 			raise RuntimeError(f"招呼语生成已安全暂停：{pause_reason}")
 
 
+def _execute_recontact(task: WorkbenchTask, config: dict) -> None:
+	from bosshunter.executor.recontact import send_recontacts
+	from bosshunter.throttle import SendWindowChecker
+
+	if _stop_for_active_platform_lock(task):
+		return
+	runtime = dict(config)
+	runtime["_workbench_stop_event"] = task.stop_requested
+	runtime["_workbench_log"] = lambda text: _log(task, text)
+	runtime["_workbench_greeting_activity"] = greeting_activity.claim
+	_log(task, f"开始再次投递：{len(runtime.get('_recontact_job_ids', []))} 个岗位，发送前逐一核对 HR 回复")
+	report = send_recontacts(runtime, db_path=DATA_DIR / "bosshunter.db")
+	task.metrics.update({f"recontact_{key}": value for key, value in report.items() if isinstance(value, int)})
+	_log(task, f"再次投递结果：成功 {report['sent']}，HR 已回复跳过 {report['skipped_hr']}，下架跳过 {report.get('skipped_closed', 0)}，状态变化跳过 {report['skipped_changed']}，无法核验 {report['unverified']}，失败 {report['failed']}，待下次处理 {report['deferred']}")
+	if report.get("stop_reason"):
+		task.stop_reason = str(report["stop_reason"])
+		labels = {
+			"daily_limit": "今日发送额度已用完",
+			"outside_window": "当前不在发送时间窗口，" + SendWindowChecker(config.get("throttle", {}).get("send_windows", [])).next_window_info(),
+			"day_off": "今日随机休息", "stopped": "用户已停止",
+			"send_unconfirmed": "发送结果无法确认，请手动检查对话",
+			"consecutive_page_failures": "连续页面访问失败，已安全暂停；请检查 BOSS 登录状态及原岗位能否继续沟通",
+			"captcha": "BOSS 要求安全验证，请手动完成后再继续",
+			"rate_limit": "BOSS 提示操作频繁，已暂停，请稍后再试",
+			"blocked": "BOSS 账号或请求受限，已停止，请手动检查",
+		}
+		_log(task, f"再次投递已暂停：{labels.get(task.stop_reason, task.stop_reason)}")
+
+
 task_runner._executors.update({
 	"full": _execute_full,
 	"collect": _execute_collect,
@@ -1055,6 +1096,7 @@ task_runner._executors.update({
 	"greet": _execute_greet,
 	"monitor": _execute_monitor,
 	"deliver": _execute_deliver,
+	"recontact": _execute_recontact,
 })
 
 
@@ -1465,13 +1507,14 @@ def api_workbench():
 		threshold = config.get("scoring", {}).get("threshold", 60)
 		daily_limit = int(config.get("throttle", {}).get("daily_limit", 30) or 30)
 		today_sent_row = db.execute(
-			"SELECT COUNT(*) AS cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
+			"SELECT COUNT(*) AS cnt FROM history WHERE action IN ('sent','follow_up_sent') AND date(created_at)=date('now')"
 		).fetchone()
 		today_sent = int(today_sent_row["cnt"] if today_sent_row else 0)
 		status = task_runner.status()
 		return _json_response({
 			"funnel": get_funnel_stats(db),
 			"funnel_today": get_funnel_stats(db, today=True),
+			"recontact_default_greeting": str(config.get("profile", {}).get("fixed_greeting") or "").strip(),
 			"pending_confirmation": [
 				_serialize_job(job) for job in get_jobs_pending_confirmation(db)
 				if int(job.get("score") or 0) >= threshold
@@ -2002,6 +2045,60 @@ def api_workbench_deliver():
 		return _json_response({"error": str(e)}, 500)
 
 
+@app.route("/api/workbench/recontact")
+def api_recontact_candidates():
+	try:
+		hours = recontact_hours(request.query.get("min_hours", "48"))
+		default_greeting = str(load_config(CONFIG_PATH).get("profile", {}).get("fixed_greeting") or "").strip()
+		db = _get_web_db()
+		try:
+			items = get_recontact_candidates(db, hours)
+			sent_today = get_recontact_sent_today(db)
+		finally:
+			db.close()
+		return _json_response({
+			"items": [_serialize_job(item) for item in items[:MAX_JOB_IDS]], "total": len(items), "min_hours": hours,
+			"sent_today": [_serialize_job(item) for item in sent_today[:MAX_JOB_IDS]],
+			"sent_today_total": len(sent_today), "day_timezone": "Asia/Shanghai",
+			"default_greeting": default_greeting,
+		})
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
+
+
+@app.route("/api/workbench/recontact", method="POST")
+def api_start_recontact():
+	try:
+		body = request.json or {}
+		if not isinstance(body, dict) or body.get("confirmed") is not True:
+			return _json_response({"error": "再次投递需要明确确认 confirmed=true"}, 400)
+		ids = recontact_job_ids(body.get("job_ids"))
+		hours = recontact_hours(body.get("min_hours", 48))
+		greeting = body.get("greeting", "")
+		if not isinstance(greeting, str) or len(greeting.strip()) > 300:
+			return _json_response({"error": "招呼语必须是 300 字以内的文本"}, 400)
+		with job_mutation_lock:
+			db = _get_web_db()
+			try:
+				eligible = {str(job["id"]) for job in get_recontact_candidates(db, hours, ids)}
+			finally:
+				db.close()
+			invalid = [job_id for job_id in ids if job_id not in eligible]
+			if invalid:
+				return _json_response({"error": "部分岗位当日已投递、已有 HR 回复、尚未到再次投递间隔或当前不能联系，请刷新列表", "invalid_ids": invalid}, 409)
+			greeting = resolve_recontact_greeting(load_config(CONFIG_PATH), greeting)
+			task = task_runner.start("recontact", _task_config({
+				"_recontact_job_ids": ids,
+				"_recontact_min_hours": hours,
+				"_recontact_greeting": greeting.strip(),
+			}))
+		return _json_response(task)
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
+	except TaskAlreadyRunningError as exc:
+		return _json_response({"error": str(exc)}, 409)
+
+
 @app.route("/api/workbench/reject", method="POST")
 def api_workbench_reject():
 	try:
@@ -2145,6 +2242,49 @@ def api_job_update_greeting(job_id):
 			finally:
 				db.close()
 		return _json_response({"success": True, "greeting": greeting})
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/workbench/greetings/bulk-edit", method="POST")
+def api_bulk_edit_greetings():
+	"""Apply one greeting to several already-reviewed, unsent jobs."""
+	try:
+		body = request.json or {}
+		if not isinstance(body, dict):
+			return _json_response({"error": "请求体必须是对象"}, 400)
+		raw_job_ids = body.get("job_ids")
+		if not isinstance(raw_job_ids, list) or any(not isinstance(job_id, str) for job_id in raw_job_ids):
+			return _json_response({"error": "岗位 ID 必须是字符串数组"}, 400)
+		job_ids: list[str] = []
+		for raw_job_id in raw_job_ids:
+			job_id = raw_job_id.strip()
+			if job_id and job_id not in job_ids:
+				job_ids.append(job_id)
+		if not job_ids:
+			return _json_response({"error": "岗位 ID 不能为空"}, 400)
+		if len(job_ids) > MAX_JOB_IDS:
+			return _json_response({"error": f"一次最多处理 {MAX_JOB_IDS} 个岗位"}, 400)
+		greeting = str(body.get("greeting") or "").strip()
+		if not greeting:
+			return _json_response({"error": "招呼语不能为空"}, 400)
+		if len(greeting) > 300:
+			return _json_response({"error": "招呼语不能超过300字"}, 400)
+		if body.get("confirmed") is not True:
+			return _json_response({"error": "批量保存招呼语需要 confirmed=true"}, 400)
+
+		with job_mutation_lock, ExitStack() as claims:
+			for job_id in job_ids:
+				if not claims.enter_context(greeting_activity.claim(job_id, "editing")):
+					return _greeting_edit_blocked_response(job_id)
+			db = _get_web_db()
+			try:
+				updated_ids = edit_jobs_greeting(db, job_ids, greeting)
+			finally:
+				db.close()
+		return _json_response({"success": True, "updated_count": len(updated_ids)})
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 409)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
 

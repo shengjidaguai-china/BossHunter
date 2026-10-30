@@ -1,5 +1,6 @@
 import io
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 from unittest.mock import MagicMock, patch
-from wsgiref.simple_server import WSGIServer
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 from zipfile import ZipFile
 
 import yaml
@@ -106,6 +107,16 @@ class WebApiRouteTests(unittest.TestCase):
         # Cleanup
         server.set_base_dir(self.original_base_dir)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows listener exclusivity")
+    def test_workbench_rejects_a_second_listener_on_the_same_port(self):
+        listener = server.ThreadingWSGIServer(("127.0.0.1", 0), WSGIRequestHandler)
+        try:
+            with self.assertRaises(OSError):
+                duplicate = server.ThreadingWSGIServer(listener.server_address, WSGIRequestHandler)
+                duplicate.server_close()
+        finally:
+            listener.server_close()
+
     def test_outsourcing_rules_refresh_old_jobs_in_every_review_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -200,6 +211,227 @@ class WebApiRouteTests(unittest.TestCase):
             self.assertIsInstance(record["outsourcing_matches"], list)
             self.assertEqual(record["greeting_selection"], "optimized")
             self.assertEqual(record["greeting_style_issues"], ["表达可以更简洁"])
+
+    def test_bulk_edit_greetings_updates_reviewed_jobs_and_rejects_pending_jobs_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                for job_id in ("bulk-reviewed-a", "bulk-reviewed-b", "bulk-pending"):
+                    insert_job(db, _job(job_id))
+                    update_job_status(db, job_id, "ready")
+                self.assertTrue(edit_job_greeting(db, "bulk-reviewed-a", "旧招呼语 A"))
+                self.assertTrue(edit_job_greeting(db, "bulk-reviewed-b", "旧招呼语 B"))
+                self.assertTrue(save_generated_greeting_preview(
+                    db,
+                    "bulk-pending",
+                    original="原始招呼语",
+                    optimized="优化招呼语",
+                    style_issues=[],
+                    selected_greeting="原始招呼语",
+                    selection="pending",
+                ))
+            finally:
+                db.close()
+
+            server.set_base_dir(base_dir)
+            status, _, body = self._request(
+                "/api/workbench/greetings/bulk-edit",
+                method="POST",
+                json_body={
+                    "job_ids": ["bulk-reviewed-a", "bulk-pending"],
+                    "greeting": "不应部分覆盖的批量招呼语",
+                    "confirmed": True,
+                },
+            )
+            self.assertTrue(status.startswith("409"), body)
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                unchanged = db.execute(
+                    "SELECT id, greeting FROM jobs WHERE id IN (?, ?)",
+                    ("bulk-reviewed-a", "bulk-pending"),
+                ).fetchall()
+            finally:
+                db.close()
+            self.assertEqual({row["id"]: row["greeting"] for row in unchanged}, {
+                "bulk-reviewed-a": "旧招呼语 A",
+                "bulk-pending": "原始招呼语",
+            })
+
+            status, _, body = self._request(
+                "/api/workbench/greetings/bulk-edit",
+                method="POST",
+                json_body={
+                    "job_ids": ["bulk-reviewed-a", "bulk-reviewed-b"],
+                    "greeting": "统一后的批量招呼语",
+                    "confirmed": True,
+                },
+            )
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body)["updated_count"], 2)
+
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                updated = db.execute(
+                    "SELECT id, greeting, greeting_selection FROM jobs WHERE id IN (?, ?)",
+                    ("bulk-reviewed-a", "bulk-reviewed-b"),
+                ).fetchall()
+            finally:
+                db.close()
+            self.assertEqual({row["id"]: (row["greeting"], row["greeting_selection"]) for row in updated}, {
+                "bulk-reviewed-a": ("统一后的批量招呼语", "edited"),
+                "bulk-reviewed-b": ("统一后的批量招呼语", "edited"),
+            })
+
+    def test_recontact_api_requires_confirmation_and_rejects_replied_or_recent_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            for job_id in ("old-unreplied", "old-replied", "recent"):
+                insert_job(db, _job(job_id))
+                db.execute("UPDATE jobs SET status='sent',greeting='已确认的原文',greeting_selection='edited' WHERE id=?", (job_id,))
+                db.execute("INSERT INTO history(job_id,action,detail,created_at) VALUES (?,'sent','已确认的原文',datetime('now',?))",
+                           (job_id, "-1 hour" if job_id == "recent" else "-72 hours"))
+            db.execute("INSERT INTO history(job_id,action,detail) VALUES ('old-replied','hr_reply_detected','你好')")
+            db.commit()
+            db.close()
+            status, _, body = self._request("/api/workbench/recontact?min_hours=48")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual([item["id"] for item in json.loads(body)["items"]], ["old-unreplied"])
+            with patch.object(server.task_runner, "start", return_value={"id": "recontact-task", "mode": "recontact"}) as start:
+                status, _, _ = self._request("/api/workbench/recontact", "POST", {"job_ids": ["old-unreplied"]})
+                self.assertTrue(status.startswith("400"))
+                for job_id in ("old-replied", "recent", "missing"):
+                    status, _, body = self._request("/api/workbench/recontact", "POST", {
+                        "job_ids": ["old-unreplied", job_id], "confirmed": True,
+                    })
+                    self.assertTrue(status.startswith("409"), body)
+                start.assert_not_called()
+                status, _, body = self._request("/api/workbench/recontact", "POST", {
+                    "job_ids": ["old-unreplied"], "min_hours": 48, "greeting": "再次联系的人工文案", "confirmed": True,
+                })
+                self.assertTrue(status.startswith("200"), body)
+                self.assertEqual(start.call_args.args[0], "recontact")
+                self.assertEqual(start.call_args.args[1]["_recontact_job_ids"], ["old-unreplied"])
+                self.assertEqual(start.call_args.args[1]["_recontact_greeting"], "再次联系的人工文案")
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            self.assertEqual(db.execute("SELECT status FROM jobs WHERE id='old-unreplied'").fetchone()[0], "sent")
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM history WHERE action='follow_up_sent'").fetchone()[0], 0)
+            db.close()
+
+    def test_recontact_defaults_to_saved_config_and_pins_reviewed_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            insert_job(db, _job("config-recontact"))
+            db.execute("UPDATE jobs SET status='sent',greeting='历史旧文案' WHERE id='config-recontact'")
+            db.execute("INSERT INTO history(job_id,action,detail,created_at) VALUES ('config-recontact','sent','历史旧文案',datetime('now','-72 hours'))")
+            db.commit()
+            db.close()
+            saved = {"profile": {"fixed_greeting": "配置中最新的打招呼语"}}
+            with patch.object(server, "load_config", return_value=saved), patch.object(server.task_runner, "start", return_value={"id": "configured-task", "mode": "recontact"}) as start:
+                status, _, body = self._request("/api/workbench/recontact")
+                self.assertTrue(status.startswith("200"), body)
+                self.assertEqual(json.loads(body)["default_greeting"], saved["profile"]["fixed_greeting"])
+                for supplied, expected in ((None, "配置中最新的打招呼语"), ("", "配置中最新的打招呼语"), (" 本次编辑后的招呼语 ", "本次编辑后的招呼语")):
+                    payload = {"job_ids": ["config-recontact"], "confirmed": True}
+                    if supplied is not None:
+                        payload["greeting"] = supplied
+                    status, _, body = self._request("/api/workbench/recontact", "POST", payload)
+                    self.assertTrue(status.startswith("200"), body)
+                    self.assertEqual(start.call_args.args[1]["_recontact_greeting"], expected)
+                self.assertEqual(saved["profile"]["fixed_greeting"], "配置中最新的打招呼语")
+            with patch.object(server, "load_config", return_value={}), patch.object(server.task_runner, "start") as start:
+                status, _, body = self._request("/api/workbench/recontact", "POST", {"job_ids": ["config-recontact"], "confirmed": True})
+                self.assertTrue(status.startswith("400"), body)
+                self.assertIn("配置", json.loads(body)["error"])
+                start.assert_not_called()
+
+    def test_recontact_http_task_worker_and_history_use_config_or_edited_text_end_to_end(self):
+        from bosshunter.executor import recontact, sender
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            ids = ["e2e-config-default", "e2e-config-edited"]
+            messages = {}
+            for job_id in ids:
+                insert_job(db, _job(job_id))
+                db.execute("UPDATE jobs SET status='sent',greeting='历史招呼语，不能再次使用' WHERE id=?", (job_id,))
+                db.execute("INSERT INTO history(job_id,action,detail,created_at) VALUES (?,'sent','历史招呼语，不能再次使用',datetime('now','-72 hours'))", (job_id,))
+                messages[job_id] = [{"sender": "me", "text": "已读 历史招呼语，不能再次使用"}]
+            db.commit()
+            db.close()
+            sent = []
+            def send_once(job, text, _sender_config):
+                sent.append((job["id"], text))
+                messages[job["id"]].append({"sender": "me", "text": "送达 " + text})
+                return {"success": True}, None
+            config = {"profile": {"fixed_greeting": "配置里的新打招呼语"},
+                      "throttle": {"daily_limit": 10, "send_windows": [], "interval_min": 0, "interval_max": 0}}
+            runner = WorkbenchTaskRunner({"recontact": server._execute_recontact})
+            with (
+                patch.object(server, "task_runner", runner),
+                patch.object(server, "load_config", side_effect=lambda *args: {**config, "profile": dict(config["profile"])}),
+                patch.object(recontact, "should_take_day_off", return_value=False),
+                patch.object(sender, "_send_greeting_once", side_effect=send_once),
+            ):
+                for job_id, override in zip(ids, ["", "本次手动修改的文案"]):
+                    status, _, body = self._request("/api/workbench/recontact", "POST", {"job_ids": [job_id], "greeting": override, "confirmed": True})
+                    self.assertTrue(status.startswith("200"), body)
+                    runner.wait(5)
+                    result = runner.status()["last_task"]
+                    self.assertEqual(result["status"], "completed", result)
+                    self.assertEqual(result["metrics"]["recontact_sent"], 1)
+                status, _, _ = self._request("/api/workbench/recontact", "POST", {"job_ids": [ids[0]], "min_hours": 1, "confirmed": True})
+                self.assertTrue(status.startswith("409"))
+            self.assertEqual(sent, [(ids[0], "配置里的新打招呼语"), (ids[1], "本次手动修改的文案")])
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            actual = {row["job_id"]: json.loads(row["detail"])["manual_reply"] for row in db.execute("SELECT job_id,detail FROM history WHERE action='follow_up_sent'")}
+            self.assertEqual(actual, dict(sent))
+            self.assertEqual(len(recontact.get_recontact_sent_today(db)), 2)
+            db.close()
+
+    def test_recontact_uses_send_deadline_and_daily_quota_in_workbench(self):
+        from bosshunter.web.tasks import _deadline_from_config
+        self.assertIsNotNone(_deadline_from_config("recontact", {"throttle": {"send_windows": ["09:00-23:00"]}}))
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            insert_job(db, _job("manual-recontact"))
+            add_history(db, "manual-recontact", "follow_up_sent", "再次联系")
+            db.close()
+            with patch.object(server, "load_config", return_value={"throttle": {"daily_limit": 2}}):
+                status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body)["send_quota"]["remaining"], 1)
+
+    def test_recontact_daily_bucket_is_readonly_and_same_day_resubmission_is_rejected(self):
+        from bosshunter.executor import recontact
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(Path(tmp) / "data" / "bosshunter.db")
+            insert_job(db, _job("sent-today"))
+            db.execute("UPDATE jobs SET status='sent', greeting='已确认原文', greeting_selection='edited' WHERE id='sent-today'")
+            db.execute("INSERT INTO history(job_id,action,detail,created_at) VALUES ('sent-today','sent','已确认原文',datetime('now','-3 hours'))")
+            db.commit()
+            day = db.execute("SELECT date(created_at,'+8 hours') FROM history WHERE job_id='sent-today'").fetchone()[0]
+            db.close()
+            with patch.object(recontact, "_business_date", return_value=day), patch.object(server.task_runner, "start") as start:
+                status, _, body = self._request("/api/workbench/recontact?min_hours=1")
+                self.assertTrue(status.startswith("200"), body)
+                result = json.loads(body)
+                self.assertEqual(result["items"], [])
+                self.assertEqual(result["sent_today_total"], 1)
+                self.assertEqual(result["sent_today"][0]["id"], "sent-today")
+                self.assertIsNotNone(result["sent_today"][0]["sent_today_at"])
+                self.assertEqual(result["day_timezone"], "Asia/Shanghai")
+                status, _, body = self._request("/api/workbench/recontact", "POST", {
+                    "job_ids": ["sent-today"], "min_hours": 1, "confirmed": True,
+                })
+                self.assertTrue(status.startswith("409"), body)
+                self.assertIn("当日已投递", json.loads(body)["error"])
+                start.assert_not_called()
 
     def _request(self, path: str, method: str = "GET", json_body: dict | None = None, environ_overrides=None):
         if "?" in path:

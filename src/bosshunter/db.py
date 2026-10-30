@@ -874,6 +874,59 @@ def edit_job_greeting(
     return True
 
 
+def edit_jobs_greeting(
+	conn: sqlite3.Connection,
+	job_ids: Any,
+	greeting: str,
+) -> list[str]:
+	"""Apply one manually confirmed greeting to several editable jobs atomically."""
+	ids = _normalize_job_ids(job_ids, required=True)
+	text = str(greeting or "").strip()
+	if not text:
+		raise ValueError("招呼语不能为空")
+	if len(text) > 300:
+		raise ValueError("招呼语不能超过300字")
+
+	placeholders = ",".join("?" for _ in ids)
+	rows = conn.execute(
+		f"SELECT id, status, greeting_selection FROM jobs WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+		ids,
+	).fetchall()
+	by_id = {str(row["id"]): row for row in rows}
+	missing = [job_id for job_id in ids if job_id not in by_id]
+	if missing:
+		raise ValueError("有岗位不存在或已进入回收站")
+	blocked = [
+		str(row["id"])
+		for row in rows
+		if str(row["status"] or "") not in GREETING_ALLOWED_STATUSES
+		or str(row["greeting_selection"] or "") == "pending"
+	]
+	if blocked:
+		raise ValueError("有岗位尚未确认或当前不能修改招呼语，请刷新后重试")
+
+	status_sql, status_params = _status_placeholders(GREETING_ALLOWED_STATUSES)
+	with conn:
+		cursor = conn.execute(
+			f"""
+			UPDATE jobs
+			SET greeting = ?, greeting_selection = 'edited',
+				greeting_reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+			WHERE id IN ({placeholders}) AND deleted_at IS NULL
+			  AND status IN ({status_sql})
+			  AND COALESCE(greeting_selection, '') != 'pending'
+			""",
+			[text, *ids, *status_params],
+		)
+		if cursor.rowcount != len(ids):
+			raise ValueError("岗位状态已变化，招呼语未保存，请刷新后重试")
+		conn.executemany(
+			"INSERT INTO history (job_id, action, detail) VALUES (?, 'greeting_edited', ?)",
+			[(job_id, "Web Dashboard 批量编辑招呼语") for job_id in ids],
+		)
+	return ids
+
+
 def reject_jobs(
     conn: sqlite3.Connection,
     job_ids: Any,

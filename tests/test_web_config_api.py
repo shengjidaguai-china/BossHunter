@@ -1,10 +1,13 @@
+import builtins
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 
+from bosshunter import config as config_module
 from bosshunter.web import server
 
 
@@ -46,6 +49,70 @@ class WebConfigApiTests(unittest.TestCase):
 			self.assertNotIn(api_key, public_text)
 			self.assertTrue((Path(tmp) / ".config.credentials.yaml").exists())
 			self.assertEqual(list(Path(tmp).glob(".config.*.tmp")), [])
+
+	def test_atomic_config_write_retries_windows_access_denied(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			target = Path(tmp) / "config.yaml"
+			real_replace = config_module.os.replace
+			calls = []
+
+			def flaky_replace(source, destination):
+				calls.append((source, destination))
+				if len(calls) == 1:
+					exc = PermissionError(5, "access denied")
+					exc.winerror = 5
+					raise exc
+				return real_replace(source, destination)
+
+			with patch.object(config_module.os, "replace", side_effect=flaky_replace):
+				with patch.object(config_module.time, "sleep") as sleep:
+					config_module._write_yaml_atomic(target, {"ai": {"model": "new"}})
+
+			self.assertEqual(len(calls), 2)
+			self.assertEqual(yaml.safe_load(target.read_text(encoding="utf-8")), {"ai": {"model": "new"}})
+			sleep.assert_called_once_with(0.05)
+
+	def test_config_read_and_write_are_serialized(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			target = Path(tmp) / "config.yaml"
+			target.write_text("ai:\n  model: old\n", encoding="utf-8")
+			reader_started = threading.Event()
+			release_reader = threading.Event()
+			writer_done = threading.Event()
+			writer_errors = []
+
+			def blocking_open(file, *args, **kwargs):
+				if Path(file) == target:
+					reader_started.set()
+					release_reader.wait(timeout=2)
+				return builtins.open(file, *args, **kwargs)
+
+			def read_config():
+				config_module._load_yaml_mapping(target)
+
+			def write_config():
+				try:
+					config_module._write_yaml_atomic(target, {"ai": {"model": "new"}})
+				except BaseException as exc:
+					writer_errors.append(exc)
+				finally:
+					writer_done.set()
+
+			with patch.object(config_module, "open", blocking_open, create=True):
+				reader = threading.Thread(target=read_config)
+				reader.start()
+				self.assertTrue(reader_started.wait(timeout=2))
+				writer = threading.Thread(target=write_config)
+				writer.start()
+				self.assertFalse(writer_done.wait(timeout=0.1))
+				release_reader.set()
+				reader.join(timeout=2)
+				writer.join(timeout=2)
+
+			self.assertFalse(reader.is_alive())
+			self.assertFalse(writer.is_alive())
+			self.assertEqual(writer_errors, [])
+			self.assertEqual(yaml.safe_load(target.read_text(encoding="utf-8")), {"ai": {"model": "new"}})
 
 	def test_sanitize_config_strips_display_fields_and_preserves_blank_key(self):
 		with tempfile.TemporaryDirectory() as tmp:

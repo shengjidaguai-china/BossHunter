@@ -174,6 +174,37 @@ class MonitorThrottleTests(unittest.TestCase):
 
         self.assertEqual(events, ["open", "mark", "wait", "open", "mark"])
 
+    def test_strict_chat_fallback_without_hr_identity_does_not_open_or_wait(self):
+        from bosshunter.executor import monitor
+        logs = []
+        with patch.object(monitor, "_open_monitor_tab", return_value="fake-target") as opened, \
+             patch.object(monitor, "_wait_or_stop", return_value=False), \
+             patch.object(monitor, "_wait_for_page_or_stop", return_value=True), \
+             patch.object(monitor, "_inspect_monitor_page"), \
+             patch.object(monitor, "evaluate", return_value='{"success":false}'), \
+             patch.object(monitor, "close_tab"):
+            result = monitor._open_conversation_from_chat_list(
+                {"hr_name": "", "company": "测试公司"},
+                {"_monitor_require_exact_identity": True, "_workbench_log": logs.append},
+            )
+        self.assertIsNone(result)
+        opened.assert_not_called()
+        self.assertTrue(any("缺少" in text and "身份" in text for text in logs))
+
+    def test_monitor_page_cooldown_is_visible_without_shortening_it(self):
+        from bosshunter.executor import monitor
+        logs = []
+        throttle = MagicMock()
+        throttle.has_marked_request = True
+        throttle.wait.return_value = False
+        with patch.object(monitor, "new_tab", return_value="target"):
+            monitor._open_monitor_tab("https://example.com/job", {
+                "_monitor_request_throttle": throttle, "_workbench_log": logs.append,
+            })
+        throttle.wait.assert_called_once()
+        self.assertTrue(any("冷却" in text for text in logs))
+        self.assertTrue(any("打开" in text for text in logs))
+
     def test_web_monitor_reuses_one_live_chat_list_tab(self):
         from bosshunter.executor import monitor
 
