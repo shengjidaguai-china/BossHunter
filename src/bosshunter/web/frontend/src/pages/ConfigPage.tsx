@@ -652,13 +652,24 @@ export default function ConfigPage() {
               />
             </Field>
             <Field label="AI 评分并发数">
-              <Select
-                value={String(config.ai?.scoring_concurrency || 1)}
+              <Input
+                type="number"
+                value={config.ai?.scoring_concurrency || 1}
                 onChange={e => updateConfig('ai.scoring_concurrency', Number(e.target.value))}
-              >
-                {[1, 2, 3].map(value => <option key={value} value={value}>{value}</option>)}
-              </Select>
-              <p className="mt-1 text-xs text-muted">默认 1；提高并发会增加 API 限流风险。</p>
+                min={1}
+                max={32}
+              />
+              <p className="mt-1 text-xs text-muted">可自填 1-32，默认 1。提高并发会加大 AI 网关压力和超时风险，建议同步调高上面的请求超时。</p>
+            </Field>
+            <Field label="AI 招呼语并发数">
+              <Input
+                type="number"
+                value={config.ai?.greeting_concurrency || 1}
+                onChange={e => updateConfig('ai.greeting_concurrency', Number(e.target.value))}
+                min={1}
+                max={32}
+              />
+              <p className="mt-1 text-xs text-muted">可自填 1-32，默认 1。并发生成时，用于避免开头重复的近期招呼语样本会略有滞后。</p>
             </Field>
             <div className="flex items-center justify-between rounded-lg border border-card-border bg-surface p-3">
               <div>
