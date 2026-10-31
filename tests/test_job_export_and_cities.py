@@ -213,6 +213,22 @@ def test_csv_has_bom_formula_protection_and_city_code():
 	assert "101010100" in text
 
 
+def test_xlsx_keeps_formula_like_values_as_text():
+	job = _job("xlsx-formula", company="=2+2")
+	job["jd"] = "+cmd|' /C calc'!A0"
+	job["salary"] = "-1"
+	workbook = load_workbook(io.BytesIO(build_xlsx([job])), read_only=False)
+	try:
+		sheet = workbook.active
+		columns = {cell.value: cell.column for cell in sheet[1]}
+		for column, value in (("公司", "=2+2"), ("JD", "+cmd|' /C calc'!A0"), ("薪资", "-1")):
+			cell = sheet.cell(2, columns[column])
+			assert cell.value == value
+			assert cell.data_type == "s"
+	finally:
+		workbook.close()
+
+
 def test_xlsx_contains_clickable_job_url():
 	job = _job("xlsx-1", city="上海")
 	workbook = load_workbook(io.BytesIO(build_xlsx([job])), read_only=False)
