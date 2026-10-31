@@ -254,9 +254,17 @@ def _row_values(job: dict[str, Any]) -> list[Any]:
 	return [job.get(key, "") if job.get(key) is not None else "" for _, key in EXPORT_COLUMNS]
 
 
+# 招聘平台与 AI 生成的字段可能以公式前缀开头；CSV 与 XLSX 共用同一判定。
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _is_formula_like(value: Any) -> bool:
+	return isinstance(value, str) and value.lstrip().startswith(_FORMULA_PREFIXES)
+
+
 def _csv_safe(value: Any) -> str:
 	text = "" if value is None else str(value)
-	if text.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")):
+	if _is_formula_like(text):
 		return "'" + text
 	return text
 
@@ -286,6 +294,11 @@ def build_xlsx(rows: list[dict[str, Any]]) -> bytes:
 	for job in rows:
 		values = _row_values(job)
 		sheet.append(values)
+		# openpyxl 会把「=」开头的字符串写成公式单元格；强制回文本，避免打开导出文件
+		# 时执行平台数据或招呼语里的公式。CSV 侧由 _csv_safe 加前导撇号实现同一策略。
+		for cell, value in zip(sheet[sheet.max_row], values):
+			if _is_formula_like(value):
+				cell.data_type = "s"
 		url_column = next(index for index, (_, key) in enumerate(EXPORT_COLUMNS, start=1) if key == "url")
 		cell = sheet.cell(sheet.max_row, url_column)
 		if cell.value:
