@@ -772,6 +772,7 @@ def score_jobs(
 
         threshold = config.get("scoring", {}).get("threshold", 60)
         remaining_job_ids = [str(job["id"]) for job in pending_jobs]
+        _report_progress(config, 0, len(pending_jobs), 0, 0, 0)
         _report_checkpoint(config, remaining_job_ids, status="running")
 
         def mark_completed(job_id: str) -> None:
@@ -811,7 +812,6 @@ def score_jobs(
                     filtered += 1
                     prefiltered += 1
                     processed += 1
-                    mark_completed(str(job["id"]))
                     progress.update(
                         task,
                         advance=1,
@@ -825,6 +825,7 @@ def score_jobs(
                         filtered,
                         failed,
                     )
+                    mark_completed(str(job["id"]))
                 else:
                     ai_jobs.append(job)
 
@@ -900,13 +901,13 @@ def score_jobs(
 
                     if completed_job:
                         processed += 1
-                        mark_completed(str(job["id"]))
                         progress.update(
                             task,
                             advance=1,
                             description=f"评分中 ({processed}/{len(pending_jobs)}) [预筛淘汰{prefiltered}]",
                         )
                         _report_progress(config, processed, len(pending_jobs), scored, filtered, failed)
+                        mark_completed(str(job["id"]))
 
                     if outcome.pause_reason:
                         pause_reason = outcome.pause_reason
