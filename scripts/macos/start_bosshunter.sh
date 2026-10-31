@@ -63,15 +63,18 @@ fi
 # Locate Google Chrome. `open -na` is the documented launch path; BOSS_HUNTER_CHROME
 # can point to an alternative .app bundle or Chrome binary for non-standard setups.
 CHROME_APP="Google Chrome"
-if [ -n "${BOSS_HUNTER_CHROME:-}" ]; then
-	CHROME_APP="$BOSS_HUNTER_CHROME"
-	if [ ! -e "$CHROME_APP" ]; then
-		echo "[BossHunter] BOSS_HUNTER_CHROME does not exist: $CHROME_APP" >&2
+# --skip-chrome never launches Chrome, so it must not require Chrome to be installed.
+if [ "$SKIP_CHROME" -eq 0 ]; then
+	if [ -n "${BOSS_HUNTER_CHROME:-}" ]; then
+		CHROME_APP="$BOSS_HUNTER_CHROME"
+		if [ ! -e "$CHROME_APP" ]; then
+			echo "[BossHunter] BOSS_HUNTER_CHROME does not exist: $CHROME_APP" >&2
+			exit 1
+		fi
+	elif [ ! -d "/Applications/Google Chrome.app" ] && [ ! -d "$HOME/Applications/Google Chrome.app" ]; then
+		echo "[BossHunter] Could not find Google Chrome. Install Chrome or set BOSS_HUNTER_CHROME to the app path." >&2
 		exit 1
 	fi
-elif [ ! -d "/Applications/Google Chrome.app" ] && [ ! -d "$HOME/Applications/Google Chrome.app" ]; then
-	echo "[BossHunter] Could not find Google Chrome. Install Chrome or set BOSS_HUNTER_CHROME to the app path." >&2
-	exit 1
 fi
 
 launch_chrome() {
