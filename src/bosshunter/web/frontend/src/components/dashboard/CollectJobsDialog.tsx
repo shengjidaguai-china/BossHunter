@@ -105,6 +105,9 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   const [drafts, setDrafts] = useState(initialDrafts)
   const [order, setOrder] = useState<PlatformId[]>(['boss'])
   const [autoScore, setAutoScore] = useState(false)
+  const [cityPolicy, setCityPolicy] = useState({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5 })
+  const [continuous, setContinuous] = useState(false)
+  const [durationHours, setDurationHours] = useState(8)
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
   const [resumableRuns, setResumableRuns] = useState<ResumableRun[]>([])
@@ -118,6 +121,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
     let cancelled = false
     setResumableRuns([])
     setResumeRunId('')
+    setContinuous(false)
     if (mode === 'collect') {
       fetch('/api/collection/runs?limit=100', { cache: 'no-store' })
         .then(response => {
@@ -155,6 +159,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         setDrafts({ boss: nextBoss, zhilian: nextZhilian, '51job': nextJob51, liepin: nextLiepin })
         setOrder(mode === 'full' ? ['boss'] : (nextOrder.length ? nextOrder : ['boss']))
         setAutoScore(mode === 'full' || config?.collection?.auto_score_default === true)
+        setCityPolicy({ enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...(config?.platforms?.boss?.search?.city_yield_policy || config?.search?.city_yield_policy || {}) })
       })
       .catch(() => {
         if (!cancelled) setError('读取采集默认配置失败，可直接填写后启动。')
@@ -253,9 +258,15 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
         city_codes: cityCodes,
         max_pages: Number(draft.maxPages),
         sort: draft.sort,
+        ...(platform === 'boss' ? { city_yield_policy: cityPolicy } : {}),
       }
     }
-    void submit({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms })
+    if (continuous && (mode !== 'collect' || enabledOrder.join(',') !== 'boss')) {
+      setError('持续采集只支持单独 BOSS 采集。')
+      return
+    }
+    void submit({ platform_order: enabledOrder, auto_score: mode === 'full' ? true : autoScore, platforms,
+      ...(continuous ? { continuous_collection: { enabled: true, max_duration_hours: durationHours } } : {}) })
   }
 
   const submit = async (options: Record<string, unknown>) => {
@@ -361,7 +372,19 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">执行顺序</div><p className="mt-1 text-xs text-muted">平台串行采集；智联、前程无忧和猎聘暂不执行发送或监听。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="上移"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="下移"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
         </div>
 
-        <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-card p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程必须先评分；评分后进入人工确认，再按平台适配器执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
+        {drafts.boss.enabled && <section className="mt-4 border-t border-card-border pt-4">
+          <label className="flex items-center justify-between gap-3 text-sm font-bold">城市低产切换<Switch aria-label="城市低产切换" checked={cityPolicy.enabled} onChange={enabled => setCityPolicy(p => ({ ...p, enabled }))} /></label>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <label className="text-xs text-muted">首次检查（分钟）<Input type="number" min={1} max={60} value={cityPolicy.warmup_minutes} onChange={e => setCityPolicy(p => ({ ...p, warmup_minutes: Number(e.target.value) }))} /></label>
+            <label className="text-xs text-muted">检查间隔（分钟）<Input type="number" min={1} max={30} value={cityPolicy.window_minutes} onChange={e => setCityPolicy(p => ({ ...p, window_minutes: Number(e.target.value) }))} /></label>
+            <label className="text-xs text-muted">窗口最低新增<Input type="number" min={1} max={1000} value={cityPolicy.min_new_jobs} onChange={e => setCityPolicy(p => ({ ...p, min_new_jobs: Number(e.target.value) }))} /></label>
+          </div>
+        </section>}
+        {mode === 'collect' && <section className="mt-4 border-t border-card-border pt-4">
+          <label className="flex items-center justify-between gap-3 text-sm font-bold">持续采集<Switch aria-label="持续采集" checked={continuous} onChange={setContinuous} disabled={enabledOrder.join(',') !== 'boss'} /></label>
+          {continuous && <label className="mt-3 block text-xs text-muted">会话最长时长（小时）<Input type="number" min={1} max={24} value={durationHours} onChange={e => setDurationHours(Number(e.target.value))} /></label>}
+        </section>}
+        <label className="mt-4 flex items-center justify-between border-t border-card-border py-4"><span className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : continuous ? '会话结束后评分' : '采集后自动评分'}</span><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
         {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />启动中…</span> : mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
       </div>

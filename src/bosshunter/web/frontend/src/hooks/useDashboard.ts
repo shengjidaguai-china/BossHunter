@@ -93,9 +93,16 @@ export interface CollectionPlatformProgress {
   phase?: string
   reason_code?: string
   message?: string
+  city_elapsed_ms?: number
+  next_check_ms?: number
+  last_window_new?: number | null
+  city_new_total?: number
+  city_results?: Record<string, { status: string; new_total: number; reason_code?: string }>
 }
 
 export interface CollectionProgress {
+  session_id?: string
+  session?: { id?: string; phase: string; round: number; deadline_at: string; next_wake_at?: string | null; reason_code?: string; manual_pending_reason?: string; new?: number }
   run_id?: string
   outcome?: string
   current_platform?: string

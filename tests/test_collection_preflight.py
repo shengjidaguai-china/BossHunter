@@ -6,6 +6,20 @@ from bosshunter.web.server import _preflight_messages
 
 
 class CollectionPreflightTests(TestCase):
+    def test_unknown_region_is_an_actionable_warning_when_other_cities_are_valid(self):
+        config = {"search": {"keywords": ["AI"], "cities": ["深圳", "浙江", "杭州"]}}
+        with patch("bosshunter.web.preflight.check_browser_connection", return_value=[]):
+            checks = collect_preflight_checks("collect", config)
+        self.assertFalse(any(check["status"] == "error" for check in checks))
+        warnings = [check for check in checks if check["status"] == "warning"]
+        self.assertTrue(any("浙江" in str(check) and "跳过" in str(check) for check in warnings))
+
+    def test_all_unknown_regions_block_start_with_specific_names(self):
+        config = {"search": {"keywords": ["AI"], "cities": ["浙江"]}}
+        with patch("bosshunter.web.preflight.check_browser_connection", return_value=[]):
+            checks = collect_preflight_checks("collect", config)
+        self.assertTrue(any(check["status"] == "error" and "浙江" in check["message"] for check in checks))
+
     def test_pure_collection_does_not_call_ai_even_when_ai_configured(self):
         options = {
             "platform_order": ["boss"],

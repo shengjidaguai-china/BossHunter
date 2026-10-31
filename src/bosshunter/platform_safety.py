@@ -33,8 +33,8 @@ class PlatformAccessGuard:
         if lock:
             raise PlatformSafetyStop("persistent_risk_lock")
 
-    def reserve(self, action: str, *, daily_limit: int | None = None) -> None:
-        """Reserve one page-open attempt before navigation."""
+    def check_available(self, action: str, *, daily_limit: int | None = None) -> None:
+        """Check original access limits without consuming a page attempt."""
         self.ensure_unlocked()
         safety_cfg = self.config.get("safety", {})
         global_limit = _positive_int(safety_cfg.get("daily_platform_page_limit", 1100), 1100)
@@ -49,6 +49,10 @@ class PlatformAccessGuard:
             )
             if stage_count >= max(int(daily_limit), 1):
                 raise PlatformSafetyStop(f"daily_{action}_limit")
+
+    def reserve(self, action: str, *, daily_limit: int | None = None) -> None:
+        """Reserve one page-open attempt before navigation."""
+        self.check_available(action, daily_limit=daily_limit)
         add_platform_access(self.conn, self.stage, action, platform=self.platform)
 
     def lock(self, reason: str, *, minutes: int | None = None) -> None:

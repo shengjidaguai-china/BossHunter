@@ -613,7 +613,7 @@ class OrchestrationFlowTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = CollectionOrchestrator({}, db_path=Path(tmp) / "test.db", registry=registry).run(_options())
         self.assertEqual(result["platforms"]["boss"]["status"], "failed")
-        self.assertEqual(result["platforms"]["boss"]["reason_code"], "network_error")
+        self.assertEqual(result["platforms"]["boss"]["reason_code"], "collection_error")
 
     def test_empty_result_reports_shortage(self):
         registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", [], [])})

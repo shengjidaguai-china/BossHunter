@@ -9,11 +9,20 @@ from bosshunter.collection_run_store import (
     mark_orphaned_collection_runs_stopped,
     update_collection_run,
     claim_boss_resume,
+    can_resume_boss_run,
 )
 from bosshunter.db import get_db, insert_job
 
 
 class CollectionRunAndMigrationTests(TestCase):
+    def test_unresolved_region_does_not_make_finished_valid_cities_resumable(self):
+        run = {"status": "completed_with_shortage", "options": {"platform_order": ["boss"], "platforms": {
+            "boss": {"cities": ["浙江", "北京"], "keywords": ["AI"], "max_pages": 3}}},
+            "boss_checkpoint": {"version": 2, "pages": {}, "cities": {"北京": {"status": "completed_scope"}}}}
+        self.assertFalse(can_resume_boss_run(run))
+        run["boss_checkpoint"]["cities"]["北京"]["status"] = "interrupted"
+        self.assertTrue(can_resume_boss_run(run))
+
     def test_old_runs_cannot_resume_and_one_task_cannot_be_claimed_twice(self):
         options = {"platform_order": ["boss"], "platforms": {
             "boss": {"cities": ["北京"], "keywords": ["AI"], "max_pages": 2},

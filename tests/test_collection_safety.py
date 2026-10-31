@@ -198,6 +198,8 @@ platforms:
                      json.dumps({}),  # Font discovery: this fixture has no custom font.
                      False,
                      json.dumps([]),
+                     json.dumps({"risk": None}),
+                     True,
                  ],
              ), \
              patch("bosshunter.scraper.jobs.scroll"), \
@@ -206,7 +208,7 @@ platforms:
             count = scrape_jobs(config, ["AI"])
 
         self.assertEqual(count, 0)
-        self.assertEqual(config["_workbench_collect_report"]["stop_reason"], "no_jobs_extracted")
+        self.assertEqual(config["_workbench_collect_report"]["stop_reason"], "no_jobs_for_search")
         guard_cls.return_value.lock.assert_not_called()
 
     def test_consecutive_page_failures_end_collection_without_risk_lock(self):

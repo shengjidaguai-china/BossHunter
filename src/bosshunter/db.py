@@ -471,6 +471,7 @@ def insert_job_if_new(
     job: dict[str, Any],
     *,
     rules: Rules | None = None,
+    commit: bool = True,
 ) -> bool:
     """Insert a job atomically and return True only when a row was inserted.
 
@@ -532,7 +533,8 @@ def insert_job_if_new(
         """,
         values,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cursor.rowcount == 1
 
 
@@ -1296,6 +1298,21 @@ def _init_collection_runs(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(collection_runs)")}
     if "boss_checkpoint_json" not in columns:
         conn.execute("ALTER TABLE collection_runs ADD COLUMN boss_checkpoint_json TEXT NOT NULL DEFAULT '{}'")
+    if "session_id" not in columns:
+        conn.execute("ALTER TABLE collection_runs ADD COLUMN session_id TEXT")
+    if "session_round" not in columns:
+        conn.execute("ALTER TABLE collection_runs ADD COLUMN session_round INTEGER")
+    conn.executescript("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_collection_session_round ON collection_runs(session_id, session_round);
+        CREATE TABLE IF NOT EXISTS collection_sessions (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
     conn.commit()
 
 
