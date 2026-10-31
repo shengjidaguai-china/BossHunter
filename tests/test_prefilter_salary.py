@@ -42,6 +42,19 @@ class PrefilterSalaryTests(unittest.TestCase):
         # 没有单位也没有「元」字时无法判断币种，保持交给 AI 判断的原语义。
         self.assertIsNone(_parse_salary_range_k("15-25"))
 
+    def test_daily_weekly_hourly_rates_are_not_monthly_salary(self):
+        from bosshunter.ai.prefilter import _parse_salary_range_k
+
+        # 日薪/周薪/时薪不是月薪，须按「无法解析」处理，不能折成 K/月。
+        self.assertIsNone(_parse_salary_range_k("150-200元/天"))
+        self.assertIsNone(_parse_salary_range_k("200元/天"))
+        self.assertIsNone(_parse_salary_range_k("200-300/天"))
+        self.assertIsNone(_parse_salary_range_k("50-80元/小时"))
+        self.assertIsNone(_parse_salary_range_k("1000-1500元/周"))
+        self.assertIsNone(_parse_salary_range_k("日结200元"))
+        # 年薪仍按 /12 折算为月薪，不受本条规则影响。
+        self.assertEqual(_parse_salary_range_k("24-30万/年"), (20.0, 25.0))
+
     def test_quick_score_accepts_zhilian_yuan_salary(self):
         from bosshunter.ai.prefilter import quick_score
 
@@ -113,3 +126,19 @@ class SalaryFilterResultTests(unittest.TestCase):
         from bosshunter.ai.prefilter import salary_filter_result
 
         self.assertEqual(salary_filter_result("18-25K", {}), (100, "预筛通过"))
+
+    def test_daily_rate_treated_as_unparsed_not_low_monthly(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        # 开启「接受实习」时 filter_unparsed_salary 被联动关闭 → 日薪交 AI 判断。
+        accepted = {"salary_min": 15, "salary_max": 25, "filter_unparsed_salary": False}
+        score, reason = salary_filter_result("200-300元/天", accepted)
+        self.assertEqual(score, 100, reason)
+        self.assertIn("交由 AI 判断", reason)
+
+        # 默认过滤无法解析薪资时按 unparsed 拦截，而不是误判为 0.2K 低薪。
+        strict = {"salary_min": 15, "salary_max": 25, "filter_unparsed_salary": True}
+        score, reason = salary_filter_result("200-300元/天", strict)
+        self.assertEqual(score, 0)
+        self.assertIn("无法解析", reason)
+        self.assertNotIn("薪资低于硬性要求", reason)
