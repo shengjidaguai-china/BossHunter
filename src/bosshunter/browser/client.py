@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import re
 
 import httpx
 
@@ -29,6 +30,12 @@ class RuntimeClient:
             params["background"] = "1"
         data = self._get_json("/new", params=params, timeout=30)
         return data.get("targetId") if isinstance(data, dict) else None
+
+    def activate_tab(self, target_id: str) -> bool:
+        """Show an existing Chrome tab without navigating or submitting."""
+        if not re.fullmatch(r"[A-Fa-f0-9]{32}", str(target_id)):
+            return False
+        return self._get_ok("/activate", params={"target": target_id}, timeout=5)
 
     def close_tab(self, target_id: str) -> bool:
         return self._get_ok("/close", params={"target": target_id}, timeout=5)

@@ -738,7 +738,7 @@ class ZhilianResumeCheckpointTests(TestCase):
         )
         self.assertEqual(collector._resume_ttl_hours(), 24)
 
-    def test_no_safety_conn_skips_resume_logic(self):
+    def test_no_safety_conn_refuses_unmetered_collection(self):
         browser = self._browser_with_pages({1: [self._job()], 2: None})
         collected = []
         collector = ZhilianCollector(
@@ -758,7 +758,7 @@ class ZhilianResumeCheckpointTests(TestCase):
                 PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=2),
                 self._hooks(collected),
             )
-        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.reason_code, "safety_db_unavailable")
         prune_combos.assert_not_called()
         get_combos.assert_not_called()
         get_progress.assert_not_called()
@@ -1057,8 +1057,9 @@ class ZhilianCollectApiTests(TestCase):
         )
         collector = ZhilianCollector(browser=browser, sleep=lambda _s: None)
         request = PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=1)
-        result = collector._collect_api(request, self._hooks([]), set())
-        self.assertIsNone(result)
+        with self.assertRaises(CollectionBlockedError) as error:
+            collector._collect_api(request, self._hooks([]), set())
+        self.assertEqual(error.exception.code, "browser_disconnected")
 
     def test_api_success_collects_jobs(self):
         api_response = json.dumps({
@@ -1123,7 +1124,7 @@ class ZhilianCollectApiTests(TestCase):
         request = PlatformCollectionRequest("zhilian", ["AI"], ["北京"], {"北京": "530"}, max_pages=1)
         with self.assertRaises(CollectionBlockedError) as ctx:
             collector._collect_api(request, self._hooks([]), set())
-        self.assertEqual(ctx.exception.code, "rate_limit")
+        self.assertEqual(ctx.exception.code, "captcha")
 
     def test_api_skips_collected_combos(self):
         api_response = json.dumps({
@@ -1170,3 +1171,15 @@ class ZhilianCollectApiTests(TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(collected), 0)
+
+
+import pytest
+from collector_safety_fixtures import install_safety_fixtures
+
+
+@pytest.fixture(autouse=True)
+def persistent_safety_fakes(monkeypatch):
+    connections = install_safety_fixtures(monkeypatch, ZhilianCollector, ZhilianBrowser)
+    yield
+    for conn in connections:
+        conn.close()

@@ -419,6 +419,11 @@ const server = http.createServer(async (req, res) => {
         await ensureSession(targetId);
       } catch {}
       sendJson(res, { targetId });
+    } else if (pathname === '/activate') {
+      const sessionId = await ensureSession(q.target);
+      const resp = await sendCDP('Page.bringToFront', {}, sessionId);
+      if (resp.error) sendJson(res, { error: resp.error.message }, 400);
+      else sendJson(res, { ok: true });
     } else if (pathname === '/close') {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });
       sessions.delete(q.target);
@@ -659,7 +664,7 @@ const server = http.createServer(async (req, res) => {
     } else {
       sendJson(res, {
         error: 'unknown endpoint',
-        endpoints: ['/health', '/targets', '/new', '/close', '/navigate', '/back', '/eval', '/click', '/clickAt', '/type', '/key', '/setFiles', '/scroll', '/screenshot', '/pdf', '/info'],
+        endpoints: ['/health', '/targets', '/new', '/activate', '/close', '/navigate', '/back', '/eval', '/click', '/clickAt', '/type', '/key', '/setFiles', '/scroll', '/screenshot', '/pdf', '/info'],
       }, 404);
     }
   } catch (error) {

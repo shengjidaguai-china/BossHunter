@@ -118,6 +118,12 @@ DEFAULTS: dict[str, Any] = {
         },
         "zhilian": {
             "enabled": False,
+            "safety": {
+                "daily_search_page_limit": 20,
+                "daily_detail_page_limit": 50,
+                "daily_platform_page_limit": 80,
+                "daily_delivery_limit": 10,
+            },
             "search": {
                 "keywords": [],
                 "cities": [],
@@ -128,6 +134,12 @@ DEFAULTS: dict[str, Any] = {
         },
         "51job": {
             "enabled": False,
+            "safety": {
+                "daily_search_page_limit": 20,
+                "daily_detail_page_limit": 50,
+                "daily_platform_page_limit": 80,
+                "daily_delivery_limit": 10,
+            },
             "search": {
                 "keywords": [],
                 "cities": ["上海"],
@@ -138,6 +150,12 @@ DEFAULTS: dict[str, Any] = {
         },
         "liepin": {
             "enabled": False,
+            "safety": {
+                "daily_search_page_limit": 20,
+                "daily_detail_page_limit": 50,
+                "daily_platform_page_limit": 80,
+                "daily_delivery_limit": 10,
+            },
             "search": {
                 "keywords": [],
                 "cities": [],
@@ -235,12 +253,14 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     _normalize_config_sections(cfg)
     _validate_ai_provider(cfg)
     validate_config_send_windows(cfg)
+    validate_platform_safety(cfg)
     return cfg
 
 
 def save_config(config: dict[str, Any], config_path: Path | None = None) -> None:
     """Persist settings without writing AI credentials to config.yaml."""
     validate_config_send_windows(config)
+    validate_platform_safety(config)
     config_path = Path(config_path or "config.yaml")
     public_config = _deep_copy_dict(config)
     _normalize_internship_salary_filter(public_config)
@@ -273,6 +293,23 @@ def validate_config_send_windows(config: dict[str, Any]) -> None:
     if not isinstance(throttle, dict):
         raise ValueError("throttle 必须是配置对象")  # noqa: TRY004 - configuration validation reports ValueError
     validate_send_windows(throttle.get("send_windows", DEFAULTS["throttle"]["send_windows"]))
+
+
+def validate_platform_safety(config: dict[str, Any]) -> None:
+    """Do not let malformed limits turn a bounded workflow into an unbounded one."""
+    platforms = config.get("platforms", {})
+    if not isinstance(platforms, dict):
+        raise ValueError("platforms 必须是配置对象")
+    for platform in ("zhilian", "51job", "liepin"):
+        settings = platforms.get(platform, {})
+        if not isinstance(settings, dict):
+            raise ValueError(f"platforms.{platform} 必须是配置对象")
+        safety = settings.get("safety", {})
+        if not isinstance(safety, dict):
+            raise ValueError(f"platforms.{platform}.safety 必须是配置对象")
+        for key in ("daily_search_page_limit", "daily_detail_page_limit", "daily_platform_page_limit", "daily_delivery_limit"):
+            if key in safety and (type(safety[key]) is not int or safety[key] < 1):
+                raise ValueError(f"platforms.{platform}.safety.{key} 必须是正整数")
 
 
 def migrate_legacy_credentials(config_path: Path | None = None) -> bool:

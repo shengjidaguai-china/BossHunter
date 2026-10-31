@@ -49,8 +49,8 @@
       "icon": "Layers",
       "fields": [
         {"key": "boss", "label": "BOSS 直聘独立设置", "type": "object", "description": "配置页保存 BOSS 的关键词、城市、页数和排序；城市编码由系统管理"},
-        {"key": "zhilian", "label": "智联招聘独立设置", "type": "object", "description": "配置页保存智联的关键词、城市、页数和排序；当前默认只开放采集、评分和招呼语生成"},
-        {"key": "51job", "label": "前程无忧独立设置", "type": "object", "description": "当前开放已验证的北京、上海采集、评分和招呼语生成；验证码或限流会立即停止"}
+        {"key": "zhilian", "label": "智联招聘独立设置", "type": "object", "description": "配置页保存智联的关键词、城市、页数和排序；支持人工确认后投递，独立每日额度，异常暂停"},
+        {"key": "51job", "label": "前程无忧独立设置", "type": "object", "description": "支持采集和人工确认后投递；每日额度独立统计，验证码或限流立即停止"}
       ]
     },
     {

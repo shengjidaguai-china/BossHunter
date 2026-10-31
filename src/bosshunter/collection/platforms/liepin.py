@@ -34,6 +34,7 @@ from urllib.parse import quote
 
 from bosshunter.ai.prefilter import salary_filter_result
 from bosshunter.browser import close_tab, evaluate, navigate as browser_navigate, new_tab, scroll, wait_for_load
+from bosshunter.collection.safety import CollectionSafety, protected_collection
 from bosshunter.collection.base import CollectionError, CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
 from bosshunter.db import (
@@ -241,6 +242,7 @@ class LiepinCollector:
     ):
         self.config = config or {}
         self.safety_conn = safety_conn
+        self._safety = CollectionSafety(self.config, safety_conn, self.platform)
         self.browser = browser or LiepinBrowser(navigate_action=browser_navigate)
         self.sleep = sleep
         self.uniform = uniform
@@ -261,22 +263,31 @@ class LiepinCollector:
         return url
 
     def _wait(self, hooks: CollectorHooks, seconds: float) -> bool:
+        self._safety.check()
         if hooks.stop_event is not None:
-            return hooks.stop_event.wait(max(0.0, seconds))
-        self.sleep(max(0.0, seconds))
+            stopped = hooks.stop_event.wait(max(0.0, seconds))
+            self._safety.check()
+            return stopped
+        self._safety.wait(max(0.0, seconds), self.sleep)
         return False
 
     def _navigate(self, hooks: CollectorHooks, target_id: str, url: str, label: str) -> bool:
         """Navigate with bounded retries so a transient CDP/page hiccup does not
         abort the entire platform run. Returns True when navigation commits."""
         nav = self.browser.navigate_action
+        self._safety.check()
         if nav is None:
-            return True
+            self._safety.reserve("detail_page" if "/job/" in url else "search_page")
+            return bool(self.browser.evaluate(target_id, "window.location.href = " + json.dumps(url) + "; true"))
         for attempt in range(1, 4):
             if hooks.stop_event is not None and hooks.stop_event.is_set():
                 return False
-            if nav(target_id, url):
+            self._safety.reserve("detail_page" if "/job/" in url else "search_page")
+            navigated = nav(target_id, url)
+            self._safety.inspect_page(self.browser.evaluate, target_id)
+            if navigated:
                 return True
+            self._safety.failure()
             if attempt < 3:
                 hooks.on_event(phase="pacing", message=f"{label}导航重试 {attempt}/3")
                 self._wait(hooks, 2.0)
@@ -321,6 +332,7 @@ class LiepinCollector:
         except (TypeError, ValueError):
             return 24
 
+    @protected_collection
     def collect(self, request: PlatformCollectionRequest, hooks: CollectorHooks) -> PlatformCollectionResult:
         for city in request.cities:
             if not request.city_codes.get(city):
@@ -360,6 +372,7 @@ class LiepinCollector:
                 start_page = saved_page + 1 if saved_page > 0 else 1
                 if start_page > request.max_pages:
                     if self.safety_conn is not None:
+                        self._safety.check()
                         mark_combo_collected(self.safety_conn, "liepin", city, keyword)
                         delete_page_progress(self.safety_conn, "liepin", city, keyword)
                     hooks.on_event(phase="completed_keyword", keyword=keyword, city=city,
@@ -367,16 +380,20 @@ class LiepinCollector:
                     continue
                 search_url = self.build_search_url(request, city, keyword, page=start_page)
                 initial_url = "about:blank" if self.browser.navigate_action is not None else search_url
+                self._safety.check()
+                if self.browser.navigate_action is None:
+                    self._safety.reserve("search_page")
                 target_id = self.browser.new_tab(initial_url, background=True)
                 if not target_id:
                     return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "无法打开猎聘搜索页")
-                if not self._navigate(hooks, target_id, search_url, "猎聘搜索页"):
-                    return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "猎聘搜索页导航失败")
                 try:
+                    if self.browser.navigate_action is not None and not self._navigate(hooks, target_id, search_url, "猎聘搜索页"):
+                        self._safety.check()
+                        return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "猎聘搜索页导航失败")
                     for page in range(start_page, request.max_pages + 1):
                         if hooks.stop_event is not None and hooks.stop_event.is_set():
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                        if page > 1:
+                        if page > start_page:
                             detail_req = self.uniform(*self.page_delay_range)
                             hooks.on_event(phase="pacing", keyword=keyword, city=city, page=page, message=f"翻页安全间隔 {detail_req:.1f} 秒")
                             if self._wait(hooks, detail_req):
@@ -409,6 +426,7 @@ class LiepinCollector:
 
                         page_had_transient_failure = False
                         for raw_item in payload["jobs"]:
+                            self._safety.check()
                             candidate = self._candidate_from_list(raw_item, city, keyword)
                             if candidate is None:
                                 continue
@@ -428,17 +446,20 @@ class LiepinCollector:
                                 return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                             hooks.on_event(phase="loading_detail", keyword=keyword, city=city, page=page)
                             detail_initial_url = "about:blank" if self.browser.navigate_action is not None else candidate.url
+                            self._safety.check()
+                            if self.browser.navigate_action is None:
+                                self._safety.reserve("detail_page")
                             detail_target = self.browser.new_tab(detail_initial_url, background=True)
                             if not detail_target:
                                 hooks.on_parse_failed("无法打开猎聘详情页")
                                 page_had_transient_failure = True
                                 continue
-                            if not self._navigate(hooks, detail_target, candidate.url, "猎聘详情页"):
-                                self.browser.close_tab(detail_target)
-                                hooks.on_parse_failed("猎聘详情页导航失败")
-                                page_had_transient_failure = True
-                                continue
                             try:
+                                if self.browser.navigate_action is not None and not self._navigate(hooks, detail_target, candidate.url, "猎聘详情页"):
+                                    self._safety.check()
+                                    hooks.on_parse_failed("猎聘详情页导航失败")
+                                    page_had_transient_failure = True
+                                    continue
                                 self.browser.wait_for_load(detail_target, timeout=15)
                                 self.browser.scroll(detail_target, y=1200)
                                 detail: dict[str, Any] = {}
@@ -463,6 +484,7 @@ class LiepinCollector:
                                     return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
                                 continue
                             if detail_status == "ready" and str(detail.get("jd") or "").strip():
+                                self._safety.success()
                                 final = self._candidate_from_detail(detail, candidate)
                                 if not hooks.on_candidate(final):
                                     return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
@@ -485,10 +507,12 @@ class LiepinCollector:
                                 "猎聘详情页暂时不可用，保留上一完整页断点，下次重试",
                             )
                         if self.safety_conn is not None:
+                            self._safety.check()
                             upsert_page_progress(self.safety_conn, "liepin", city, keyword, page)
                 finally:
                     self.browser.close_tab(target_id)
                 if self.safety_conn is not None:
+                    self._safety.check()
                     mark_combo_collected(self.safety_conn, "liepin", city, keyword)
                     delete_page_progress(self.safety_conn, "liepin", city, keyword)
         return PlatformCollectionResult(self.platform, "completed", "search_exhausted", "猎聘搜索结果已采集完毕")

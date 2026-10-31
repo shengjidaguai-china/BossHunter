@@ -20,7 +20,7 @@ it('blocks invalid windows, saves multiple periods and reloads their exact times
   })
   vi.stubGlobal('fetch', fetchMock)
   const view = render(<ConfigPage />)
-  fireEvent.click(await screen.findByRole('button', { name: '反监测设置' }))
+  fireEvent.click(await screen.findByRole('button', { name: '安全设置' }))
   fireEvent.click(screen.getByRole('button', { name: '添加时间段' }))
   expect(screen.getByRole('button', { name: '保存' }).getAttribute('data-tour')).toBe('config-save')
   expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
@@ -36,7 +36,7 @@ it('blocks invalid windows, saves multiple periods and reloads their exact times
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   view.unmount()
   render(<ConfigPage />)
-  fireEvent.click(await screen.findByRole('button', { name: '反监测设置' }))
+  fireEvent.click(await screen.findByRole('button', { name: '安全设置' }))
   expect((screen.getByLabelText('时间段 1 结束时间') as HTMLInputElement).value).toBe('11:30')
   expect((screen.getByLabelText('时间段 2 开始时间') as HTMLInputElement).value).toBe('14:00')
   fireEvent.click(screen.getByRole('button', { name: '删除时间段 2' }))
@@ -140,4 +140,45 @@ it('points the guide at the platform switch when no search platform is enabled',
   const bossSwitch = await screen.findByRole('checkbox', { name: 'BOSS 直聘' })
   expect(document.querySelector('[data-tour="search-keywords"]')?.contains(bossSwitch)).toBe(true)
   expect(document.querySelector('[data-tour="search-city"]')?.contains(bossSwitch)).toBe(true)
+})
+
+it('saves independent platform safety limits and defaults, blocking invalid values', async () => {
+  let saved: Record<string, any> = { safety: { daily_platform_page_limit: 1100 }, platforms: { zhilian: { enabled: true, search: { keywords: ['工程师'] }, safety: { daily_delivery_limit: 7, custom: true } } } }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    let body: unknown = {}
+    if (String(input) === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (String(input).startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const page = render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: '安全设置' }))
+  const fields = ['单日搜索页上限', '单日详情页上限', '单日页面访问总上限', '单日投递上限']
+  for (const [p, platform] of ['智联招聘', '前程无忧', '猎聘'].entries()) {
+    for (const [i, field] of fields.entries()) {
+      const input = screen.getByRole('spinbutton', { name: platform + field }) as HTMLInputElement
+      expect(input.value).toBe(String(p === 0 && i === 3 ? 7 : [20, 50, 80, 10][i]))
+      for (const value of ['', '0', '-1', '1.5']) {
+        fireEvent.change(input, { target: { value } })
+        expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+      }
+      fireEvent.change(input, { target: { value: String(21 + p + i) } })
+    }
+  }
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('配置已保存')
+  for (const [i, platform] of ['zhilian', '51job', 'liepin'].entries()) {
+    expect(saved.platforms[platform].safety).toMatchObject({ daily_search_page_limit: 21 + i, daily_detail_page_limit: 22 + i, daily_platform_page_limit: 23 + i, daily_delivery_limit: 24 + i })
+  }
+  expect(saved.platforms.zhilian.search.keywords).toEqual(['工程师'])
+  expect(saved.platforms.zhilian.safety.custom).toBe(true)
+  expect(saved.safety.daily_platform_page_limit).toBe(1100)
+  page.unmount()
+  render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: '安全设置' }))
+  expect((screen.getByRole('spinbutton', { name: '猎聘单日投递上限' }) as HTMLInputElement).value).toBe('26')
 })
