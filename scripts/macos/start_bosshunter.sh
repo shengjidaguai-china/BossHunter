@@ -83,13 +83,14 @@ launch_chrome() {
 # Chrome 136+ ignores --remote-debugging-port on the DEFAULT profile, so a
 # dedicated --user-data-dir is mandatory. Reuse it for the workbench tab too.
 CHROME_PROFILE="$HOME/.bosshunter-chrome"
+CHROME_PORT=9222
 DEBUG_URL="http://127.0.0.1:9222/json/version"
 WORKBENCH_URL="http://127.0.0.1:8686/"
 
 if [ "$SKIP_CHROME" -eq 0 ]; then
 	echo "[BossHunter] Starting the BossHunter Chrome profile..."
 	launch_chrome \
-		--remote-debugging-port=9222 \
+		--remote-debugging-port="$CHROME_PORT" \
 		--user-data-dir="$CHROME_PROFILE" \
 		"https://www.zhipin.com"
 
@@ -105,6 +106,13 @@ if [ "$SKIP_CHROME" -eq 0 ]; then
 		echo "[BossHunter] Warning: Chrome remote debugging did not become ready within 10 seconds." >&2
 		echo "[BossHunter] If Chrome was already running with your normal profile, quit it fully and re-run this script." >&2
 	fi
+
+	# Record the port we just started. Chrome does not always leave a
+	# DevToolsActivePort inside a custom --user-data-dir, and without this marker
+	# the Browser Runtime can fall back to the user's everyday Chrome (its
+	# chrome://inspect toggle publishes a competing port that used to win).
+	mkdir -p "$CHROME_PROFILE"
+	printf '%s\n' "$CHROME_PORT" > "$CHROME_PROFILE/.bosshunter-port"
 fi
 
 echo "[BossHunter] Starting the Browser Runtime..."
@@ -131,7 +139,7 @@ if [ "$SKIP_CHROME" -eq 0 ]; then
 	# Same --user-data-dir reuses the running debug instance, so the workbench
 	# opens inside the BossHunter Chrome profile window.
 	launch_chrome \
-		--remote-debugging-port=9222 \
+		--remote-debugging-port="$CHROME_PORT" \
 		--user-data-dir="$CHROME_PROFILE" \
 		"$WORKBENCH_URL"
 fi

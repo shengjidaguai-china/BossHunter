@@ -18,7 +18,10 @@
         {"key": "filter_unparsed_salary", "label": "过滤面议/无法解析薪资", "type": "switch", "default": true, "description": "开启后，薪资面议或无法解析的岗位会在 AI 评分前跳过"},
         {"key": "deal_breakers", "label": "职位名排除词", "type": "tags", "description": "职位名含这些词时自动跳过"},
         {"key": "jd_deal_breakers", "label": "JD 排除词", "type": "tags", "description": "完整 JD 含这些词时自动跳过"},
-        {"key": "blocked_companies", "label": "屏蔽公司", "type": "tags", "description": "公司名含这些词时自动跳过"},
+        {"key": "blocked_companies", "label": "屏蔽公司", "type": "tags", "description": "公司名含这些词时自动跳过；采集阶段即过滤，不会入库"},
+        {"key": "priority_cities", "label": "优先城市", "type": "multi-select", "options_from": "cities", "description": "投递时排在这些城市的岗位之前；留空则只按分数排序"},
+        {"key": "resume_images", "label": "简历图片路径", "type": "tags", "description": "本地 PNG/JPG 文件路径，每条一个完整路径；投递时随招呼语一起发送"},
+        {"key": "send_resume_images", "label": "发送简历图片", "type": "switch", "default": false, "description": "开启后，招呼语送达确认时把上方图片上传到同一会话；上传失败不影响招呼语已送达状态"},
         {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "开启时自动关闭无法解析薪资过滤，避免日薪实习被误过滤；关闭时过滤实习、intern、管培岗位"}
       ]
     },

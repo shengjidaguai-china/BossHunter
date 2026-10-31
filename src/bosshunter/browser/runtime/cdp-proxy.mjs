@@ -9,6 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const PORT = parseInt(process.env.BOSSHUNTER_BROWSER_PROXY_PORT || process.env.CDP_PROXY_PORT || '3456', 10);
 const ENABLE_PORT_GUARD = !['0', 'false', 'no'].includes(String(process.env.BOSSHUNTER_ENABLE_PORT_GUARD || 'true').toLowerCase());
@@ -16,6 +17,17 @@ const COMMON_PORTS = String(process.env.BOSSHUNTER_CHROME_PORTS || '9222,9229,93
   .split(',')
   .map((value) => parseInt(value.trim(), 10))
   .filter((value) => value > 0 && value < 65536);
+// Profile directories the launchers (scripts/*/start_bosshunter.*) create for the
+// dedicated BossHunter Chrome. Windows uses ``BossHunterChrome``; the macOS
+// launcher uses ``.bosshunter-chrome``. Overridable via a comma-separated
+// ``BOSSHUNTER_CHROME_PROFILE``.
+const DEDICATED_PROFILE_NAMES = (() => {
+  const configured = String(process.env.BOSSHUNTER_CHROME_PROFILE || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return configured.length ? configured : ['BossHunterChrome', '.bosshunter-chrome'];
+})();
 const RUNTIME_NAME = 'bosshunter';
 
 let ws = null;
@@ -39,6 +51,77 @@ if (typeof globalThis.WebSocket !== 'undefined') {
   } catch {
     console.error('[BossHunter Browser Runtime] Node.js < 22 requires ws. Upgrade Node.js or install ws.');
     process.exit(1);
+  }
+}
+
+function profileRoots() {
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA || '';
+  // `home` is included because the macOS launcher keeps its profile directly
+  // under $HOME (``.bosshunter-chrome``) rather than in Application Support.
+  if (os.platform() === 'darwin') return [home, path.join(home, 'Library/Application Support')];
+  if (os.platform() === 'linux') return [path.join(home, '.config'), home];
+  if (os.platform() === 'win32') return localAppData ? [localAppData] : [];
+  return [];
+}
+
+function dedicatedProfileDirectories() {
+  const directories = [];
+  for (const root of profileRoots()) {
+    for (const name of DEDICATED_PROFILE_NAMES) directories.push(path.join(root, name));
+  }
+  return directories;
+}
+
+// BossHunter's own Chrome profiles. These must be probed BEFORE the user's
+// everyday Chrome: `chrome://inspect/#remote-debugging` leaves a
+// DevToolsActivePort in the default profile, and that file used to win over the
+// configured chrome_ports, so the automation silently drove the user's personal
+// browsing profile (seen live on 2026-10-15: DeepSeek / 网易邮箱 / LeetCode tabs).
+function dedicatedPortFiles() {
+  return dedicatedProfileDirectories().map((directory) => path.join(directory, 'DevToolsActivePort'));
+}
+
+// Written by the launchers (scripts/*/start_bosshunter.*) right after they start
+// the dedicated Chrome. Chrome itself does not always leave a
+// ``DevToolsActivePort`` inside a custom ``--user-data-dir``, so this marker is
+// the only unambiguous record of "the port BossHunter started". Always wins.
+function dedicatedPortMarkerFiles() {
+  return dedicatedProfileDirectories().map((directory) => path.join(directory, '.bosshunter-port'));
+}
+
+function isDedicatedProfileCommandLine(commandLine) {
+  if (typeof commandLine !== 'string' || !commandLine) return false;
+  const lowered = commandLine.toLowerCase();
+  return DEDICATED_PROFILE_NAMES.some((name) => lowered.includes(name.toLowerCase()));
+}
+
+// Which Chrome owns a listening port, and how was it launched? Returns the
+// command line, '' when the port has no owner, or null when we cannot tell.
+// null must stay distinguishable from '' so a missing `ps`/PowerShell never
+// gets mistaken for "this is not the dedicated instance".
+function portOwnerCommandLine(port) {
+  try {
+    if (os.platform() === 'win32') {
+      const script =
+        `$p=(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue`
+        + ' | Select-Object -First 1).OwningProcess;'
+        + 'if($p){(Get-CimInstance Win32_Process -Filter "ProcessId=$p").CommandLine}';
+      return execFileSync(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true },
+      ).trim();
+    }
+    const pids = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], {
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+    const pid = pids.split(/\s+/).filter(Boolean)[0];
+    if (!pid) return '';
+    return execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8', timeout: 5000 }).trim();
+  } catch {
+    return null;
   }
 }
 
@@ -145,47 +228,107 @@ function probeDevtoolsWsPath(port, wsPath, timeoutMs = 5000) {
   });
 }
 
-async function discoverChromePort() {
-  for (const filePath of activePortFiles()) {
-    try {
-      const lines = fs.readFileSync(filePath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
-      const port = parseInt(lines[0], 10);
-      if (port > 0 && port < 65536 && await checkPort(port)) {
-        const wsPath = normalizeDevtoolsWsPath(lines[1] || null);
-        const version = await getChromeVersion(port);
-        // A stale DevToolsActivePort can leave a port that accepts TCP but no
-        // longer speaks CDP; require real CDP proof before trusting it,
-        // otherwise fall through to the COMMON_PORTS probe below. Chrome does not
-        // always expose /json/version, so a recorded path that actually upgrades
-        // to a DevTools socket counts as proof too.
-        const wsUrl = version?.webSocketDebuggerUrl
-          || (wsPath && await probeDevtoolsWsPath(port, wsPath) ? `ws://127.0.0.1:${port}${wsPath}` : null);
-        if (!wsUrl) {
-          continue;
-        }
-        const browserName = filePath.includes('Chromium')
-          ? 'Chromium'
-          : filePath.includes('Chrome Canary')
-            ? 'Google Chrome Canary'
-            : 'Google Chrome';
-        console.log(`[BossHunter Browser Runtime] DevToolsActivePort: ${port}${wsPath ? ' with wsPath' : ''}`);
-        return { port, wsPath, wsUrl, product: version?.Browser || null, browserName };
-      }
-    } catch {}
+async function probePortFile(filePath) {
+  try {
+    const lines = fs.readFileSync(filePath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
+    const port = parseInt(lines[0], 10);
+    if (!(port > 0 && port < 65536) || !(await checkPort(port))) return null;
+    const wsPath = normalizeDevtoolsWsPath(lines[1] || null);
+    const version = await getChromeVersion(port);
+    // A stale DevToolsActivePort can leave a port that accepts TCP but no
+    // longer speaks CDP; require real CDP proof before trusting it,
+    // otherwise fall through to the COMMON_PORTS probe below. Chrome does not
+    // always expose /json/version, so a recorded path that actually upgrades
+    // to a DevTools socket counts as proof too.
+    const wsUrl = version?.webSocketDebuggerUrl
+      || (wsPath && await probeDevtoolsWsPath(port, wsPath) ? `ws://127.0.0.1:${port}${wsPath}` : null);
+    if (!wsUrl) return null;
+    const isDedicated = DEDICATED_PROFILE_NAMES.some((name) => filePath.includes(name));
+    const browserName = isDedicated
+      ? 'Google Chrome (BossHunter)'
+      : filePath.includes('Chromium')
+        ? 'Chromium'
+        : filePath.includes('Chrome Canary')
+          ? 'Google Chrome Canary'
+          : 'Google Chrome';
+    console.log(
+      `[BossHunter Browser Runtime] DevToolsActivePort: ${port}${wsPath ? ' with wsPath' : ''}`
+      + `${isDedicated ? ' (dedicated profile)' : ''}`,
+    );
+    return { port, wsPath, wsUrl, product: version?.Browser || null, browserName };
+  } catch {
+    return null;
   }
+}
 
-  for (const port of COMMON_PORTS) {
-    if (await checkPort(port)) {
-      const version = await getChromeVersion(port);
-      if (version?.webSocketDebuggerUrl) {
-        const product = version.Browser || null;
-        const browserName = browserNameFromProduct(product) || '未知浏览器';
-        console.log(`[BossHunter Browser Runtime] Found Chrome debug port: ${port}`);
-        return { port, wsUrl: version.webSocketDebuggerUrl, product, browserName };
-      }
-    }
+async function probePortFiles(filePaths) {
+  for (const filePath of filePaths) {
+    const found = await probePortFile(filePath);
+    if (found) return found;
   }
   return null;
+}
+
+async function probeCommonPorts() {
+  const verified = [];
+  const unknown = [];
+  const foreign = [];
+  for (const port of COMMON_PORTS) {
+    if (!(await checkPort(port))) continue;
+    const version = await getChromeVersion(port);
+    if (!version?.webSocketDebuggerUrl) continue;
+    const product = version.Browser || null;
+    const entry = {
+      port,
+      wsUrl: version.webSocketDebuggerUrl,
+      product,
+      browserName: browserNameFromProduct(product) || '未知浏览器',
+    };
+    const commandLine = portOwnerCommandLine(port);
+    if (commandLine === null) {
+      unknown.push(entry);
+    } else if (isDedicatedProfileCommandLine(commandLine)) {
+      verified.push({ ...entry, browserName: `${entry.browserName} (BossHunter)` });
+    } else {
+      foreign.push(entry);
+    }
+  }
+
+  if (verified.length) {
+    console.log(`[BossHunter Browser Runtime] Found Chrome debug port: ${verified[0].port} (dedicated profile)`);
+    return verified[0];
+  }
+  // Nothing provably dedicated. Prefer a port we simply could not inspect over
+  // one we positively identified as the user's everyday Chrome.
+  if (unknown.length) {
+    console.log(`[BossHunter Browser Runtime] Found Chrome debug port: ${unknown[0].port}`);
+    return unknown[0];
+  }
+  if (foreign.length) {
+    console.warn(
+      `[BossHunter Browser Runtime] 端口 ${foreign[0].port} 上的 Chrome 不是 BossHunter 专用实例`
+      + `（--user-data-dir 不含 ${DEDICATED_PROFILE_NAMES.join(' / ')}）。`
+      + '请先运行 scripts/*/start_bosshunter 启动专用实例。',
+    );
+    return foreign[0];
+  }
+  return null;
+}
+
+async function discoverChromePort() {
+  // Order matters. BossHunter owns a dedicated Chrome profile; the user's
+  // everyday Chrome is only a last resort, because driving it means the
+  // automation shares their personal tabs and logins.
+  const fromMarker = await probePortFiles(dedicatedPortMarkerFiles());
+  if (fromMarker) return fromMarker;
+
+  const dedicated = await probePortFiles(dedicatedPortFiles());
+  if (dedicated) return dedicated;
+
+  const common = await probeCommonPorts();
+  if (common) return common;
+
+  return probePortFiles(activePortFiles());
 }
 
 function getWebSocketUrl(port, wsPath, wsUrl) {
