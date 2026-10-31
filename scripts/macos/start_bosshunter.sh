@@ -108,12 +108,18 @@ if [ "$SKIP_CHROME" -eq 0 ]; then
 fi
 
 echo "[BossHunter] Starting the Browser Runtime..."
-if ! "${RUNNER[@]}" "${RUNNER_PREFIX[@]}" connect; then
+# `bosshunter` on PATH needs no `-m bosshunter.main` prefix, so RUNNER_PREFIX
+# stays the empty array declared above. macOS ships bash 3.2, and `set -u`
+# treats an empty array expansion as an unbound variable there (fixed only in
+# bash 4.4), which aborted the launcher whenever a venv was activated. The
+# ${name[@]+...} form expands to nothing for the empty array and to the quoted
+# array otherwise, keeping space-containing interpreters intact on bash 4.4+.
+if ! "${RUNNER[@]}" ${RUNNER_PREFIX[@]+"${RUNNER_PREFIX[@]}"} connect; then
 	echo "[BossHunter] Warning: browser connection check failed with ${RUNNER[0]}; the workbench will still be opened." >&2
 fi
 
 echo "[BossHunter] Starting the local workbench..."
-cd "$REPO_ROOT" && nohup "${RUNNER[@]}" "${RUNNER_PREFIX[@]}" web --no-open >/dev/null 2>&1 &
+cd "$REPO_ROOT" && nohup "${RUNNER[@]}" ${RUNNER_PREFIX[@]+"${RUNNER_PREFIX[@]}"} web --no-open >/dev/null 2>&1 &
 
 WEB_READY=0
 for _ in $(seq 1 20); do
