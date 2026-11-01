@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from bosshunter.employment import BOSS_INTERNSHIP_CARD
 from bosshunter.outsourcing import (
     OUTSOURCING_COMPANIES,
     OUTSOURCING_KEYWORDS_HARD,
@@ -173,6 +174,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     _migrate_v1_5(conn)
     _migrate_outsourcing(conn)
     _migrate_platform_access_events(conn)
+    _migrate_employment_source(conn)
     _init_scoring_runs(conn)
     _init_collection_runs(conn)
     _init_collect_progress(conn)
@@ -504,6 +506,12 @@ def insert_job_if_new(
         "source_job_id": str(job.get("source_job_id") or "") or None,
         "source_keyword": job.get("source_keyword", ""),
         "source_city_code": job.get("source_city_code", ""),
+        "employment_source": (
+            BOSS_INTERNSHIP_CARD
+            if str(job.get("source_platform") or "boss") == "boss"
+            and job.get("employment_source") == BOSS_INTERNSHIP_CARD
+            else None
+        ),
     }
     os_columns = compute_outsourcing_columns(values, rules or _default_outsourcing_rules())
     values.update({
@@ -519,13 +527,13 @@ def insert_job_if_new(
         INSERT OR IGNORE INTO jobs (
             id, title, company, salary, city, experience, education, recruitment_type, jd,
             hr_name, hr_title, hr_active, company_size, company_industry, url,
-            source_platform, source_job_id, source_keyword, source_city_code,
+            source_platform, source_job_id, source_keyword, source_city_code, employment_source,
             outsourcing_level, outsourcing_confirmed, outsourcing_matches,
             outsourcing_layers, outsourcing_updated_at, outsourcing_rules_version
         ) VALUES (
             :id, :title, :company, :salary, :city, :experience, :education, :recruitment_type, :jd,
             :hr_name, :hr_title, :hr_active, :company_size, :company_industry, :url,
-            :source_platform, :source_job_id, :source_keyword, :source_city_code,
+            :source_platform, :source_job_id, :source_keyword, :source_city_code, :employment_source,
             :outsourcing_level, :outsourcing_confirmed, :outsourcing_matches,
             :outsourcing_layers, :outsourcing_updated_at, :outsourcing_rules_version
         )
@@ -1248,6 +1256,14 @@ def _migrate_platform_access_events(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_platform_access_platform_stage_action "
         "ON platform_access_events(platform, stage, action, created_at)"
     )
+    conn.commit()
+
+
+def _migrate_employment_source(conn: sqlite3.Connection) -> None:
+    """Persist collector-only employment evidence (#308)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "employment_source" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN employment_source TEXT NULL")
     conn.commit()
 
 

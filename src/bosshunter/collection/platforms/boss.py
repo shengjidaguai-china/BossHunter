@@ -14,7 +14,10 @@ from urllib.parse import quote, urlencode
 import httpx
 
 from bosshunter.ai.prefilter import quick_score
-from bosshunter.employment import internship_config_error, internship_only, internship_rejection
+from bosshunter.employment import (
+    BOSS_INTERNSHIP_CARD, has_internship_card_tag, internship_config_error,
+    internship_only, internship_rejection,
+)
 from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, wait_for_load
 from bosshunter.collection.base import CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
@@ -99,6 +102,14 @@ def _decode_fields(raw: dict) -> dict:
             for key, value in raw.items()}
 
 
+def _card_tags(raw: Any) -> list[str]:
+    """Decode card tag texts; tags are a list so _decode_fields skips them."""
+    if not isinstance(raw, dict):
+        return []
+    return [decode_boss_text(tag) if isinstance(tag, str) else str(tag or "")
+            for tag in (raw.get("tags") or [])]
+
+
 _SALARY_DECODE_ACTIONS = ("stop", "skip_job")
 
 
@@ -181,6 +192,7 @@ JS_EXTRACT_LIST = """
             title: nameEl.textContent.trim(), salary: salaryEl ? salaryEl.textContent.trim() : '',
             experience: tags[0] ? tags[0].textContent.trim() : '',
             education: tags[1] ? tags[1].textContent.trim() : '',
+            tags: Array.from(tags).map((t) => t.textContent.trim()).filter(Boolean),
             company: companyEl ? companyEl.textContent.trim() : '',
             location: locationEl ? locationEl.textContent.trim() : '', url: href
         });
@@ -514,6 +526,14 @@ class BossCollector:
                     new_jobs = [job for job in jobs if not isinstance(job, dict) or not job.get("url")
                                 or generate_boss_job_id(job["url"]) not in loaded_ids]
                     loaded_ids.update(list_ids(jobs))
+                    # Scroll loads one batch on the same search page: confirm the
+                    # internship filter is still in effect before the batch is
+                    # processed. DOM-only check; no extra request or quota.
+                    if only_internships and self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is not True:
+                        raise ListStopped(PlatformCollectionResult(
+                            self.platform, "completed_with_shortage", "internship_filter_not_applied",
+                            "无法确认 BOSS 实习筛选已生效，已停止；请在网站核对职位类型后重试",
+                        ))
                     return new_jobs
             hooks.on_parse_failed("BOSS 滚动后未出现新岗位，无法确认已加载下一批")
             raise ListStopped(PlatformCollectionResult(
@@ -650,6 +670,11 @@ class BossCollector:
                             hooks.on_parse_failed("BOSS 列表岗位缺少有效链接")
                             continue
                         if not hooks.on_list_candidate(candidate): continue
+                        # The internship-only search has passed
+                        # JS_VERIFY_INTERNSHIP_FILTER above, so a card tag such
+                        # as 「X天/周」/「X个月」 is trustworthy internship evidence.
+                        if only_internships and has_internship_card_tag(_card_tags(raw)):
+                            candidate = replace(candidate, employment_source=BOSS_INTERNSHIP_CARD)
                         if _PRIVATE_GLYPH.search(candidate.salary):
                             if salary_decode_action != "skip_job":
                                 hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
@@ -822,4 +847,5 @@ class BossCollector:
             company_industry=str(detail.get("company_industry") or "").strip(),
             url=detail_url,
             source_keyword=candidate.source_keyword,
+            employment_source=candidate.employment_source,
         )
