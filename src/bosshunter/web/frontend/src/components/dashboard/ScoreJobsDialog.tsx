@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ScoringProgress } from './ScoringProgress'
 import { Button } from '@/components/ui/button'
 
@@ -45,6 +45,8 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
   const [runsError, setRunsError] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+  const runsRequestRef = useRef<AbortController | null>(null)
+  const runsRequestRevisionRef = useRef(0)
 
   const normalizedLimit = limitText.trim()
   const limitValid = normalizedLimit === ''
@@ -83,28 +85,40 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     }
   }
 
-  const loadRuns = useCallback(async (signal?: AbortSignal) => {
+  const loadRuns = useCallback(async () => {
+    // A slow response must not overlap the next poll and overwrite a newer progress value.
+    if (runsRequestRef.current) return
+    const controller = new AbortController()
+    const revision = ++runsRequestRevisionRef.current
+    runsRequestRef.current = controller
+    const timeout = window.setTimeout(() => controller.abort(), 15000)
     try {
-      const res = await fetch('/api/scoring/runs', { cache: 'no-store', signal })
+      const res = await fetch('/api/scoring/runs', { cache: 'no-store', signal: controller.signal })
       if (!res.ok) throw new Error('无法刷新评分进度，请检查服务连接。')
       const data: ScoringRun[] = await res.json()
-      if (!signal?.aborted) {
+      if (!controller.signal.aborted && runsRequestRef.current === controller && revision === runsRequestRevisionRef.current) {
         setRuns(data)
         setRunsError('')
       }
     } catch {
-      if (!signal?.aborted) setRunsError('无法刷新评分进度，请检查服务连接。')
+      if (!controller.signal.aborted && runsRequestRef.current === controller && revision === runsRequestRevisionRef.current) {
+        setRunsError('无法刷新评分进度，请检查服务连接。')
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      if (runsRequestRef.current === controller) runsRequestRef.current = null
     }
   }, [])
 
   useEffect(() => {
     if (!open) return
-    const controller = new AbortController()
-    void loadRuns(controller.signal)
-    const timer = window.setInterval(() => void loadRuns(controller.signal), 3000)
+    void loadRuns()
+    const timer = window.setInterval(() => void loadRuns(), 3000)
     return () => {
-      controller.abort()
       window.clearInterval(timer)
+      runsRequestRevisionRef.current += 1
+      runsRequestRef.current?.abort()
+      runsRequestRef.current = null
     }
   }, [open, loadRuns])
 

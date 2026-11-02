@@ -30,4 +30,38 @@ describe('ScoreJobsDialog progress polling', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
     expect(fetchMock.mock.calls.length).toBe(calls)
   })
+
+  it('does not start an overlapping poll while the previous run response is slow', async () => {
+    vi.useFakeTimers()
+    let resolveFirst!: (value: Response) => void
+    let resolveSecond!: (value: Response) => void
+    let runCalls = 0
+    const runResponse = (completed: number) => new Response(JSON.stringify([
+      { id: 'run-1', status: 'running', remaining_job_ids: ['a', 'b'], progress: { ai_total: 4, ai_completed: completed } },
+    ]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/scoring/runs') {
+        runCalls += 1
+        return new Promise<Response>(resolve => {
+          if (runCalls === 1) resolveFirst = resolve
+          else resolveSecond = resolve
+        })
+      }
+      return Promise.resolve(new Response(JSON.stringify({ eligible_jobs: 0 }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const props = { selectedJobIds: [], onClose: vi.fn(), onStart: vi.fn() }
+    render(<ScoreJobsDialog open {...props} />)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(runCalls).toBe(1)
+    await act(async () => { resolveFirst(runResponse(1)) })
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('25')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(runCalls).toBe(2)
+    await act(async () => { resolveSecond(runResponse(2)) })
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50')
+  })
+
 })
