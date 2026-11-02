@@ -179,6 +179,21 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     _init_score_traces(conn)
 
 
+def migration_applied(conn: sqlite3.Connection, name: str) -> bool:
+    """Return whether a one-time data backfill has already run on this database."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        "name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
+    return conn.execute("SELECT 1 FROM schema_migrations WHERE name = ?", (name,)).fetchone() is not None
+
+
+def mark_migration_applied(conn: sqlite3.Connection, name: str) -> None:
+    """Record a completed one-time data backfill so it never runs again."""
+    conn.execute("INSERT OR IGNORE INTO schema_migrations(name) VALUES (?)", (name,))
+    conn.commit()
+
+
 def job_exists(conn: sqlite3.Connection, job_id: str) -> bool:
     """Check if a job already exists in the database."""
     row = conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -1127,12 +1142,22 @@ def _migrate_v1_3(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v1_4(conn: sqlite3.Connection) -> None:
-    """Add education and recruitment-type fields without aggressive inference."""
+    """Add education and recruitment-type fields without aggressive inference.
+
+    Both UPDATE statements below keep the original value when no keyword matches,
+    and recruitment_type defaults to 'unknown', which its CASE also returns. Rows
+    therefore stay eligible for the WHERE clause forever, so without the one-time
+    guard every get_db() call rewrote the whole jobs table.
+    """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "education" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN education TEXT")
     if "recruitment_type" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN recruitment_type TEXT DEFAULT 'unknown'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruitment_type ON jobs(recruitment_type)")
+    conn.commit()
+    if migration_applied(conn, "v1_4"):
+        return
     searchable = "COALESCE(title, '') || ' ' || COALESCE(jd, '') || ' ' || COALESCE(experience, '')"
     conn.execute(f"""
         UPDATE jobs SET education = CASE
@@ -1155,8 +1180,7 @@ def _migrate_v1_4(conn: sqlite3.Connection) -> None:
         END
         WHERE recruitment_type IS NULL OR TRIM(recruitment_type) = '' OR recruitment_type = 'unknown'
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruitment_type ON jobs(recruitment_type)")
-    conn.commit()
+    mark_migration_applied(conn, "v1_4")
 
 
 def _migrate_v1_5(conn: sqlite3.Connection) -> None:
