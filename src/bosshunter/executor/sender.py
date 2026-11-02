@@ -368,8 +368,12 @@ def _navigate_to_chat_redirect(target_id: str, click_result: dict) -> bool:
 
 
 def _handle_greet_popup(
-    target_id: str, greeting: str, click_result: dict | None = None,
+    target_id: str,
+    greeting: str,
+    click_result: dict | None = None,
     window_checker: SendWindowChecker | None = None,
+    *,
+    allow_initial_contact: bool = True,
 ) -> dict:
     state = _detect_greet_popup(target_id)
     if not state.get("success"):
@@ -380,10 +384,37 @@ def _handle_greet_popup(
             "skip_backoff": True,
         }
     if _is_preset_greeting_popup(state):
+        if not allow_initial_contact:
+            return {
+                "success": False,
+                "error": "existing_chat_popup",
+                "history_detail": "岗位页出现首次沟通弹窗，未按已有会话再次投递",
+                "skip_backoff": True,
+            }
         if window_checker and not window_checker.is_active():
             return {"success": False, "error": "outside_window", "skip_backoff": True}
-        return _confirm_preset_greeting(target_id)
+        # Confirming this popup sends BOSS's own preset greeting immediately.
+        # Reuse only a verified chat redirect so a custom greeting does not
+        # create two outbound messages for one job.
+        if click_result and _navigate_to_chat_redirect(target_id, click_result):
+            return {"success": True, "action": "startchat_redirected"}
+        return {
+            "success": False,
+            "error": "preset_greeting_redirect_unavailable",
+            "history_detail": (
+                "BOSS 仅提供默认招呼语且未提供可验证的聊天跳转地址，"
+                "已停止发送以避免重复招呼"
+            ),
+            "skip_backoff": True,
+        }
     if state.get("kind") == "startchat_dialog":
+        if not allow_initial_contact:
+            return {
+                "success": False,
+                "error": "existing_chat_popup",
+                "history_detail": "岗位页出现首次沟通弹窗，未按已有会话再次投递",
+                "skip_backoff": True,
+            }
         if click_result and _navigate_to_chat_redirect(target_id, click_result):
             return {"success": True, "action": "startchat_redirected"}
         return {
@@ -759,14 +790,75 @@ def _detect_job_closed_on_page(target_id: str) -> dict | None:
     return None
 
 
+def _click_existing_chat_button(target_id: str, stop_event, attempts: int = 8) -> dict:
+    """Click only a BOSS control that proves the job already has a conversation."""
+    script = r"""
+    (() => {
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return !!(rect.width && rect.height && style.display !== 'none'
+                && style.visibility !== 'hidden' && style.pointerEvents !== 'none');
+        };
+        const selectors = [
+            '.btn-startchat', '.op-btn-chat', '[ka="job_detail_chat"]',
+            '[ka*="chat"]', 'a[redirect-url*="/web/geek/chat"]'
+        ];
+        const button = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+            .find((element) => visible(element)
+                && /继续\s*(沟通|聊|聊天)/.test((element.innerText || element.textContent || '').trim()));
+        if (!button) return JSON.stringify({success: false, error: 'existing_chat_button_missing'});
+        button.scrollIntoView({block: 'center', inline: 'center'});
+        button.click();
+        return JSON.stringify({
+            success: true,
+            button_text: (button.innerText || button.textContent || '').trim(),
+            redirectUrl: button.getAttribute('redirect-url'),
+            dataUrl: button.getAttribute('data-url')
+        });
+    })()
+    """
+    last_result = {"success": False, "error": "existing_chat_button_missing"}
+    for attempt in range(max(1, attempts)):
+        if _stop_requested(stop_event):
+            return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
+        last_result = _parse_js_result(evaluate(target_id, script))
+        if last_result.get("success"):
+            return last_result
+        if attempt < attempts - 1 and _sleep_or_stop(1, stop_event):
+            return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
+    return last_result
+
+
+def _sender_progress(throttle_config: dict, text: str) -> None:
+    callback = throttle_config.get("_workbench_log")
+    if callable(callback):
+        callback(text)
+
+
+def _recontact_conversation_state(target_id: str, job: dict) -> str:
+    """Reuse the conservative conversation parser before a recontact send."""
+    from bosshunter.executor import recontact
+
+    try:
+        return recontact._message_state(recontact._read_messages(target_id), job)
+    except Exception:
+        return "unreadable"
+
+
 def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tuple[dict, str | None]:
     stop_event = throttle_config.get("_workbench_stop_event")
+    existing_only = bool(throttle_config.get("_recontact_existing_only"))
     window_checker = throttle_config.get("_send_window_checker")
+
     def window_closed() -> bool:
         return bool(window_checker and not window_checker.is_active())
 
     if window_closed():
         return {"success": False, "error": "outside_window", "skip_backoff": True}, None
+    label = f"{job.get('company') or '公司未知'}｜{job.get('title') or '职位未知'}"
+    _sender_progress(throttle_config, f"重新核验岗位详情：{label}") if existing_only else None
     existing_target_ids = {
         str(target.get("targetId") or "")
         for target in get_page_targets()
@@ -785,6 +877,8 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     target_id = new_tab(job["url"], background=True)
     if not target_id:
         return {"success": False, "error": "open_page_failed", "history_detail": "无法打开页面", "skip_backoff": True}, None
+
+    _sender_progress(throttle_config, "岗位详情已打开，检查是否仍在招聘") if existing_only else None
 
     if _stop_requested(stop_event):
         close_tab(target_id)
@@ -820,11 +914,20 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     """
     page_check = _parse_js_result(evaluate(target_id, page_check_js))
     if not page_check.get("success"):
+        if page_check.get("error") == "job_page_unavailable":
+            _sender_progress(throttle_config, "岗位已关闭或下架，跳过发送") if existing_only else None
         close_tab(target_id)
         return page_check, None
 
-    chat_button_attempts = int(throttle_config.get("_chat_button_attempts", 30))
-    result1a = _click_chat_button(target_id, stop_event, chat_button_attempts, window_checker)
+    _sender_progress(throttle_config, "岗位仍可访问，寻找已有会话入口") if existing_only else None
+    chat_button_attempts = int(
+        throttle_config.get("_recontact_chat_button_attempts", 8)
+        if existing_only else throttle_config.get("_chat_button_attempts", 30)
+    )
+    result1a = (
+        _click_existing_chat_button(target_id, stop_event, chat_button_attempts)
+        if existing_only else _click_chat_button(target_id, stop_event, chat_button_attempts, window_checker)
+    )
     if not result1a.get("success"):
         if result1a.get("error") == "outside_window":
             close_tab(target_id)
@@ -839,7 +942,13 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         close_tab(target_id)
         return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
 
-    popup_result = _handle_greet_popup(target_id, greeting, result1a, window_checker)
+    popup_result = _handle_greet_popup(
+        target_id,
+        greeting,
+        result1a,
+        window_checker,
+        allow_initial_contact=not existing_only,
+    )
     if not popup_result.get("success"):
         return popup_result, target_id
     contact_action = str(popup_result.get("action") or "no_popup")
@@ -856,7 +965,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         target_id = _adopt_chat_target(target_id, chat_ready)
     if chat_ready.get("error") == "stopped":
         return chat_ready, None
-    if not chat_ready.get("success") and contact_action not in {
+    if not chat_ready.get("success") and not existing_only and contact_action not in {
         "first_contact_submitted",
         "startchat_redirected",
     }:
@@ -868,7 +977,13 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             if _sleep_or_stop(1, stop_event):
                 close_tab(target_id)
                 return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
-            popup_result = _handle_greet_popup(target_id, greeting, result1a, window_checker)
+            popup_result = _handle_greet_popup(
+                target_id,
+                greeting,
+                result1a,
+                window_checker,
+                allow_initial_contact=not existing_only,
+            )
             if not popup_result.get("success"):
                 return popup_result, target_id
             contact_action = str(popup_result.get("action") or "no_popup")
@@ -906,6 +1021,33 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             "history_detail": "发送失败: 未进入具体聊天会话，可能是BOSS继续沟通跳转失败",
             "skip_backoff": True,
         }, target_id
+
+    if existing_only:
+        _sender_progress(throttle_config, "已进入对应会话，核对 HR 是否回复")
+        conversation_state = _recontact_conversation_state(target_id, job)
+        if conversation_state == "hr_replied":
+            return {
+                "success": False,
+                "error": "hr_replied",
+                "history_detail": "检测到 HR 已回复，跳过再次投递",
+                "skip_backoff": True,
+            }, target_id
+        if conversation_state != "unreplied":
+            return {
+                "success": False,
+                "error": "conversation_unverified",
+                "history_detail": "聊天记录不足或消息方向无法确认，未发送",
+                "skip_backoff": True,
+            }, target_id
+        before_send = throttle_config.get("_recontact_before_send")
+        if callable(before_send) and not before_send():
+            return {
+                "success": False,
+                "error": "candidate_changed",
+                "history_detail": "岗位状态或 HR 回复记录已变化，未发送",
+                "skip_backoff": True,
+            }, target_id
+        _sender_progress(throttle_config, "确认 HR 未回复，准备发送本次招呼语")
 
     verification_attempts = int(throttle_config.get("_send_verification_attempts", 20))
     if contact_action == "first_contact_submitted":
@@ -976,28 +1118,57 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     if window_closed():
         close_tab(target_id)
         return {"success": False, "error": "outside_window", "skip_backoff": True}, None
-    submit_result = _submit_chat_message_background(target_id, greeting)
-    if not submit_result.get("success"):
-        input_result = _fill_chat_input(target_id, greeting)
-        if not input_result.get("success"):
-            return input_result, target_id
-        if input_result.get("disabled"):
+    if existing_only:
+        # Recontact must keep the final HR check and Vue submission in one
+        # browser turn. Do not fall back to the legacy unchecked sender when
+        # this guarded operation cannot prove its result.
+        from bosshunter.executor import recontact
+
+        checked_state = recontact._submit_checked_message(target_id, greeting)
+        if checked_state == "hr_replied":
             return {
                 "success": False,
-                "error": "send_button_unavailable",
-                "history_detail": "招呼语已填入，但发送按钮不可用，未标记成功",
+                "error": "hr_replied",
+                "history_detail": "发送前的最终浏览器检查发现 HR 已回复，跳过再次投递",
                 "skip_backoff": True,
             }, target_id
-        if window_closed():
-            close_tab(target_id)
-            return {"success": False, "error": "outside_window", "skip_backoff": True}, None
-        if not click_at(target_id, ".btn-send:not(.disabled)"):
+        if checked_state == "unreadable":
             return {
                 "success": False,
-                "error": "send_button_click_failed",
-                "history_detail": "招呼语已填入，但发送按钮点击失败，未标记成功",
+                "error": "conversation_unverified",
+                "history_detail": "发送前无法确认当前会话消息方向，未发送",
                 "skip_backoff": True,
             }, target_id
+        if checked_state != "submitted":
+            return {
+                "success": False,
+                "error": "send_not_confirmed",
+                "history_detail": "最终浏览器检查的发送结果未确认，请人工检查后再决定是否重试",
+                "skip_backoff": True,
+            }, target_id
+    else:
+        submit_result = _submit_chat_message_background(target_id, greeting)
+        if not submit_result.get("success"):
+            input_result = _fill_chat_input(target_id, greeting)
+            if not input_result.get("success"):
+                return input_result, target_id
+            if input_result.get("disabled"):
+                return {
+                    "success": False,
+                    "error": "send_button_unavailable",
+                    "history_detail": "招呼语已填入，但发送按钮不可用，未标记成功",
+                    "skip_backoff": True,
+                }, target_id
+            if window_closed():
+                close_tab(target_id)
+                return {"success": False, "error": "outside_window", "skip_backoff": True}, None
+            if not click_at(target_id, ".btn-send:not(.disabled)"):
+                return {
+                    "success": False,
+                    "error": "send_button_click_failed",
+                    "history_detail": "招呼语已填入，但发送按钮点击失败，未标记成功",
+                    "skip_backoff": True,
+                }, target_id
 
     for _ in range(max(1, verification_attempts)):
         if _sleep_or_stop(0.5, stop_event):
@@ -1145,7 +1316,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
 
     # Count today's sent
     today_sent = db.execute(
-        "SELECT COUNT(*) as cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
+        "SELECT COUNT(*) as cnt FROM history WHERE action IN ('sent','follow_up_sent') AND date(created_at)=date('now')"
     ).fetchone()
     already_sent = today_sent["cnt"] if today_sent else 0
 

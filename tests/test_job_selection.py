@@ -18,6 +18,7 @@ from bosshunter.db import (
 )
 from bosshunter.executor.sender import CHAT_BUTTON_SCRIPT_FOR_TESTS
 from bosshunter.executor.sender import _chat_target_matches_job
+from bosshunter.executor.sender import _click_existing_chat_button
 from bosshunter.executor.sender import _confirm_preset_greeting
 from bosshunter.executor.sender import _handle_greet_popup
 from bosshunter.executor.sender import _message_delivery_state
@@ -48,6 +49,32 @@ def _job(job_id: str, title: str = "Engineer") -> dict:
 
 
 class JobSelectionTests(unittest.TestCase):
+    def test_recontact_sender_uses_atomic_browser_guard_for_final_send(self):
+        with patch("bosshunter.executor.sender.get_page_targets", return_value=[]), \
+             patch("bosshunter.executor.sender.new_tab", return_value="job-target"), \
+             patch("bosshunter.executor.sender.evaluate", return_value='{"success": true}'), \
+             patch("bosshunter.executor.sender._click_existing_chat_button", return_value={"success": True}), \
+             patch("bosshunter.executor.sender._click_chat_button") as new_chat, \
+             patch("bosshunter.executor.sender._detect_greet_popup", return_value={"success": True, "popup": False}), \
+             patch("bosshunter.executor.sender._wait_for_chat_page", return_value={"success": True, "target_id": "job-target"}), \
+             patch("bosshunter.executor.sender._recontact_conversation_state", return_value="unreplied"), \
+             patch("bosshunter.executor.sender._message_delivery_state", side_effect=["missing", "delivered", "delivered"]), \
+             patch("bosshunter.executor.recontact._submit_checked_message", return_value="submitted") as checked_submit, \
+             patch("bosshunter.executor.sender._submit_chat_message_background") as unchecked_submit, \
+             patch("bosshunter.executor.sender.close_tab"), \
+             patch("bosshunter.executor.sender.time.sleep"):
+            result, target_id = _send_greeting_once(
+                _job("recontact-job"),
+                "本次更新后的招呼语",
+                {"_recontact_existing_only": True, "browse_before_greet": False},
+            )
+
+        self.assertTrue(result["success"])
+        self.assertIsNone(target_id)
+        new_chat.assert_not_called()
+        checked_submit.assert_called_once_with("job-target", "本次更新后的招呼语")
+        unchecked_submit.assert_not_called()
+
     def test_chat_button_script_prefers_real_anchor_over_visible_wrapper(self):
         script = CHAT_BUTTON_SCRIPT_FOR_TESTS
 
@@ -295,7 +322,7 @@ class JobSelectionTests(unittest.TestCase):
         self.assertTrue(result["verified_from_chat_list"])
         close_tab.assert_called_once_with("target-1")
 
-    def test_send_greeting_uses_original_flow_when_platform_preset_is_enabled(self):
+    def test_preset_popup_without_chat_redirect_stops_before_any_send(self):
         job = {
             "id": "preset-popup",
             "company": "Example",
@@ -312,8 +339,44 @@ class JobSelectionTests(unittest.TestCase):
              ), \
              patch(
                  "bosshunter.executor.sender._confirm_preset_greeting",
-                 return_value={"success": True, "action": "preset_confirmed"},
              ) as confirm_preset, \
+             patch("bosshunter.executor.sender._submit_chat_message_background") as background_submit:
+            result, target_id = _send_greeting_once(
+                job,
+                "您好，我对这个岗位很感兴趣。",
+                {"browse_before_greet": False},
+            )
+
+        self.assertEqual(target_id, "target-1")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "preset_greeting_redirect_unavailable")
+        confirm_preset.assert_not_called()
+        background_submit.assert_not_called()
+
+    def test_preset_popup_with_chat_redirect_sends_custom_greeting_once(self):
+        job = {
+            "id": "preset-popup-redirect",
+            "company": "Example",
+            "title": "Engineer",
+            "url": "https://www.zhipin.com/job_detail/preset-popup-redirect.html",
+        }
+        greeting = "您好，我对这个岗位很感兴趣。"
+
+        with patch("bosshunter.executor.sender.new_tab", return_value="target-1"), \
+             patch("bosshunter.executor.sender.evaluate", return_value='{"success": true}'), \
+             patch(
+                 "bosshunter.executor.sender._click_chat_button",
+                 return_value={"success": True, "redirectUrl": "/web/geek/chat?jobId=preset-popup-redirect"},
+             ), \
+             patch(
+                 "bosshunter.executor.sender._detect_greet_popup",
+                 return_value={"success": True, "popup": True, "kind": "preset_greeting"},
+             ), \
+             patch(
+                 "bosshunter.executor.sender._navigate_to_chat_redirect",
+                 return_value=True,
+             ) as redirect, \
+             patch("bosshunter.executor.sender._confirm_preset_greeting") as confirm_preset, \
              patch(
                  "bosshunter.executor.sender._wait_for_chat_page",
                  return_value={"success": True, "target_id": "target-1"},
@@ -323,28 +386,26 @@ class JobSelectionTests(unittest.TestCase):
                  side_effect=["missing", "delivered", "delivered"],
              ), \
              patch(
-                 "bosshunter.executor.sender._fill_chat_input",
-                 return_value={"success": True, "disabled": False},
-             ) as fill_input, \
-             patch(
                  "bosshunter.executor.sender._submit_chat_message_background",
                  return_value={"success": True, "action": "chat_submitted_background"},
              ) as background_submit, \
-             patch("bosshunter.executor.sender.click_at", return_value=True), \
              patch("bosshunter.executor.sender.close_tab"), \
              patch("bosshunter.executor.sender.time.sleep"):
             result, target_id = _send_greeting_once(
                 job,
-                "您好，我对这个岗位很感兴趣。",
+                greeting,
                 {"browse_before_greet": False},
             )
 
         self.assertIsNone(target_id)
         self.assertTrue(result["success"])
         self.assertTrue(result["verified"])
-        confirm_preset.assert_called_once_with("target-1")
-        background_submit.assert_called_once()
-        fill_input.assert_not_called()
+        redirect.assert_called_once_with(
+            "target-1",
+            {"success": True, "redirectUrl": "/web/geek/chat?jobId=preset-popup-redirect"},
+        )
+        confirm_preset.assert_not_called()
+        background_submit.assert_called_once_with("target-1", greeting)
 
     def test_send_greeting_redirects_first_contact_and_uses_background_chat_submit(self):
         job = {

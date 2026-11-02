@@ -401,6 +401,12 @@ def _inspect_monitor_page(target_id: str, config: dict) -> None:
         _raise_monitor_risk(kind, config)
 
 
+def _monitor_progress(config: dict, text: str) -> None:
+    log = config.get("_workbench_log")
+    if callable(log):
+        log(text)
+
+
 def _open_monitor_tab(url: str, config: dict, *, background: bool = True) -> str | None:
     """Open one monitor page with an effective interval after every prior open attempt."""
     if stop_requested(config):
@@ -408,6 +414,7 @@ def _open_monitor_tab(url: str, config: dict, *, background: bool = True) -> str
     throttle = config.get("_monitor_request_throttle")
     stop_event = get_stop_event(config)
     if throttle is not None and bool(getattr(throttle, "has_marked_request", False)):
+        _monitor_progress(config, "页面操作安全冷却中，请稍候；可点击停止任务，不会连续快速重试")
         if throttle.wait(stop_event):
             return None
     access_guard = config.get("_platform_access_guard")
@@ -416,6 +423,7 @@ def _open_monitor_tab(url: str, config: dict, *, background: bool = True) -> str
             access_guard.reserve("monitor_page")
         except PlatformSafetyStop as exc:
             raise MonitorRiskDetected(exc.reason) from exc
+    _monitor_progress(config, "正在打开已有聊天列表" if "/chat" in url else "正在打开岗位页面")
     target_id = new_tab(url, background=background)
     if throttle is not None and hasattr(throttle, "mark"):
         # Record attempts as well as successful opens so retries cannot become a burst.
@@ -922,6 +930,7 @@ def _open_conversation(job: dict, config: dict) -> str | None:
     # Strategy A: Via job URL (try up to 2 times)
     if job_url:
         for attempt in range(2):
+            _monitor_progress(config, f"定位原会话：岗位页面尝试 {attempt + 1}/2")
             target_id = _open_monitor_tab(job_url, config)
             if not target_id:
                 _record_page_failure_unless_stopped(config)
@@ -944,8 +953,23 @@ def _open_conversation(job: dict, config: dict) -> str | None:
                 close_tab(target_id)
                 return None
 
-            # Click "继续沟通" or similar chat button
-            if click(target_id, ".btn-startchat") or click(target_id, "[ka*='chat']"):
+            # Recontact must open an existing thread, never initiate a new greeting.
+            if config.get("_monitor_existing_conversation_only"):
+                opened = evaluate(target_id, """(() => {
+                    const button = [...document.querySelectorAll('.btn-startchat, [ka*="chat"]')]
+                        .find(el => /继续沟通|继续聊/.test(el.innerText || el.textContent || ''));
+                    if (!button) return JSON.stringify({opened:false});
+                    button.click();
+                    return JSON.stringify({opened:true});
+                })()""")
+                try:
+                    opened = json.loads(opened) if isinstance(opened, str) else opened
+                    chat_opened = isinstance(opened, dict) and opened.get("opened") is True
+                except (ValueError, TypeError):
+                    chat_opened = False
+            else:
+                chat_opened = click(target_id, ".btn-startchat") or click(target_id, "[ka*='chat']")
+            if chat_opened:
                 if _wait_or_stop(config, 3) or not _wait_for_page_or_stop(target_id, config, timeout=10):
                     close_tab(target_id)
                     _record_page_failure_unless_stopped(config)
@@ -968,6 +992,7 @@ def _open_conversation(job: dict, config: dict) -> str | None:
 
             close_tab(target_id)
             _record_page_failure_unless_stopped(config)
+            _monitor_progress(config, "原岗位未能打开已有会话，将按安全间隔重试或跳过；尚未发送")
             if attempt == 0:
                 if _wait_or_stop(config, 2):
                     return None
@@ -985,6 +1010,11 @@ def _open_conversation_from_chat_list(
 ) -> str | None:
     """Open conversation from chat list. Matches by name+company, then company-only fallback."""
     if stop_requested(config):
+        return None
+    hr_name = (job.get("hr_name") or "").strip()
+    company = (job.get("company") or "").strip()
+    if config.get("_monitor_require_exact_identity") and (not hr_name or not company):
+        _monitor_progress(config, "缺少 HR 身份，无法安全匹配聊天列表，已跳过回退；尚未发送")
         return None
     monitor_cfg = config.get("monitor", {})
     chat_url = monitor_cfg.get("chat_url", "https://www.zhipin.com/web/geek/chat")
@@ -1006,14 +1036,24 @@ def _open_conversation_from_chat_list(
         close_tab(target_id)
         return None
 
-    hr_name = (job.get("hr_name") or "").strip()
-    company = (job.get("company") or "").strip()
-
     # Build JS that tries: 1) exact hr_name+company match, 2) company-only match
     js_click_chat = f"""
     (async () => {{
-        const items = document.querySelectorAll('li[role=listitem]');
+        let items = [...document.querySelectorAll('li[role=listitem]')];
         let companyOnlyMatch = null;
+        const strictIdentity = {json.dumps(bool(config.get('_monitor_require_exact_identity')))};
+        if (strictIdentity) {{
+            const expectedHr = {json.dumps(hr_name, ensure_ascii=False)};
+            const expectedCompany = {json.dumps(company, ensure_ascii=False)};
+            if (!expectedHr || !expectedCompany) return JSON.stringify({{success:false, error:'missing_identity'}});
+            items = items.filter(item => {{
+                const name = (item.querySelector('.name-text')?.textContent || '').trim();
+                const spans = item.querySelector('.name-box')?.querySelectorAll('span') || [];
+                const comp = spans.length >= 2 ? (spans[1].textContent || '').trim() : '';
+                return name === expectedHr && comp === expectedCompany;
+            }});
+            if (items.length !== 1) return JSON.stringify({{success:false, error:'ambiguous_identity'}});
+        }}
 
         for (const item of items) {{
             const nameEl = item.querySelector('.name-text');
@@ -1050,7 +1090,7 @@ def _open_conversation_from_chat_list(
         }}
 
         // Fallback: company-only match (when hr_name is empty or not found)
-        if (companyOnlyMatch) {{
+        if (!strictIdentity && companyOnlyMatch) {{
             const fc = companyOnlyMatch.querySelector('.friend-content') || companyOnlyMatch;
             const rect = fc.getBoundingClientRect();
             const x = rect.x + rect.width / 2;

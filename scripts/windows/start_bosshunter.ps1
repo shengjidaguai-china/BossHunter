@@ -89,8 +89,19 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Starting the local workbench..."
-$WebArguments = @($RunnerPrefix) + @("web", "--no-open")
-Start-Process -FilePath $Runner -ArgumentList $WebArguments -WorkingDirectory $RepoRoot -WindowStyle Hidden
+$WorkbenchRunning = $false
+try {
+	$WorkbenchHealth = Invoke-RestMethod -Uri "http://127.0.0.1:8686/api/health" -TimeoutSec 2
+	$WorkbenchRunning = $WorkbenchHealth.status -eq "ok"
+} catch {
+	# No healthy workbench is already listening.
+}
+if ($WorkbenchRunning) {
+	Write-Host "Using the existing local workbench."
+} else {
+	$WebArguments = @($RunnerPrefix) + @("web", "--no-open")
+	Start-Process -FilePath $Runner -ArgumentList $WebArguments -WorkingDirectory $RepoRoot -WindowStyle Hidden
+}
 
 for ($i = 0; $i -lt 20; $i++) {
 	Start-Sleep -Milliseconds 500

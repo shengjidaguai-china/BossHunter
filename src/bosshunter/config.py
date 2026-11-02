@@ -1,11 +1,18 @@
 """Configuration loader for BossHunter."""
 
 import os
+import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+_CONFIG_IO_LOCK = threading.RLock()
+_CONFIG_REPLACE_ATTEMPTS = 5
 
 
 # BOSS直聘城市编码映射
@@ -240,29 +247,30 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
 
 def save_config(config: dict[str, Any], config_path: Path | None = None) -> None:
     """Persist settings without writing AI credentials to config.yaml."""
-    validate_config_send_windows(config)
-    config_path = Path(config_path or "config.yaml")
-    public_config = _deep_copy_dict(config)
-    _normalize_internship_salary_filter(public_config)
-    ai_cfg = public_config.get("ai")
-    credentials: dict[str, Any] = {}
-    if isinstance(ai_cfg, dict):
-        for field in AI_CREDENTIAL_FIELDS:
-            value = ai_cfg.pop(field, None)
-            if value is not None and str(value).strip():
-                credentials[field] = value
+    with _CONFIG_IO_LOCK:
+        validate_config_send_windows(config)
+        config_path = Path(config_path or "config.yaml")
+        public_config = _deep_copy_dict(config)
+        _normalize_internship_salary_filter(public_config)
+        ai_cfg = public_config.get("ai")
+        credentials: dict[str, Any] = {}
+        if isinstance(ai_cfg, dict):
+            for field in AI_CREDENTIAL_FIELDS:
+                value = ai_cfg.pop(field, None)
+                if value is not None and str(value).strip():
+                    credentials[field] = value
 
-    private_path = credentials_path_for(config_path)
-    if credentials:
-        _write_yaml_atomic(private_path, {"ai": credentials})
+        private_path = credentials_path_for(config_path)
+        if credentials:
+            _write_yaml_atomic(private_path, {"ai": credentials})
 
-    _write_yaml_atomic(config_path, public_config)
+        _write_yaml_atomic(config_path, public_config)
 
-    if not credentials:
-        try:
-            private_path.unlink()
-        except FileNotFoundError:
-            pass
+        if not credentials:
+            try:
+                private_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def validate_config_send_windows(config: dict[str, Any]) -> None:
@@ -312,39 +320,48 @@ def migrate_legacy_credentials(config_path: Path | None = None) -> bool:
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with open(path, encoding="utf-8") as f:
-        content = yaml.safe_load(f) or {}
-    return content if isinstance(content, dict) else {}
+    with _CONFIG_IO_LOCK:
+        if not path.exists():
+            return {}
+        with open(path, encoding="utf-8") as f:
+            content = yaml.safe_load(f) or {}
+        return content if isinstance(content, dict) else {}
 
 
 def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
     """Atomically write a local YAML file with owner-only permissions."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            yaml.safe_dump(data, temporary, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, path)
-        temporary_path = None
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
+    with _CONFIG_IO_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                yaml.safe_dump(data, temporary, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.chmod(temporary_path, 0o600)
+            for attempt in range(_CONFIG_REPLACE_ATTEMPTS):
+                try:
+                    os.replace(temporary_path, path)
+                    break
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) != 5 or attempt == _CONFIG_REPLACE_ATTEMPTS - 1:
+                        raise
+                    time.sleep(0.05 * (2**attempt))
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def _normalize_internship_salary_filter(config: dict[str, Any]) -> None:
@@ -361,7 +378,28 @@ def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
             config[section] = _deep_copy_dict(defaults)
 
     _normalize_internship_salary_filter(config)
+    _normalize_legacy_send_windows(config)
     return remove_retired_collection_settings(config)
+
+
+def _normalize_legacy_send_windows(config: dict[str, Any]) -> None:
+    """Normalize old one-digit-hour windows before strict validation."""
+    throttle = config.get("throttle")
+    windows = throttle.get("send_windows") if isinstance(throttle, dict) else None
+    if not isinstance(windows, list):
+        return
+    normalized: list[Any] = []
+    for window in windows:
+        if not isinstance(window, str):
+            normalized.append(window)
+            continue
+        match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", window)
+        if not match:
+            normalized.append(window)
+            continue
+        start_hour, start_minute, end_hour, end_minute = match.groups()
+        normalized.append(f"{int(start_hour):02d}:{start_minute}-{int(end_hour):02d}:{end_minute}")
+    throttle["send_windows"] = normalized
 
 
 def remove_retired_collection_settings(config: dict[str, Any]) -> dict[str, Any]:

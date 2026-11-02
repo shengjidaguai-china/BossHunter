@@ -19,11 +19,12 @@ MODE_LABELS = {
     "greet": "生成招呼语",
     "monitor": "单独监测",
     "deliver": "确认投递",
+    "recontact": "未回复再次投递",
 }
 
 TERMINAL_STATUSES = {"completed", "failed", "stopped"}
 ACTIVE_STATUSES = {"running", "stopping"}
-DEADLINE_MODES = {"full", "monitor", "deliver"}
+DEADLINE_MODES = {"full", "monitor", "deliver", "recontact"}
 
 
 class TaskAlreadyRunningError(RuntimeError):

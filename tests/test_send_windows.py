@@ -15,7 +15,7 @@ from bosshunter.web.tasks import WorkbenchTaskRunner
 
 INVALID_WINDOWS = [
     None, {}, "09:00-16:00", [None], [123], [""], ["garbage"],
-    ["9:00-16:00"], ["09:00:00-16:00"], ["09:00-24:00"], ["09:60-16:00"],
+    ["09:00:00-16:00"], ["09:00-24:00"], ["09:60-16:00"],
     ["09:00-09:00"], ["16:00-09:00"], ["23:00-01:00"],
     ["09:00-12:00", "09:00-12:00"], ["09:00-12:00", "11:00-16:00"],
     ["09:00-16:00", "10:00-12:00"], ["09:00-16:00", "bad"],
@@ -70,6 +70,12 @@ def test_adjacent_and_empty_windows_keep_legacy_behavior(tmp_path):
     path = tmp_path / "config.yaml"
     save_config({"throttle": {"send_windows": []}}, path)
     assert load_config(path)["throttle"]["send_windows"] == []
+
+
+def test_load_config_normalizes_legacy_single_digit_hours(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"throttle": {"send_windows": ["8:00-18:00"]}}), encoding="utf-8")
+    assert load_config(path)["throttle"]["send_windows"] == ["08:00-18:00"]
 
 
 def test_yaml_round_trip_and_last_window_task_admission(tmp_path):

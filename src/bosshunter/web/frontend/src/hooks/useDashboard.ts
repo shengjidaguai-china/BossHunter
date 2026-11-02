@@ -62,7 +62,7 @@ interface TopCompany {
 
 export interface WorkbenchTask {
   id: string
-  mode: 'full' | 'collect' | 'rescore' | 'greet' | 'monitor' | 'deliver'
+  mode: 'full' | 'collect' | 'rescore' | 'greet' | 'monitor' | 'deliver' | 'recontact'
   label: string
   status: string
   logs: string[]
@@ -106,6 +106,7 @@ export interface CollectionProgress {
 }
 
 interface WorkbenchData {
+  recontact_default_greeting?: string
   funnel: FunnelData
   funnel_today: FunnelData
   pending_confirmation: Job[]
