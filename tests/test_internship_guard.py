@@ -298,10 +298,11 @@ def test_collection_start_rejects_conflicting_effective_filters(source):
     assert normalize_collection_options(config, raw)["platforms"]["boss"]["filters"] == {"job_type": ["实习"]}
 
 
-def test_disabled_acceptance_does_not_block_full_time_or_other_platforms():
+def test_disabled_acceptance_blocks_native_internships_but_not_full_time():
     config = deepcopy(CONFIG)
     config["profile"]["allow_internship"] = False
-    assert not internship_rejection({"title": "实习生", "source_platform": "zhilian"}, config)
+    assert internship_rejection({"title": "实习生", "source_platform": "zhilian"}, config)
+    assert not internship_rejection({"title": "全职工程师", "source_platform": "zhilian"}, config)
     result, items, _, _ = collect_fixture("后端开发", "职位类型：全职", config=config, filters={})
     assert len(items) == 1
 

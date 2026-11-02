@@ -193,8 +193,8 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
   }, [open, mode])
 
   const enabledOrder = useMemo(
-    () => order.filter(platform => drafts[platform].enabled),
-    [drafts, order],
+    () => order.filter(platform => drafts[platform].enabled && (mode !== 'full' || platform === 'boss')),
+    [drafts, order, mode],
   )
 
   if (!open) return null
@@ -351,7 +351,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                     <label className="text-xs font-bold text-muted">排序<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>
                   </div>
                 </div>}
-                {!draft.enabled && mode === 'full' && platform !== 'boss' && <p className="mt-3 text-xs text-muted">当前只支持“岗位采集”，不进入发送全流程。</p>}
+                {!draft.enabled && mode === 'full' && platform !== 'boss' && <p className="mt-3 text-xs text-muted">支持单独采集和岗位池一键投递；不支持监测、自动聊天或简历发送，不进入全流程。</p>}
               </section>
             )
           })}
@@ -361,7 +361,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
           <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-black">执行顺序</div><p className="mt-1 text-xs text-muted">平台串行采集；智联、前程无忧和猎聘暂不执行发送或监听。</p></div><div className="flex gap-2">{enabledOrder.map((platform, index) => <div key={platform} className="flex items-center gap-1 rounded-full bg-card px-3 py-1 text-xs font-black text-primary"><span>{index + 1}. {PLATFORM_SHORT_LABELS[platform]}</span><button type="button" onClick={() => move(platform, -1)} disabled={index === 0} aria-label="上移"><ArrowUp className="h-3 w-3" /></button><button type="button" onClick={() => move(platform, 1)} disabled={index === enabledOrder.length - 1} aria-label="下移"><ArrowDown className="h-3 w-3" /></button></div>)}</div></div>
         </div>
 
-        <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-card p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程必须先评分；评分后进入人工确认，再按平台适配器执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
+        <label className="mt-4 flex items-center justify-between rounded-2xl border border-card-border bg-card p-4"><div><div className="text-sm font-black">{mode === 'full' ? '全流程自动评分' : '采集后自动评分'}</div><p className="mt-1 text-xs leading-5 text-muted">{mode === 'full' ? '全流程仅支持 BOSS，必须先评分；评分后进入人工确认，再执行招呼和监测。' : '默认关闭；开启后只评分本轮新增岗位，评分结束即停止，不发送消息、不投递、不监测。'}</p></div><Switch checked={mode === 'full' || autoScore} onChange={mode === 'full' ? () => undefined : setAutoScore} disabled={mode === 'full'} /></label>
         {error && <div className="mt-3 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={starting}>取消</Button><Button onClick={() => void start()} disabled={Boolean(activeTask) || starting}>{starting ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" />启动中…</span> : mode === 'full' ? '开始全流程' : '重新采集'}</Button></div>
       </div>

@@ -11,12 +11,12 @@ class PlatformCapabilitiesTests(unittest.TestCase):
         self.assertTrue(platform_supports("boss", "deliver"))
         self.assertTrue(platform_supports("boss", "monitor"))
 
-    def test_new_platforms_are_read_only(self):
+    def test_new_platforms_deliver_without_monitoring(self):
         for platform in ("zhilian", "51job", "liepin"):
             self.assertTrue(platform_supports(platform, "collect"))
             self.assertTrue(platform_supports(platform, "score"))
             self.assertTrue(platform_supports(platform, "greet"))
-            self.assertFalse(platform_supports(platform, "deliver"))
+            self.assertTrue(platform_supports(platform, "deliver"))
             self.assertFalse(platform_supports(platform, "monitor"))
 
     def test_unknown_platform_supports_nothing(self):

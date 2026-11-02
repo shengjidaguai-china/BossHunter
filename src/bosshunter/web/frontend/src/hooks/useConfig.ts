@@ -1,3 +1,4 @@
+import { platformSafetyError, withPlatformSafetyDefaults } from '@/lib/platforms'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 function readConfigPath(config: Record<string, any>, path: string): unknown {
@@ -79,13 +80,18 @@ export function useConfig() {
   const saveConfig = async () => {
     const snapshot = configRef.current
     if (!snapshot) return
+    const validationError = platformSafetyError(snapshot)
+    if (validationError) {
+      setMessage({ type: 'error', text: validationError })
+      return
+    }
     setSaving(true)
     setMessage(null)
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(snapshot),
+        body: JSON.stringify(withPlatformSafetyDefaults(snapshot)),
       })
       const data = await res.json()
       if (data.success) {

@@ -52,7 +52,12 @@ def find_boss_tab() -> dict | None:
 
 def find_zhilian_tab() -> dict | None:
     """Find a 智联招聘 tab in Chrome without opening or logging in."""
-    for target in get_page_targets():
+    targets = get_page_targets()
+    for target in targets:
+        url = str(target.get("url", ""))
+        if "www.zhaopin.com/jobs/" in url or "www.zhaopin.com/sou/" in url:
+            return target
+    for target in targets:
         url = str(target.get("url", ""))
         if "zhaopin.com" in url:
             return target
@@ -64,6 +69,13 @@ def new_tab(url: str, background: bool = False) -> str | None:
     if not _ready():
         return None
     return _client().new_tab(url, background=background)
+
+
+def activate_tab(target_id: str) -> bool:
+    """Activate only a known tab; never navigate or submit a form."""
+    if not _ready():
+        return False
+    return _client().activate_tab(target_id)
 
 
 def close_tab(target_id: str) -> bool:

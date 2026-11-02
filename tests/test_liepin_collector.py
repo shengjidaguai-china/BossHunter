@@ -887,7 +887,7 @@ class LiepinResumeCheckpointTests(TestCase):
         )
         self.assertEqual(collector._resume_ttl_hours(), 24)
 
-    def test_no_safety_conn_skips_resume_logic(self):
+    def test_no_safety_conn_refuses_unmetered_collection(self):
         jobs = [{"source_job_id": "j", "title": "AI", "company": "c", "city": "上海",
                  "url": "https://www.liepin.com/job/1001.shtml"}]
         browser = self._browser_with_pages({1: jobs, 2: None})
@@ -909,9 +909,21 @@ class LiepinResumeCheckpointTests(TestCase):
                 PlatformCollectionRequest("liepin", ["AI"], ["上海"], {"上海": "020"}, max_pages=2),
                 self._hooks(collected),
             )
-        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.reason_code, "safety_db_unavailable")
         prune_combos.assert_not_called()
         get_combos.assert_not_called()
         get_progress.assert_not_called()
         upsert.assert_not_called()
         mark.assert_not_called()
+
+
+import pytest
+from collector_safety_fixtures import install_safety_fixtures
+
+
+@pytest.fixture(autouse=True)
+def persistent_safety_fakes(monkeypatch):
+    connections = install_safety_fixtures(monkeypatch, LiepinCollector, LiepinBrowser)
+    yield
+    for conn in connections:
+        conn.close()

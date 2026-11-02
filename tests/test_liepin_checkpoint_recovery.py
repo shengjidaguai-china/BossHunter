@@ -42,6 +42,9 @@ class FakeBrowser:
         return not (self.detail_navigation_fails and "/job/" in url)
 
     def evaluate(self, target, script):
+        from bosshunter.collection.safety import PAGE_RISK_SCRIPT
+        if script == PAGE_RISK_SCRIPT:
+            return {"collection_risk": ""}
         url = self.urls[target]
         if "/job/" in url:
             return {"status": "ready", "jd": "测试职责，非真实招聘数据。"}
@@ -79,8 +82,8 @@ def test_failed_detail_navigation_must_not_advance_checkpoint(tmp_path):
     try:
         browser = FakeBrowser({1: {"status": "ready", "jobs": [JOB]}, 2: {"status": "blocked", "jobs": []}}, detail_navigation_fails=True)
         result, collected = run(conn, browser)
-        assert result.status == "completed_with_shortage"
-        assert result.reason_code == "detail_unavailable"
+        assert result.status == "blocked"
+        assert result.reason_code == "consecutive_page_failures"
         assert collected == []
         assert get_page_progress(conn, "liepin", "上海", "AI") == 0
     finally:
@@ -176,13 +179,18 @@ def test_failed_page_cannot_be_hidden_by_a_later_success(tmp_path):
     try:
         browser = FakeBrowser({1: {"status": "ready", "jobs": [JOB]}, 2: {"status": "empty", "jobs": []}}, detail_navigation_fails=True)
         result, collected = run(conn, browser)
-        assert result.reason_code == "detail_unavailable"
+        assert result.reason_code == "consecutive_page_failures"
         assert collected == []
         assert get_page_progress(conn, "liepin", "上海", "AI") == 0
         assert ("上海", "AI") not in get_collected_combos(conn, "liepin")
         assert not any("curPage=1" in url for url in browser.navigations)
-        # The next run must revisit and save the incomplete first page.
+        # A fresh run must remain blocked while the persistent cooldown is active.
         retry = FakeBrowser({1: {"status": "ready", "jobs": [JOB]}})
+        result, collected = run(conn, retry)
+        assert result.reason_code == "persistent_risk_lock"
+        assert retry.navigations == []
+        conn.execute("UPDATE platform_safety_state SET locked_until=datetime('now', '-1 minute')")
+        conn.commit()
         result, collected = run(conn, retry)
         assert result.status == "completed"
         assert len(collected) == 1
@@ -197,7 +205,7 @@ def test_detail_failure_after_complete_page_preserves_that_page(tmp_path):
         upsert_page_progress(conn, "liepin", "上海", "AI", 1)
         browser = FakeBrowser({2: {"status": "ready", "jobs": [JOB]}}, detail_navigation_fails=True)
         result, _ = run(conn, browser)
-        assert result.reason_code == "detail_unavailable"
+        assert result.reason_code == "consecutive_page_failures"
         assert get_page_progress(conn, "liepin", "上海", "AI") == 1
         assert ("上海", "AI") not in get_collected_combos(conn, "liepin")
     finally:

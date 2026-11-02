@@ -470,12 +470,12 @@ class CollectionOrchestrator:
                 })
                 all_new_ids.extend(result.new_job_ids)
                 self._persist(states, all_new_ids, platform, stop_reason=result.reason_code, error=result.error)
-                # A login wall belongs to the current recruitment platform:
-                # keep its blocked result but let independent later platforms
-                # continue. Other unknown/risk blocks remain queue-wide until
-                # they have an equally explicit platform-local classification.
+                # Login walls and exhausted per-platform budgets do not spend
+                # another platform's allowance. Risk locks stop the whole queue.
                 if (
-                    (result.status == "blocked" and result.reason_code != "login_required")
+                    (result.status == "blocked" and result.reason_code not in {
+                        "login_required", "daily_search_page_limit", "daily_detail_page_limit", "daily_platform_page_limit",
+                    })
                     or result.reason_code in {"user_stopped", "browser_disconnected"}
                     or (self.stop_event and self.stop_event.is_set())
                 ):

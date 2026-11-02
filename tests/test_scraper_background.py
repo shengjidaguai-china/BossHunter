@@ -218,7 +218,7 @@ class ScraperBackgroundTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         new_tab.assert_called_once_with(
-            "https://www.zhipin.com/web/geek/job?query=AI&city=101010100",
+            "https://www.zhipin.com/web/geek/jobs?query=AI&city=101010100",
             background=True,
         )
         throttle_cls.assert_called_once_with(delay_min=3.0, delay_max=7.5)

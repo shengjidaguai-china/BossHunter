@@ -16,7 +16,7 @@ import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
-import { PLATFORM_LABELS } from '@/lib/platforms'
+import { PLATFORM_LABELS, PLATFORM_DELIVERY_NOTICE, PLATFORM_SAFETY_NOTICE, deliveryConfirmation, platformDeliveryPauseLabel } from '@/lib/platforms'
 import {
   EMPTY_JOB_FILTERS,
   filterJobs,
@@ -110,6 +110,8 @@ function taskStatusTitle(status: string) {
 }
 
 function taskStopReasonLabel(reason?: string) {
+  const platformLabel = platformDeliveryPauseLabel(reason)
+  if (platformLabel) return platformLabel
   if (reason === 'daily_limit') return '今日发送额度已用完，岗位已保留在“待发送招呼语”；明日额度恢复后再重试。'
   if (reason === 'outside_window') return '当前不在发送时间窗口内，岗位已保留在“待发送招呼语”。'
   if (reason === 'day_off') return '今日触发防检测休息策略，岗位已保留在“待发送招呼语”。'
@@ -172,7 +174,7 @@ const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> 
   {
     mode: 'full',
     title: '运行全流程',
-    description: '采集、评分、监测，投递前由你确认',
+    description: '仅 BOSS：采集、评分、监测，投递前由你确认',
   },
   {
     mode: 'collect',
@@ -182,7 +184,7 @@ const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> 
   {
     mode: 'monitor',
     title: '单独监测',
-    description: '跟进已投递岗位的 HR 回复',
+    description: '仅 BOSS：跟进已投递岗位的 HR 回复',
   },
 ]
 
@@ -476,6 +478,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   )
   const visibleJobIds = useMemo(() => new Set(filteredTodayJobs.map(job => job.id)), [filteredTodayJobs])
   const actionableSelected = useMemo(() => selected.filter(id => visibleJobIds.has(id)), [selected, visibleJobIds])
+  const bossGreetingSelected = actionableSelected.filter(id => filteredTodayJobs.some(job => job.id === id && (job.source_platform || 'boss') === 'boss'))
 
   useEffect(() => {
     setSelected(previous => {
@@ -516,7 +519,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     }
   }, [view])
 
-  const pendingGreetingJobs = workbench.pending_greetings
+  const pendingGreetingJobs = workbench.pending_greetings.filter(job => (job.source_platform || 'boss') === 'boss')
   const reviewedGreetingJobs = pendingGreetingJobs.filter(job => job.greeting_selection !== 'pending')
   const pendingGreetingReviewCount = pendingGreetingJobs.length - reviewedGreetingJobs.length
   const activeTask = workbench.task
@@ -667,7 +670,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const confirmDeliver = async (ids: string[]) => {
     if (!ids.length) return
     const count = ids.length
-    if (!window.confirm(`是否投递以下 ${count} 个岗位？确认后将进入投递/打招呼流程。`)) return
+    if (!window.confirm(deliveryConfirmation(count))) return
     try {
       const res = await fetch('/api/workbench/deliver', {
         method: 'POST',
@@ -747,7 +750,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     if (!ids.length || ids.some(id => sendingGreetingIds.has(id) || busyGreetingIds.has(id) || pendingGreetingJobs.find(job => job.id === id)?.greeting_activity)) return
     const count = ids.length
     // 人工确认门控：直接发送前必须显式确认，防止误触批量联系招聘方。
-    if (!window.confirm(`确认向所选 ${count} 个岗位发送招呼语？\n发送将立即开始并受每日额度与发送时间窗口限制。`)) return
+    if (!window.confirm(deliveryConfirmation(count))) return
     setSendingGreetingIds(prev => new Set([...prev, ...ids]))
     setNotice(`正在将 ${count} 个岗位加入发送队列...`)
     try {
@@ -1142,7 +1145,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black text-danger">发送失败待处理</h3>
-              <p className="mt-1 text-xs text-danger/80">这些岗位已生成招呼语，但没有成功发送。你可以重试，或放弃已失效岗位。</p>
+              <p className="mt-1 text-xs text-danger/80">这些岗位没有核实投递成功。请先在原平台核实结果，再决定重试或放弃已失效岗位，避免重复投递。</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" disabled={workbench.send_errors.some(job => sendingGreetingIds.has(job.id))} onClick={() => sendReadyGreetings(workbench.send_errors.map(job => job.id))}>
@@ -1161,7 +1164,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   </div>
                   <span className="rounded-full bg-danger-soft px-2 py-1 text-[11px] font-black text-danger">发送失败</span>
                 </div>
-                <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待重新发送。'}</p>
+                <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{(job.source_platform || 'boss') === 'boss' ? (job.greeting || '招呼语已生成，等待重新发送。') : (job.source_platform === 'zhilian' ? '使用配置中指定的 PDF 简历；无需生成招呼语。' : '使用网站默认简历；无需生成招呼语。')}</p>
                 <div className="mt-3 flex gap-2">
                   <Button size="sm" disabled={sendingGreetingIds.has(job.id)} onClick={() => sendReadyGreetings([job.id])}>
                     {sendingGreetingIds.has(job.id) ? '正在重新发送...' : '重新发送'}
@@ -1220,13 +1223,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-black">今日待确认</h3>
-            <p className="mt-0.5 text-xs text-muted">选中岗位，确认后投递。</p>
+            <p className="mt-0.5 text-xs text-muted">选中岗位，确认后投递；仅 BOSS 使用招呼语，智联使用配置中指定的 PDF，51job、猎聘使用网站默认简历。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" disabled={!filteredTodayJobs.length} onClick={() => setSelected(filteredTodayJobs.map(job => job.id))}>全选</Button>
             <Button variant="secondary" size="sm" disabled={!selected.length} onClick={() => setSelected([])}>清空</Button>
-            <Button variant="secondary" size="sm" disabled={generatingGreetings || greetTaskRunning || !actionableSelected.length} onClick={() => generateGreetings(actionableSelected)}>
-              {generatingGreetings || greetTaskRunning ? '生成中...' : `生成打招呼用语 ${actionableSelected.length} 个`}
+            <Button variant="secondary" size="sm" disabled={generatingGreetings || greetTaskRunning || !bossGreetingSelected.length} onClick={() => generateGreetings(bossGreetingSelected)}>
+              {generatingGreetings || greetTaskRunning ? '生成中...' : `生成打招呼用语 ${bossGreetingSelected.length} 个`}
             </Button>
             <Button variant="secondary" size="sm" disabled={!actionableSelected.length} onClick={() => rejectSelectedJobs(actionableSelected)}>放弃已选 {actionableSelected.length} 个</Button>
             <Button size="sm" disabled={!actionableSelected.length} onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
@@ -1656,7 +1659,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           <InfoBlock label="HR" value={[job.hr_name, job.hr_title].filter(Boolean).join(' · ') || '-'} />
           <InfoBlock label="招聘者活跃" value={job.hr_active || '活跃度未知'} />
           <InfoBlock label="公司" value={[job.company_size, job.company_industry].filter(Boolean).join(' · ') || '-'} />
-          <InfoBlock label="来源平台" value={job.source_platform && job.source_platform !== 'boss' && PLATFORM_LABELS[job.source_platform] ? `${PLATFORM_LABELS[job.source_platform]}｜当前只开放采集` : 'BOSS 直聘'} />
+          <InfoBlock label="来源平台" value={job.source_platform && job.source_platform !== 'boss' && PLATFORM_LABELS[job.source_platform] ? `${PLATFORM_LABELS[job.source_platform]}｜支持投递，不支持监测或自动聊天` : 'BOSS 直聘'} />
           <InfoBlock label="匹配分" value={String(job.score || '-')} />
           <InfoBlock label="定制简历" value={job.resume_path || '未生成'} />
         </div>
@@ -1664,6 +1667,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           <div className="text-sm font-black">评分理由</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.score_reason || '-'}</p>
         </div>
+        {(job.source_platform || 'boss') === 'boss' && (
         <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-black">招呼语</div>
@@ -1698,6 +1702,7 @@ function JobDetailModal({ job, onClose, onChanged }: { job: Job; onClose: () => 
           )}
           {notice && <div className="mt-2 text-xs font-bold text-primary">{notice}</div>}
         </div>
+        )}
         <div className="mt-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="text-sm font-black">JD</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.jd || '-'}</p>
@@ -1937,7 +1942,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const deliverSelectedJobs = async () => {
     if (!selectedIds.length) return
     const count = selectedIds.length
-    if (!window.confirm(`确认投递已选择的 ${count} 个岗位吗？仅 BOSS 岗位可进入发送队列，且仍受发送时间窗口和每日额度限制。`)) return
+    if (!window.confirm(deliveryConfirmation(count))) return
     try {
       const result = await postJobAction('/api/workbench/deliver', { job_ids: selectedIds })
       setSelectedIds([])
@@ -2137,7 +2142,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
         <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
-          <Send className="mr-1 h-4 w-4" />BOSS 一键投递已选
+          <Send className="mr-1 h-4 w-4" />一键投递已选
         </Button>
         <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total}>
           {quickScoring ? '启动评分中…' : '一键 AI 评分'}
@@ -2146,12 +2151,14 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
+      <p className="text-xs leading-6 text-muted">{PLATFORM_DELIVERY_NOTICE}{PLATFORM_SAFETY_NOTICE}</p>
+
       {deliveryTask && (
         <div className="mb-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-black">投递队列</div>
-              <p className="mt-1 text-xs text-muted">只展示已人工确认的 BOSS 发送任务；智联和 51job 不会进入此队列。</p>
+              <p className="mt-1 text-xs text-muted">展示已人工确认的跨平台投递任务；入队不代表投递成功，以核实结果为准。</p>
             </div>
             <span className="rounded-full bg-secondary px-3 py-1 text-xs font-black text-primary">
               {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}

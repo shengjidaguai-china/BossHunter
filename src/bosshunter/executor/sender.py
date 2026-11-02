@@ -27,6 +27,10 @@ from bosshunter.db import (
 from bosshunter.collection.capabilities import platform_supports
 from bosshunter.throttle import RequestThrottle, SendWindowChecker, ProgressiveBackoff, should_take_day_off
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
+from bosshunter.executor.platform_delivery import (
+    PLATFORMS as DELIVERY_PLATFORMS, _approved as delivery_approved,
+    delivery_count, send_platform_delivery,
+)
 
 console = Console()
 
@@ -760,6 +764,8 @@ def _detect_job_closed_on_page(target_id: str) -> dict | None:
 
 
 def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tuple[dict, str | None]:
+    if str(job.get("source_platform") or "boss") != "boss":
+        return {"success": False, "error": "unsupported_delivery_platform", "skip_backoff": True}, None
     stop_event = throttle_config.get("_workbench_stop_event")
     window_checker = throttle_config.get("_send_window_checker")
     def window_closed() -> bool:
@@ -1110,6 +1116,17 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         return 0
 
     jobs = get_jobs_ready_to_send(db)
+    # External platforms apply through the site's UI, not a greeting.
+    # Only explicitly selected, human-approved jobs can enter this route.
+    known_ids = {str(job["id"]) for job in jobs}
+    for job_id in workbench_job_ids:
+        row = db.execute("SELECT * FROM jobs WHERE id=? AND deleted_at IS NULL", (job_id,)).fetchone()
+        if row is not None and job_id not in known_ids and row["source_platform"] in DELIVERY_PLATFORMS:
+            candidate = dict(row)
+            if delivery_approved(db, candidate, workbench_job_ids):
+                jobs.append(candidate)
+    jobs = [job for job in jobs if str(job.get("source_platform") or "boss") == "boss"
+            or delivery_approved(db, job, workbench_job_ids)]
     type_blocked = [job for job in jobs if internship_rejection(job, config)]
     send_report["employment_blocked_ids"] = [str(job["id"]) for job in type_blocked]
     for job in type_blocked:
@@ -1122,7 +1139,8 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         jobs = [job for job in jobs if str(job["id"]) in workbench_job_ids]
     unsupported_jobs = [
         job for job in jobs
-        if not platform_supports(str(job.get("source_platform") or "boss"), "deliver")
+        if (str(job.get("source_platform") or "boss") not in {"boss", *DELIVERY_PLATFORMS}
+            or not platform_supports(str(job.get("source_platform") or "boss"), "deliver"))
     ]
     if unsupported_jobs:
         send_report["unsupported_platform_ids"] = [str(job["id"]) for job in unsupported_jobs]
@@ -1144,10 +1162,8 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     interval_max = throttle_config.get("interval_max", 180)
 
     # Count today's sent
-    today_sent = db.execute(
-        "SELECT COUNT(*) as cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
-    ).fetchone()
-    already_sent = today_sent["cnt"] if today_sent else 0
+    # Uncertain external clicks also consume today's total budget.
+    already_sent = delivery_count(db)
 
     remaining_quota = daily_limit - already_sent
     send_report["already_sent"] = already_sent
@@ -1217,12 +1233,13 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     continue
                 if callable(activity_guard):
                     row = db.execute("SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL", (job["id"],)).fetchone()
-                    if row is None or row["status"] not in {"ready", "approved"} or row["greeting_selection"] == "pending":
+                    if row is None or row["status"] not in {"ready", "approved"} or (str(row["source_platform"] or "boss") == "boss" and row["greeting_selection"] == "pending"):
                         progress.update(task, advance=1)
                         continue
                     job = dict(row)
                 greeting = job.get("greeting", "")
-                if not greeting:
+                platform = str(job.get("source_platform") or "boss")
+                if not greeting and platform == "boss":
                     update_job_status(db, job["id"], "error")
                     update_job_last_error(db, job["id"], "该岗位没有已生成的招呼语，无法发送", "no_greeting")
                     send_report["attempted_count"] += 1
@@ -1236,7 +1253,27 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     )
                 progress.update(task, description=f"发送: {job['company'][:10]} - {job['title'][:15]}")
 
-                result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
+                if platform == "boss":
+                    result_data, failed_target_id = _send_greeting_once(job, greeting, throttle_config)
+                else:
+                    external_throttle = {**throttle_config, "_send_window_checker": window_checker}
+                    result_data, failed_target_id = send_platform_delivery(job, config, db, external_throttle)
+                    if not result_data.get("success"):
+                        # Preserve the tab for the user, stop this batch, never retry.
+                        error = result_data.get("error", "delivery_result_unknown")
+                        detail = result_data.get("history_detail", error)
+                        update_job_last_error(db, job["id"], detail, error)
+                        if error not in {"outside_window", "stopped", "daily_limit", "daily_delivery_limit",
+                                         "daily_platform_page_limit", "persistent_risk_lock"} or result_data.get("attempted"):
+                            update_job_status(db, job["id"], "error")
+                        add_history(db, job["id"], "delivery_paused", error)
+                        send_report.setdefault("manual_required_ids", []).append(str(job["id"]))
+                        if failed_target_id:
+                            send_report.setdefault("manual_review_tabs", {})[str(job["id"])] = failed_target_id
+                        send_report["attempted_count"] += int(bool(result_data.get("attempted")))
+                        send_report["failed_count"] += int(bool(result_data.get("attempted")))
+                        send_report["stop_reason"] = error
+                        break
                 if result_data.get("error") == "outside_window":
                     if failed_target_id:
                         close_tab(failed_target_id)
@@ -1270,7 +1307,8 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     throttle.mark()
                     update_job_status(db, job["id"], "sent")
                     update_job_last_error(db, job["id"], "")
-                    add_history(db, job["id"], "sent", greeting[:50])
+                    add_history(db, job["id"], "sent", (greeting or "")[:50] if platform == "boss"
+                                else f"{platform}: verified UI success receipt")
                     sent_count += 1
                     send_report["sent_count"] = sent_count
                     backoff.record_success()

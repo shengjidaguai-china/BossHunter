@@ -30,6 +30,8 @@ from bosshunter.browser import (
     type_text as browser_type_text,
     wait_for_load,
 )
+from bosshunter.collection.safety import CollectionSafety, protected_collection
+from bosshunter.platform_safety import PlatformSafetyStop
 from bosshunter.collection.base import CollectionBlockedError, CollectionError, CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
 from bosshunter.db import (
@@ -802,6 +804,7 @@ class ZhilianCollector:
     ):
         self.config = config or {}
         self.safety_conn = safety_conn
+        self._safety = CollectionSafety(self.config, safety_conn, self.platform)
         self.sleep = sleep
         self.delay_range = delay_range
         self.uniform = uniform
@@ -855,6 +858,7 @@ class ZhilianCollector:
             return 24
 
     def _submit_keyword(self, target_id: str, keyword: str) -> None:
+        self._safety.inspect_page(self.browser.evaluate, target_id)
         before_state = self._search_state(target_id)
         actions = (
             self.browser.click_action,
@@ -882,11 +886,13 @@ class ZhilianCollector:
             if typed_state and typed_state.get("input") != keyword:
                 # Keep a DOM-backed fallback for runtimes whose CDP keyboard
                 # path still fails to update a controlled input.
+                self._safety.reserve("search_page")
                 submitted = self.browser.evaluate(target_id, _build_submit_search_script(keyword))
             else:
                 # The current 智联 page does not consistently handle the raw
                 # CDP Enter event. Click its real search button, which follows
                 # the platform's own submission path.
+                self._safety.reserve("search_page")
                 submitted = self.browser.evaluate(target_id, JS_CLICK_SEARCH_BUTTON)
             submit_payload = self._parse_payload(submitted)
             if submit_payload.get("ok") is False:
@@ -899,6 +905,7 @@ class ZhilianCollector:
         # Keep the evaluate seam for unit-test fakes and older Browser Runtime
         # adapters. It uses the same DOM setter and real search button as the
         # current live page instead of relying on synthetic key events alone.
+        self._safety.reserve("search_page")
         submitted = self.browser.evaluate(target_id, _build_submit_search_script(keyword))
         submit_payload = self._parse_payload(submitted)
         if isinstance(submit_payload, dict) and submit_payload.get("ok") is False:
@@ -943,7 +950,7 @@ class ZhilianCollector:
             if detail.get("status") not in {"login_required", "selector_changed"}:
                 return detail
             if attempt + 1 < attempts:
-                self.sleep(retry_delay)
+                self._safety.wait(retry_delay, self.sleep)
         return detail
 
     def _wait_for_search_results(
@@ -976,7 +983,7 @@ class ZhilianCollector:
             refreshed = str(last_state.get("signature") or "") != old_signature
             if value == keyword and keyword_route and refreshed:
                 return
-            time.sleep(0.5)
+            self._safety.wait(0.5, self.sleep)
         if last_state and str(last_state.get("input") or "") != keyword:
             raise CollectionError("search_not_applied", "智联搜索框关键词未生效，已停止采集以避免采到无关岗位")
         raise CollectionError("search_not_applied", "智联搜索结果未按目标关键词刷新，已停止采集以避免采到无关岗位")
@@ -993,44 +1000,44 @@ class ZhilianCollector:
     # ------------------------------------------------------------------ API-fetch
     def _evaluate_with_timeout(self, target_id: str, js: str, timeout: float) -> Any:
         """evaluate 兼容包装：支持不接受 timeout 的旧 fake。"""
+        import inspect
+
         try:
-            return self.browser.evaluate(target_id, js, timeout=timeout)
+            inspect.signature(self.browser.evaluate).bind(target_id, js, timeout=timeout)
         except TypeError:
             return self.browser.evaluate(target_id, js)
+        except ValueError:
+            pass
+        return self.browser.evaluate(target_id, js, timeout=timeout)
 
     def _ensure_host_tab(self, request: PlatformCollectionRequest) -> tuple[str, bool]:
         """找一个智联搜索页作为 fetch 宿主（与 fe-api.zhaopin.com 同域 cookie）。
 
         返回 ``(target_id, owned)``；复用用户已有页面时 ``owned=False``。
         """
-        keyword = request.keywords[0] if request.keywords else ""
         code = ""
         if request.cities:
             code = str(request.city_codes.get(request.cities[0]) or "").strip()
 
+        self._safety.check()
         for t in self.browser.get_page_targets():
-            if "zhaopin.com" in str(t.get("url", "")):
-                candidate_target = t.get("targetId")
-                if not candidate_target:
-                    continue
-                try:
-                    alive_js = (
-                        JS_FETCH_API_PAGE
-                        .replace("__KW__", quote(keyword))
-                        .replace("__CITY_ID__", code or "530")
-                        .replace("__START__", "0")
-                    )
-                    alive = self._evaluate_with_timeout(candidate_target, alive_js, 8)
-                    if alive and "error" not in str(alive):
-                        return str(candidate_target), False
-                except Exception:
-                    continue
+            if urlparse(str(t.get("url", ""))).hostname in {"www.zhaopin.com", "zhaopin.com"} and t.get("targetId"):
+                # Reuse without a hidden API probe. The first paced, budgeted
+                # request performs response validation like every later request.
+                self._safety.inspect_page(self.browser.evaluate, str(t["targetId"]))
+                return str(t["targetId"]), False
 
         tmp_url = SEARCH_URL.format(city_code=quote(code or "530"))
+        self._safety.reserve("search_page")
         host_target = self.browser.new_tab(tmp_url, background=False)
         if not host_target:
-            raise CollectionBlockedError("rate_limit", "无法打开智联页面作为 API 宿主")
-        self.sleep(5)
+            raise CollectionBlockedError("browser_disconnected", "无法打开智联页面作为 API 宿主")
+        try:
+            self._safety.wait(5, self.sleep)
+            self._safety.inspect_page(self.browser.evaluate, host_target)
+        except BaseException:
+            self.browser.close_tab(host_target)
+            raise
         return host_target, True
 
     def _fetch_page(self, host_target: str, kw_encoded: str, city_id: str, start: int) -> dict:
@@ -1041,19 +1048,21 @@ class ZhilianCollector:
             .replace("__CITY_ID__", city_id)
             .replace("__START__", str(start))
         )
+        self._safety.reserve("search_page")
         raw = self._evaluate_with_timeout(host_target, js, API_FETCH_TIMEOUT)
         if raw is None:
-            return {"ok": False, "level": 3, "signal": "empty_result",
-                    "note": "evaluate 返回空（超时/断连）", "jobs": [], "total": 0}
+            return self._safety.api_result({"ok": False, "level": 3, "signal": "empty_result",
+                    "note": "evaluate 返回空（超时/断连）", "jobs": [], "total": 0})
         wrapper = _payload(raw)
         if not isinstance(wrapper, dict) or "error" in wrapper:
-            return {"ok": False, "level": 3, "signal": "fetch_error",
-                    "note": f"API fetch 执行出错: {str(wrapper)[:120]}", "jobs": [], "total": 0}
-        return _analyze_api_response(
+            return self._safety.api_result({"ok": False, "level": 3, "signal": "fetch_error",
+                    "note": f"API fetch 执行出错: {str(wrapper)[:120]}", "jobs": [], "total": 0})
+        self._safety.check_api_response(wrapper)
+        return self._safety.api_result(_analyze_api_response(
             int(wrapper.get("http_status") or 0),
             str(wrapper.get("content_type") or ""),
             str(wrapper.get("body") or ""),
-        )
+        ))
 
     @staticmethod
     def _item_to_candidate(item: dict, city: str, code: str, keyword: str) -> JobCandidate | None:
@@ -1127,8 +1136,8 @@ class ZhilianCollector:
 
         try:
             host_target, owns_host = self._ensure_host_tab(request)
-        except CollectionBlockedError:
-            return None
+        except (PlatformSafetyStop, CollectionBlockedError):
+            raise
         except Exception:
             return None
 
@@ -1154,6 +1163,7 @@ class ZhilianCollector:
                     start_page = saved_page + 1 if saved_page > 0 else 1
                     if start_page > max_pages:
                         if self.safety_conn is not None:
+                            self._safety.check()
                             mark_combo_collected(self.safety_conn, "zhilian", city, kw)
                             delete_page_progress(self.safety_conn, "zhilian", city, kw)
                         continue
@@ -1166,6 +1176,7 @@ class ZhilianCollector:
                         deal_breakers=deal_breakers, jd_deal_breakers=jd_deal_breakers,
                         blocked_companies=blocked_companies, allow_internship=allow_internship,
                     )
+                    self._safety.check()
                     if api_failed:
                         return None
         finally:
@@ -1226,6 +1237,7 @@ class ZhilianCollector:
                       phase="saving", keyword=kw, city=city, page=page)
 
             for item in jobs_list:
+                self._safety.check()
                 cand = self._item_to_candidate(item, city, city_id, kw)
                 if cand is None:
                     continue
@@ -1243,6 +1255,7 @@ class ZhilianCollector:
                     return False
 
             if self.safety_conn is not None:
+                self._safety.check()
                 upsert_page_progress(self.safety_conn, "zhilian", city, kw, page)
 
             if len(jobs_list) < API_PAGE_SIZE:
@@ -1251,6 +1264,7 @@ class ZhilianCollector:
                 break
 
         if self.safety_conn is not None:
+            self._safety.check()
             mark_combo_collected(self.safety_conn, "zhilian", city, kw)
             delete_page_progress(self.safety_conn, "zhilian", city, kw)
         return False
@@ -1268,6 +1282,7 @@ class ZhilianCollector:
         except Exception:
             pass
 
+    @protected_collection
     def collect(self, request: PlatformCollectionRequest, hooks: CollectorHooks) -> PlatformCollectionResult:
         if any(not str(request.city_codes.get(city) or "").strip() for city in request.cities):
             return PlatformCollectionResult(self.platform, "failed", "no_valid_city", "智联城市编码未配置")
@@ -1310,6 +1325,7 @@ class ZhilianCollector:
                 start_page = saved_page + 1 if saved_page > 0 else 1
                 if start_page > request.max_pages:
                     if self.safety_conn is not None:
+                        self._safety.check()
                         mark_combo_collected(self.safety_conn, "zhilian", city, keyword)
                         delete_page_progress(self.safety_conn, "zhilian", city, keyword)
                     hooks.on_event(phase="completed_keyword", keyword=keyword, city=city,
@@ -1322,9 +1338,11 @@ class ZhilianCollector:
                     except CollectionError as exc:
                         return PlatformCollectionResult(self.platform, "failed", exc.code, exc.message)
                     initial_url = "about:blank" if self.browser.navigate_action is not None else search_url
+                    self._safety.reserve("search_page")
                     target_id = self.browser.new_tab(initial_url, background=True)
                     if not target_id:
                         return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "无法打开智联搜索页")
+                    self._safety.check()
                     if self.browser.navigate_action is not None and not self.browser.navigate_action(target_id, search_url):
                         return PlatformCollectionResult(self.platform, "failed", "browser_disconnected", "智联搜索页导航失败")
                     for page in range(start_page, request.max_pages + 1):
@@ -1336,12 +1354,16 @@ class ZhilianCollector:
                             if page == start_page:
                                 self._submit_keyword(target_id, keyword)
                                 if start_page > 1:
+                                    self._safety.reserve("search_page")
                                     self.browser.evaluate(target_id, _build_page_script(page))
                             else:
+                                self._safety.reserve("search_page")
                                 self.browser.evaluate(target_id, _build_page_script(page))
                             self.browser.wait_for_load(target_id, timeout=10)
                         except CollectionError as exc:
                             return PlatformCollectionResult(self.platform, "blocked", exc.code, exc.message)
+                        except PlatformSafetyStop:
+                            raise
                         except Exception:
                             return PlatformCollectionResult(self.platform, "blocked", "selector_changed", "智联搜索页未能正常加载")
                         try:
@@ -1374,6 +1396,7 @@ class ZhilianCollector:
                         if not items:
                             break
                         for raw_item in items:
+                            self._safety.check()
                             card_index = raw_item.get("card_index") if isinstance(raw_item, dict) else None
                             if card_index is not None:
                                 if detail_requests:
@@ -1386,16 +1409,18 @@ class ZhilianCollector:
                                         if hooks.stop_event.wait(delay):
                                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                                     else:
-                                        self.sleep(delay)
+                                        self._safety.wait(delay, self.sleep)
                                 hooks.on_event(phase="loading_detail", keyword=keyword, city=city, page=page)
+                                self._safety.reserve("detail_page")
                                 clicked = self._parse_payload(
                                     self.browser.evaluate(target_id, _build_click_card_script(int(card_index)))
                                 )
                                 if clicked.get("ok") is not True:
                                     # 卡片懒加载或列表重渲染时可能瞬时未命中，重试后再判定结构变化
                                     for _ in range(2):
-                                        self.sleep(1.5)
+                                        self._safety.wait(1.5, self.sleep)
                                         self.browser.scroll(target_id, y=2600)
+                                        self._safety.reserve("detail_page")
                                         clicked = self._parse_payload(
                                             self.browser.evaluate(target_id, _build_click_card_script(int(card_index)))
                                         )
@@ -1410,7 +1435,7 @@ class ZhilianCollector:
                                     if hooks.stop_event.wait(1.5):
                                         return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                                 else:
-                                    self.sleep(1.5)
+                                    self._safety.wait(1.5, self.sleep)
                                 try:
                                     detail = self._read_detail_with_retry(target_id, city)
                                     if detail.get("status") == "blocked":
@@ -1430,6 +1455,7 @@ class ZhilianCollector:
                                 except (CollectionError, json.JSONDecodeError, TypeError, ValueError) as exc:
                                     hooks.on_parse_failed(str(exc) or "智联侧栏详情解析失败")
                                     continue
+                                self._safety.success()
                                 if not hooks.on_candidate(final):
                                     return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
                                 continue
@@ -1459,19 +1485,20 @@ class ZhilianCollector:
                                     if hooks.stop_event.wait(delay):
                                         return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                                 else:
-                                    self.sleep(delay)
+                                    self._safety.wait(delay, self.sleep)
                             hooks.on_event(phase="loading_detail", keyword=keyword, city=city, page=page)
                             detail_initial_url = "about:blank" if self.browser.navigate_action is not None else candidate.url
+                            self._safety.reserve("detail_page")
                             detail_target = self.browser.new_tab(detail_initial_url, background=True)
                             if not detail_target:
                                 hooks.on_parse_failed("无法打开智联详情页")
                                 continue
-                            if self.browser.navigate_action is not None and not self.browser.navigate_action(detail_target, candidate.url):
-                                self.browser.close_tab(detail_target)
-                                hooks.on_parse_failed("智联详情页导航失败")
-                                continue
                             detail_requests += 1
                             try:
+                                self._safety.check()
+                                if self.browser.navigate_action is not None and not self.browser.navigate_action(detail_target, candidate.url):
+                                    hooks.on_parse_failed("智联详情页导航失败")
+                                    continue
                                 self.browser.wait_for_load(detail_target, timeout=10)
                                 detail = self._read_detail_with_retry(detail_target, city)
                             finally:
@@ -1499,16 +1526,19 @@ class ZhilianCollector:
                             except (CollectionError, json.JSONDecodeError, TypeError) as exc:
                                 hooks.on_parse_failed(str(exc) or "智联详情解析失败")
                                 continue
+                            self._safety.success()
                             if not hooks.on_candidate(final):
                                 return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
                         # 页级断点：每采完一页立即记录页码
                         if self.safety_conn is not None:
+                            self._safety.check()
                             upsert_page_progress(self.safety_conn, "zhilian", city, keyword, page)
                 finally:
                     if target_id:
                         self.browser.close_tab(target_id)
                 # 词结束：标记词级断点 + 清页级断点
                 if self.safety_conn is not None:
+                    self._safety.check()
                     mark_combo_collected(self.safety_conn, "zhilian", city, keyword)
                     delete_page_progress(self.safety_conn, "zhilian", city, keyword)
         return PlatformCollectionResult(self.platform, "completed", "search_exhausted", "智联搜索结果已采集完毕")

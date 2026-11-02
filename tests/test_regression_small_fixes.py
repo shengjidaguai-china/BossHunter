@@ -851,7 +851,7 @@ class ConfigPageTests(unittest.TestCase):
         self.assertIn("config.follow_up?.enabled ?? false", self.source)
 
     def test_config_page_merges_boss_safety_and_throttle_settings(self):
-        self.assertEqual(self.source.count('title="反监测设置"'), 1)
+        self.assertEqual(self.source.count('title="安全设置"'), 1)
         self.assertNotIn('title="BOSS 直聘采集安全"', self.source)
         self.assertNotIn('title="反检测设置"', self.source)
         self.assertIn('label="BOSS 操作间隔倍率"', self.source)
@@ -859,7 +859,7 @@ class ConfigPageTests(unittest.TestCase):
 
     def test_random_delivery_cooldown_is_below_ai_settings(self):
         ai_index = self.source.index('title="AI 设置"')
-        anti_monitor_index = self.source.index('title="反监测设置"')
+        anti_monitor_index = self.source.index('title="安全设置"')
         monitor_index = self.source.index('title="监控设置"')
 
         self.assertLess(ai_index, anti_monitor_index)
