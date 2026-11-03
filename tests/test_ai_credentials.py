@@ -735,6 +735,75 @@ class AnthropicCredentialTests(unittest.TestCase):
         self.assertNotIn("thinking", post.call_args_list[1].kwargs["json"])
         self.assertEqual(post.call_args_list[1].kwargs["json"]["max_tokens"], 3072)
 
+    def test_openai_auto_thinking_handles_gateway_reasoning_effort_rejection(self):
+        # Reproduce gateways that translate thinking=disabled to an unsupported
+        # reasoning effort. The error never mentions the original thinking field.
+        import httpx
+
+        config = {
+            "ai": {
+                "provider": "openai_compatible",
+                "service": "custom",
+                "base_url": "https://gateway.example/v1",
+                "model": "reasoning-model",
+                "api_key": "local-secret",
+                "thinking": "auto",
+            }
+        }
+        request = httpx.Request("POST", "https://gateway.example/v1/chat/completions")
+        for parameter in ("reasoning effort", "reasoning_effort"):
+            with self.subTest(parameter=parameter):
+                rejected = httpx.Response(
+                    400,
+                    request=request,
+                    json={"error": {"message": f'model does not support {parameter} "none"; use low, medium, high'}},
+                )
+                success = httpx.Response(
+                    200, request=request,
+                    json={"choices": [{"finish_reason": "stop", "message": {"content": "score result"}}]},
+                )
+                with patch(
+                    "bosshunter.ai.credentials.httpx.post", side_effect=[rejected, success],
+                ) as post:
+                    result = credentials.call_anthropic_text("full scoring prompt", config, 8192, purpose="scoring")
+
+                self.assertEqual(result, "score result")
+                self.assertEqual(post.call_count, 2)
+                first, fallback = [call.kwargs["json"] for call in post.call_args_list]
+                self.assertEqual(first.pop("thinking"), {"type": "disabled"})
+                self.assertNotIn("thinking", fallback)
+                self.assertEqual(first, fallback)
+                self.assertEqual(fallback["max_tokens"], 8192)
+
+    def test_openai_auto_thinking_does_not_retry_service_failures(self):
+        import httpx
+
+        config = {
+            "ai": {
+                "provider": "openai_compatible",
+                "service": "custom",
+                "base_url": "https://gateway.example/v1",
+                "model": "reasoning-model",
+                "api_key": "local-secret",
+                "thinking": "auto",
+            }
+        }
+        request = httpx.Request("POST", "https://gateway.example/v1/chat/completions")
+        for status, message, kind in (
+            (401, "reasoning effort model is unauthorized", "auth"),
+            (429, "reasoning effort rate limit", "rate_limit"),
+            (500, "reasoning effort service unavailable", "request_failed"),
+            (400, "invalid messages content", "request_failed"),
+        ):
+            with self.subTest(status=status):
+                response = httpx.Response(status, request=request, json={"error": {"message": message}})
+                with patch("bosshunter.ai.credentials.httpx.post", return_value=response) as post:
+                    with self.assertRaises(credentials.AIRequestError) as raised:
+                        credentials.call_openai_compatible_text("prompt", config, 8192)
+                self.assertEqual(post.call_count, 1)
+                self.assertEqual(raised.exception.kind, kind)
+                self.assertNotIn("local-secret", str(raised.exception))
+
     def test_openai_enabled_thinking_uses_provider_default_reasoning_mode(self):
         class CompletionResponse:
             status_code = 200
