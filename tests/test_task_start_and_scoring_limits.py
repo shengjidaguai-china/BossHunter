@@ -89,6 +89,8 @@ def runtime(tmp_path, monkeypatch):
     assert runner.status()["active"] is None
 
 
+# These are completion checks, not performance benchmarks; Windows SQLite can
+# need more than 30 seconds for 1001 jobs and their persisted checkpoints.
 def seed_jobs(path, count, status="pending"):
     db = db_module.get_db(path)
     try:
