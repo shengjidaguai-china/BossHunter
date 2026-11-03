@@ -62,7 +62,7 @@ interface TopCompany {
 
 export interface WorkbenchTask {
   id: string
-  mode: 'full' | 'collect' | 'rescore' | 'greet' | 'monitor' | 'deliver'
+  mode: 'full' | 'collect' | 'score' | 'rescore' | 'greet' | 'monitor' | 'deliver'
   label: string
   status: string
   logs: string[]
@@ -169,7 +169,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
-  const refreshingRef = useRef(false)
+  const refreshControllerRef = useRef<AbortController | null>(null)
   const greetingRevisionRef = useRef(0)
 
   const updateGreetingJob = useCallback((updated: Job) => {
@@ -183,14 +183,16 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
   }, [])
 
   const fetchAll = useCallback(async () => {
-    if (refreshingRef.current) return
-    refreshingRef.current = true
+    if (refreshControllerRef.current) return
+    const controller = new AbortController()
+    refreshControllerRef.current = controller
+    const timeout = window.setTimeout(() => controller.abort(), 15000)
     const greetingRevision = greetingRevisionRef.current
     setRefreshing(true)
     try {
       const needsWorkbench = scope === 'all' || scope === 'workbench'
       const needsHistory = scope === 'all' || scope === 'monitor'
-      const fetchOptions = { cache: 'no-store' as const }
+      const fetchOptions = { cache: 'no-store' as const, signal: controller.signal }
       const [workbenchRes, historyRes] = await Promise.all([
         needsWorkbench ? fetch('/api/workbench', fetchOptions) : Promise.resolve(null),
         needsHistory ? fetch('/api/history?limit=50&include_unresolved=1&include_monitor_conversations=1', fetchOptions) : Promise.resolve(null),
@@ -203,18 +205,24 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
         historyRes ? historyRes.json() : Promise.resolve(undefined),
       ])
 
+      if (controller.signal.aborted || refreshControllerRef.current !== controller) return
+
       // An older poll must not replace the greeting returned by a successful save.
       if (workbenchData !== undefined && greetingRevision === greetingRevisionRef.current) setWorkbench(workbenchData)
       if (historyData !== undefined) setHistory(historyData)
       setLastRefreshedAt(new Date())
       setError('')
     } catch (err) {
+      if (refreshControllerRef.current !== controller) return
       console.error('Failed to fetch dashboard data:', err)
-      setError('无法读取本地控制台数据')
+      setError(controller.signal.aborted ? '进度刷新超时，将自动重试。' : '无法读取本地控制台数据，将自动重试。')
     } finally {
-      refreshingRef.current = false
-      setRefreshing(false)
-      setLoading(false)
+      window.clearTimeout(timeout)
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null
+        setRefreshing(false)
+        setLoading(false)
+      }
     }
   }, [scope])
 
@@ -231,7 +239,7 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     await fetchAll()
   }, [fetchAll])
 
-  const startTask = async (mode: 'full' | 'collect' | 'rescore' | 'greet' | 'monitor' | 'deliver', options?: Record<string, unknown>) => {
+  const startTask = async (mode: 'full' | 'collect' | 'score' | 'rescore' | 'greet' | 'monitor' | 'deliver', options?: Record<string, unknown>) => {
     const res = await fetch('/api/workbench/task', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -266,11 +274,15 @@ export function useDashboard(scope: DashboardDataScope = 'all') {
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') void fetchAll()
     }
-    const interval = window.setInterval(refreshWhenVisible, pollIntervalMs)
+    // Embedded browsers can report a hidden document even while its panel is open.
+    // Keep polling; browsers may throttle background timers, and focus also refreshes immediately.
+    const interval = window.setInterval(() => void fetchAll(), pollIntervalMs)
     window.addEventListener('focus', refreshWhenVisible)
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       window.clearInterval(interval)
+      refreshControllerRef.current?.abort()
+      refreshControllerRef.current = null
       window.removeEventListener('focus', refreshWhenVisible)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
