@@ -275,7 +275,8 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 			"AI 接口连接",
 			"pass",
 			"AI 接口连接正常",
-			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。",
+			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。"
+			"本次仅检测模型列表接口，未发送生成请求；评分等任务的参数兼容性需在实际调用时验证。",
 		)
 	]
 
