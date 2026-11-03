@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ScoringProgress } from './ScoringProgress'
 import { Button } from '@/components/ui/button'
 
 type ScoreScope = 'pending' | 'failed' | 'selected' | 'all_scored'
@@ -41,8 +42,11 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
   const [limitText, setLimitText] = useState('全部')
   const [preview, setPreview] = useState<ScorePreview | null>(null)
   const [runs, setRuns] = useState<ScoringRun[]>([])
+  const [runsError, setRunsError] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+  const runsRequestRef = useRef<AbortController | null>(null)
+  const runsRequestRevisionRef = useRef(0)
 
   const normalizedLimit = limitText.trim()
   const limitValid = normalizedLimit === ''
@@ -81,15 +85,46 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     }
   }
 
-  const loadRuns = async () => {
-    const res = await fetch('/api/scoring/runs', { cache: 'no-store' })
-    if (res.ok) setRuns(await res.json())
-  }
+  const loadRuns = useCallback(async () => {
+    // A slow response must not overlap the next poll and overwrite a newer progress value.
+    if (runsRequestRef.current) return
+    const controller = new AbortController()
+    const revision = ++runsRequestRevisionRef.current
+    runsRequestRef.current = controller
+    const timeout = window.setTimeout(() => controller.abort(), 15000)
+    try {
+      const res = await fetch('/api/scoring/runs', { cache: 'no-store', signal: controller.signal })
+      if (!res.ok) throw new Error('无法刷新评分进度，请检查服务连接。')
+      const data: ScoringRun[] = await res.json()
+      if (!controller.signal.aborted && runsRequestRef.current === controller && revision === runsRequestRevisionRef.current) {
+        setRuns(data)
+        setRunsError('')
+      }
+    } catch {
+      if (!controller.signal.aborted && runsRequestRef.current === controller && revision === runsRequestRevisionRef.current) {
+        setRunsError('无法刷新评分进度，请检查服务连接。')
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      if (runsRequestRef.current === controller) runsRequestRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    void loadRuns()
+    const timer = window.setInterval(() => void loadRuns(), 3000)
+    return () => {
+      window.clearInterval(timer)
+      runsRequestRevisionRef.current += 1
+      runsRequestRef.current?.abort()
+      runsRequestRef.current = null
+    }
+  }, [open, loadRuns])
 
   useEffect(() => {
     if (open) {
       void loadPreview()
-      void loadRuns()
     }
   }, [open, scope, limit, selectedJobIds.join(',')])
 
@@ -171,9 +206,11 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
           {runs.filter(run => ['running', 'paused'].includes(run.status)).slice(0, 3).map(run => (
             <div key={run.id} className="rounded-2xl border border-card-border bg-surface p-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-black">{run.status === 'running' ? '评分中' : '已暂停'} · 剩余 {run.remaining_job_ids.length} 个岗位</span><div className="flex gap-2">{run.status === 'running' && <Button variant="secondary" size="sm" onClick={() => void runAction(run, 'pause')}>暂停</Button>}{run.recoverable && <Button size="sm" onClick={() => void runAction(run, 'resume')}>继续</Button>}<Button variant="ghost" size="sm" onClick={() => void runAction(run, 'end')}>结束</Button></div></div>
+              <ScoringProgress metrics={run.progress} status={run.status} />
               {run.pause_reason && <p className="mt-1 text-xs text-muted">{run.pause_reason}</p>}
             </div>
           ))}
+          {runsError && <p className="text-sm text-danger" role="status">{runsError}</p>}
           {message && <div className="rounded-xl bg-secondary px-3 py-2 text-sm text-primary">{message}</div>}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={onClose}>取消</Button>
