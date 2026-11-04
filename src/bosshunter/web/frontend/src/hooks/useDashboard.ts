@@ -52,6 +52,19 @@ interface Job {
   outsourcing_confirmed?: boolean
   outsourcing_matches?: string[] | null
   outsourcing_updated_at?: string | null
+  outsourcing_evidence?: OutsourcingEvidence[]
+  outsourcing_label?: { id: number; label: string; note?: string; created_at?: string } | null
+}
+
+export interface OutsourcingEvidence {
+  id: number
+  layer: string
+  source: 'rule' | 'reply' | 'user' | 'propagated' | string
+  keyword?: string | null
+  excerpt?: string | null
+  confidence?: number | null
+  created_at?: string | null
+  metadata?: Record<string, unknown>
 }
 
 interface TopCompany {

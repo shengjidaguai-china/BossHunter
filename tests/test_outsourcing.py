@@ -7,8 +7,12 @@ import pytest
 
 from bosshunter.db import (
     add_history,
+    apply_outsourcing_label,
     get_db,
+    get_outsourcing_snapshot,
     insert_job_if_new,
+    record_outsourcing_reply_evidence,
+    update_job_status,
     recompute_outsourcing,
     serialize_job,
 )
@@ -178,5 +182,48 @@ def test_refresh_rolls_back_as_a_batch_when_computation_fails(tmp_path):
             with pytest.raises(RuntimeError, match='synthetic refresh failure'):
                 recompute_outsourcing(conn, rules)
         assert all(row[0] == 'clean' for row in conn.execute('SELECT outsourcing_level FROM jobs'))
+    finally:
+        conn.close()
+
+
+def test_reply_evidence_labels_and_company_propagation_are_audited(tmp_path):
+    conn = get_db(tmp_path / 'jobs.db')
+    try:
+        rules = load_rules({'outsourcing_rules': {'use_reply_history': True, 'forward_propagate_n': 2}})
+        insert_job_if_new(conn, {'id': 'reply-job', 'title': '测试岗位', 'company': '示例有限公司', 'status': 'sent'})
+        insert_job_if_new(conn, {'id': 'marked-job', 'title': '另一个岗位', 'company': '示例有限公司', 'status': 'ready'})
+        update_job_status(conn, 'reply-job', 'sent')
+        update_job_status(conn, 'marked-job', 'ready')
+
+        hits = record_outsourcing_reply_evidence(conn, 'reply-job', '这个岗位是外包驻场项目', rules)
+        assert {hit['keyword'] for hit in hits} == {'外包', '驻场'}
+        snapshot = get_outsourcing_snapshot(conn, 'reply-job')
+        assert {item['layer'] for item in snapshot['evidence']} == {'L4'}
+        assert snapshot['label'] is None
+
+        result = apply_outsourcing_label(conn, 'marked-job', 'confirmed', 'HR已说明是外包', rules)
+        assert result['label']['label'] == 'confirmed'
+        assert any(item['layer'] == 'L6' for item in result['evidence'])
+        assert any(item['layer'] == 'L6' for item in get_outsourcing_snapshot(conn, 'reply-job')['evidence'])
+        assert conn.execute("SELECT status FROM jobs WHERE id='marked-job'").fetchone()[0] == 'ready'
+        assert conn.execute("SELECT COUNT(*) FROM history WHERE action='outsourcing_label_changed'").fetchone()[0] == 1
+
+        cleared = apply_outsourcing_label(conn, 'marked-job', 'clear', rules=rules)
+        assert cleared['label'] is None
+        assert conn.execute("SELECT COUNT(*) FROM outsourcing_evidence WHERE source='user' AND revoked_at IS NOT NULL").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_reply_evidence_is_opt_in_and_deduplicated(tmp_path):
+    conn = get_db(tmp_path / 'jobs.db')
+    try:
+        insert_job_if_new(conn, {'id': 'reply-job', 'title': '测试岗位', 'company': '示例有限公司'})
+        disabled = load_rules({})
+        assert record_outsourcing_reply_evidence(conn, 'reply-job', '外包驻场', disabled) == []
+        enabled = load_rules({'outsourcing_rules': {'use_reply_history': True}})
+        assert record_outsourcing_reply_evidence(conn, 'reply-job', '外包驻场', enabled)
+        assert record_outsourcing_reply_evidence(conn, 'reply-job', '外包驻场', enabled)
+        assert conn.execute("SELECT COUNT(*) FROM outsourcing_evidence WHERE source='reply'").fetchone()[0] == 2
     finally:
         conn.close()

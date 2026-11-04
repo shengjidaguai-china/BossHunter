@@ -9,7 +9,24 @@
 - L2：上述字段中的弱关键词及正则线索。
 - L3：JD 和岗位名称中的结构线索，仅产生“疑似外包”；可通过 `detect_structural` 关闭。
 
-“互联网”“自研产品”等描述不会抵消已有强证据。HR 回复、人工标记和跨岗位传播尚未接入持久化识别；对应配置项不表示这些流程已实现。
+“互联网”“自研产品”等描述不会抵消已有强证据。
+
+## 回复证据与人工反馈闭环
+
+- L4：开启 `use_reply_history` 后，监测到的 HR 回复只提取命中的强关键词，并把来源、关键词、截断摘要和时间写入独立证据表；同一岗位和同一消息不会重复入账。
+- L5：岗位详情提供“标记外包”“标记误报”和“撤销标记”。标记只改变外包识别视图，不改变人工确认、投递状态或发送频率；每次变更写入岗位历史。
+- L6：当同一规范化公司名或 HR 名下，达到 `forward_propagate_n` 个不同岗位的 L4/L5 证据时，为关联岗位增加 L6 关联证据。关联证据保留来源和岗位集合，不自动替代人工确认。
+
+默认仍关闭 L4，避免单条误识别回复扩大影响；需要时在配置中显式开启：
+
+```yaml
+outsourcing_rules:
+  use_reply_history: true
+  use_user_marks: true
+  forward_propagate_n: 2
+```
+
+岗位详情接口 `GET /api/jobs/<job_id>` 会返回 `outsourcing_evidence` 和 `outsourcing_label`；也可使用 `GET /api/jobs/<job_id>/outsourcing-evidence` 单独读取，使用 `POST /api/jobs/<job_id>/outsourcing-label` 写入 `confirmed`、`not_outsourcing` 或 `clear`。
 
 ## 自定义规则
 

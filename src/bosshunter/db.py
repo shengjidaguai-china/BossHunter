@@ -14,6 +14,8 @@ from bosshunter.outsourcing import (
     compute_outsourcing_columns,
     parse_persisted_columns,
     rules_version,
+    _company_key,
+    classify_reply_text,
 )
 
 
@@ -532,6 +534,9 @@ def insert_job_if_new(
         """,
         values,
     )
+    if cursor.rowcount == 1:
+        _sync_rule_evidence(conn, values["id"], values, os_columns)
+        _refresh_outsourcing_state(conn, values["id"], rules=rules or _default_outsourcing_rules())
     conn.commit()
     return cursor.rowcount == 1
 
@@ -1201,6 +1206,28 @@ def _migrate_outsourcing(conn: sqlite3.Connection) -> None:
     for name, definition in additions.items():
         if name not in cols:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS outsourcing_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            layer TEXT NOT NULL,
+            source TEXT NOT NULL,
+            keyword TEXT,
+            excerpt TEXT,
+            excerpt_hash TEXT,
+            confidence REAL,
+            metadata TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            revoked_at TIMESTAMP NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outsourcing_evidence_job
+            ON outsourcing_evidence(job_id, revoked_at, created_at);
+        CREATE INDEX IF NOT EXISTS idx_outsourcing_evidence_source
+            ON outsourcing_evidence(source, layer, revoked_at);
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_outsourcing_level ON jobs(outsourcing_level)")
     conn.commit()
     if additions.keys() - cols:
@@ -1235,8 +1262,270 @@ def recompute_outsourcing(conn: sqlite3.Connection, rules: Rules) -> int:
                 """,
                 {**data, "id": row["id"]},
             )
+            _sync_rule_evidence(conn, str(row["id"]), dict(row), data)
+            _refresh_outsourcing_state(conn, str(row["id"]), rules=rules)
             changed += 1
     return changed
+
+
+def _evidence_hash(*parts: object) -> str:
+    import hashlib
+
+    payload = "\x1f".join(str(part or "") for part in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _insert_evidence(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    layer: str,
+    source: str,
+    keyword: str = "",
+    excerpt: str = "",
+    confidence: float | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Insert an active evidence item once; revoked rows remain audit history."""
+    excerpt = str(excerpt or "")[:240]
+    digest = _evidence_hash(job_id, layer, source, keyword, excerpt)
+    found = conn.execute(
+        "SELECT id FROM outsourcing_evidence WHERE job_id=? AND layer=? AND source=? "
+        "AND COALESCE(keyword,'')=? AND excerpt_hash=? AND revoked_at IS NULL LIMIT 1",
+        (job_id, layer, source, keyword, digest),
+    ).fetchone()
+    if found:
+        return False
+    conn.execute(
+        """INSERT INTO outsourcing_evidence
+           (job_id, layer, source, keyword, excerpt, excerpt_hash, confidence, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            job_id,
+            layer,
+            source,
+            keyword or None,
+            excerpt or None,
+            digest,
+            confidence,
+            json.dumps(metadata or {}, ensure_ascii=False, separators=(",", ":")),
+        ),
+    )
+    return True
+
+
+def _sync_rule_evidence(
+    conn: sqlite3.Connection, job_id: str, job: dict[str, Any], computed: dict[str, Any]
+) -> None:
+    """Mirror L0-L3 rule matches into the evidence ledger without deleting history."""
+    # Rule evidence is a cache of the current matcher output; old rows remain
+    # auditable but are revoked when the configured rules are refreshed.
+    conn.execute(
+        "UPDATE outsourcing_evidence SET revoked_at=CURRENT_TIMESTAMP "
+        "WHERE job_id=? AND source='rule' AND revoked_at IS NULL",
+        (job_id,),
+    )
+    raw = computed.get("outsourcing_matches")
+    try:
+        matches = json.loads(raw) if isinstance(raw, str) else []
+    except (TypeError, ValueError):
+        matches = []
+    for match in matches if isinstance(matches, list) else []:
+        if not isinstance(match, dict) or match.get("layer") not in {"L0", "L1", "L2", "L3"}:
+            continue
+        _insert_evidence(
+            conn,
+            job_id,
+            layer=str(match["layer"]),
+            source="rule",
+            keyword=str(match.get("keyword") or ""),
+            excerpt=str(job.get(str(match.get("field") or "")) or "")[:240],
+            confidence=1.0 if match["layer"] in {"L0", "L1"} else 0.5,
+            metadata={"field": match.get("field")},
+        )
+
+
+def _active_user_label(conn: sqlite3.Connection, job_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id, keyword AS label, excerpt AS note, created_at FROM outsourcing_evidence "
+        "WHERE job_id=? AND source='user' AND revoked_at IS NULL ORDER BY id DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _refresh_outsourcing_state(conn: sqlite3.Connection, job_id: str, *, rules: Rules | None = None) -> None:
+    row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        return
+    rules = rules or _default_outsourcing_rules()
+    base = compute_outsourcing_columns(dict(row), rules)
+    evidence = conn.execute(
+        "SELECT layer, source, keyword FROM outsourcing_evidence WHERE job_id=? AND revoked_at IS NULL",
+        (job_id,),
+    ).fetchall()
+    label = _active_user_label(conn, job_id)
+    layers: list[dict[str, Any]] = []
+    try:
+        parsed = json.loads(base.get("outsourcing_matches") or "[]")
+        layers.extend(item for item in parsed if isinstance(item, dict))
+    except (TypeError, ValueError):
+        pass
+    existing = {(item.get("layer"), item.get("keyword")) for item in layers}
+    for item in evidence:
+        key = (item["layer"], item["keyword"] or item["source"])
+        if key not in existing and item["source"] != "rule":
+            layers.append({"layer": item["layer"], "keyword": item["keyword"] or item["source"], "field": item["source"]})
+            existing.add(key)
+    if label and label.get("label") == "not_outsourcing":
+        level = "clean"
+    elif label and label.get("label") == "confirmed":
+        level = "confirmed"
+    elif any(item["layer"] == "L4" for item in evidence):
+        level = "confirmed"
+    elif any(item["layer"] == "L6" for item in evidence):
+        level = "suspected"
+    else:
+        level = str(base.get("outsourcing_level") or "clean")
+    conn.execute(
+        """UPDATE jobs SET outsourcing_level=?, outsourcing_confirmed=?, outsourcing_matches=?,
+           outsourcing_layers=?, outsourcing_updated_at=?, outsourcing_rules_version=? WHERE id=?""",
+        (
+            level,
+            int(level == "confirmed"),
+            json.dumps(layers, ensure_ascii=False) if layers else None,
+            json.dumps(list(dict.fromkeys(item["layer"] for item in layers)), ensure_ascii=False) if layers else None,
+            base.get("outsourcing_updated_at"),
+            base.get("outsourcing_rules_version"),
+            job_id,
+        ),
+    )
+
+
+def _refresh_propagated_evidence(conn: sqlite3.Connection, *, company: str, hr_name: str = "", rules: Rules) -> None:
+    """Propagate independent L4/L5 signals by normalized company or HR identity."""
+    key = _company_key(company)
+    hr_key = str(hr_name or "").strip().casefold()
+    if not key and not hr_key:
+        return
+    jobs = conn.execute("SELECT id, company, hr_name FROM jobs WHERE deleted_at IS NULL").fetchall()
+    same_jobs = [
+        row for row in jobs
+        if (key and _company_key(row["company"] or "") == key)
+        or (hr_key and str(row["hr_name"] or "").strip().casefold() == hr_key)
+    ]
+    ids = [str(row["id"]) for row in same_jobs]
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    conn.execute(
+        f"UPDATE outsourcing_evidence SET revoked_at=CURRENT_TIMESTAMP WHERE source='propagated' "
+        f"AND revoked_at IS NULL AND job_id IN ({placeholders})", ids,
+    )
+    seed_rows = conn.execute(
+        f"SELECT DISTINCT job_id FROM outsourcing_evidence WHERE source IN ('reply','user') "
+        f"AND layer IN ('L4','L5') AND revoked_at IS NULL AND job_id IN ({placeholders})", ids,
+    ).fetchall()
+    seed_ids = [str(row[0]) for row in seed_rows]
+    if len(seed_ids) < rules.forward_propagate_n:
+        for job_id in ids:
+            _refresh_outsourcing_state(conn, job_id, rules=rules)
+        return
+    related = {"company": company, "hr_name": hr_name, "job_ids": seed_ids}
+    for job_id in ids:
+        _insert_evidence(
+            conn, job_id, layer="L6", source="propagated", keyword="同公司/同HR关联",
+            excerpt=f"同公司或同HR有 {len(seed_ids)} 个独立外包证据岗位",
+            confidence=0.7, metadata=related,
+        )
+        _refresh_outsourcing_state(conn, job_id, rules=rules)
+
+
+def record_outsourcing_reply_evidence(
+    conn: sqlite3.Connection, job_id: str, text: str, rules: Rules | None = None
+) -> list[dict[str, Any]]:
+    """Persist L4 HR reply hits and update the gated cross-job view."""
+    rules = rules or _default_outsourcing_rules()
+    hits = classify_reply_text(str(text or ""), rules)
+    if not hits:
+        return []
+    row = conn.execute("SELECT company FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        return []
+    excerpt = str(text or "")[:240]
+    for hit in hits:
+        _insert_evidence(
+            conn, job_id, layer="L4", source="reply", keyword=str(hit.get("keyword") or ""),
+            excerpt=excerpt, confidence=0.9, metadata={"field": "reply"},
+        )
+    job_row = conn.execute("SELECT company, hr_name FROM jobs WHERE id=?", (job_id,)).fetchone()
+    _refresh_propagated_evidence(
+        conn, company=str(job_row["company"] or ""), hr_name=str(job_row["hr_name"] or ""), rules=rules
+    )
+    _refresh_outsourcing_state(conn, job_id, rules=rules)
+    conn.commit()
+    return hits
+
+
+def apply_outsourcing_label(
+    conn: sqlite3.Connection, job_id: str, label: str, note: str = "", rules: Rules | None = None
+) -> dict[str, Any]:
+    """Set or clear an auditable user label; this never changes workflow status."""
+    label = str(label or "").strip()
+    if label not in {"confirmed", "not_outsourcing", "clear"}:
+        raise ValueError("label 必须是 confirmed、not_outsourcing 或 clear")
+    rules = rules or _default_outsourcing_rules()
+    if not rules.use_user_marks and label != "clear":
+        raise ValueError("当前配置已关闭人工外包标记")
+    row = conn.execute("SELECT id, company FROM jobs WHERE id=? AND deleted_at IS NULL", (job_id,)).fetchone()
+    if not row:
+        raise KeyError(job_id)
+    previous = _active_user_label(conn, job_id)
+    with conn:
+        conn.execute(
+            "UPDATE outsourcing_evidence SET revoked_at=CURRENT_TIMESTAMP WHERE job_id=? AND source='user' AND revoked_at IS NULL",
+            (job_id,),
+        )
+        if label != "clear":
+            _insert_evidence(
+                conn, job_id, layer="L5", source="user", keyword=label, excerpt=str(note or "")[:240],
+                confidence=1.0, metadata={"note": str(note or "")[:240]},
+            )
+        job_row = conn.execute("SELECT company, hr_name FROM jobs WHERE id=?", (job_id,)).fetchone()
+        _refresh_propagated_evidence(
+            conn,
+            company=str(job_row["company"] or ""),
+            hr_name=str(job_row["hr_name"] or ""),
+            rules=rules,
+        )
+        _refresh_outsourcing_state(conn, job_id, rules=rules)
+        add_history(
+            conn, job_id, "outsourcing_label_changed",
+            json.dumps({"previous": previous.get("label") if previous else None, "label": label, "note": str(note or "")[:240]}, ensure_ascii=False),
+        )
+    return get_outsourcing_snapshot(conn, job_id)
+
+
+def get_outsourcing_evidence(conn: sqlite3.Connection, job_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT id, job_id, layer, source, keyword, excerpt, confidence, metadata, created_at
+           FROM outsourcing_evidence WHERE job_id=? AND revoked_at IS NULL ORDER BY created_at DESC, id DESC""",
+        (job_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.get("metadata") or "{}")
+        except (TypeError, ValueError):
+            item["metadata"] = {}
+        result.append(item)
+    return result
+
+
+def get_outsourcing_snapshot(conn: sqlite3.Connection, job_id: str) -> dict[str, Any]:
+    label = _active_user_label(conn, job_id)
+    return {"evidence": get_outsourcing_evidence(conn, job_id), "label": label}
 
 
 def _migrate_platform_access_events(conn: sqlite3.Connection) -> None:
