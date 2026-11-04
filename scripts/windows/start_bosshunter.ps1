@@ -57,8 +57,9 @@ if (-not $ChromeCandidates) {
 
 $Chrome = $ChromeCandidates | Select-Object -First 1
 $ChromeProfile = Join-Path $env:LOCALAPPDATA "BossHunterChrome"
+$ChromePort = 9222
 $ChromeArguments = @(
-	"--remote-debugging-port=9222",
+	"--remote-debugging-port=$ChromePort",
 	"--user-data-dir=$ChromeProfile",
 	"https://www.zhipin.com"
 )
@@ -70,7 +71,7 @@ if (-not $SkipChrome) {
 	for ($i = 0; $i -lt 20; $i++) {
 		Start-Sleep -Milliseconds 500
 		try {
-			$null = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json/version" -TimeoutSec 2
+			$null = Invoke-RestMethod -Uri "http://127.0.0.1:$ChromePort/json/version" -TimeoutSec 2
 			$ChromeReady = $true
 			break
 		} catch {
@@ -80,6 +81,13 @@ if (-not $SkipChrome) {
 	if (-not $ChromeReady) {
 		Write-Warning "Chrome remote debugging did not become ready within 10 seconds."
 	}
+
+	# Record the port we just started. Chrome does not always leave a
+	# DevToolsActivePort inside a custom --user-data-dir, and without this marker
+	# the Browser Runtime can fall back to the user's everyday Chrome (its
+	# chrome://inspect toggle publishes a competing port that used to win).
+	New-Item -ItemType Directory -Force -Path $ChromeProfile | Out-Null
+	Set-Content -LiteralPath (Join-Path $ChromeProfile ".bosshunter-port") -Value "$ChromePort" -Encoding ASCII
 }
 
 Write-Host "Starting the Browser Runtime..."
@@ -104,7 +112,7 @@ for ($i = 0; $i -lt 20; $i++) {
 
 if (-not $SkipChrome) {
 	Start-Process -FilePath $Chrome -ArgumentList @(
-		"--remote-debugging-port=9222",
+		"--remote-debugging-port=$ChromePort",
 		"--user-data-dir=$ChromeProfile",
 		"http://127.0.0.1:8686"
 	)

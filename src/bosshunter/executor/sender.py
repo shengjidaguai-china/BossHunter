@@ -5,6 +5,7 @@ from bosshunter.employment import internship_rejection
 from contextlib import nullcontext
 import json
 from threading import Event
+from pathlib import Path
 from urllib.parse import urljoin
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
@@ -25,6 +26,7 @@ from bosshunter.db import (
     add_history, add_risk_event, set_platform_safety_lock,
 )
 from bosshunter.collection.capabilities import platform_supports
+from bosshunter.executor.resume_images import attach_resume_images, resume_image_settings
 from bosshunter.throttle import RequestThrottle, SendWindowChecker, ProgressiveBackoff, should_take_day_off
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
@@ -173,6 +175,99 @@ def _parse_js_result(result) -> dict:
 
 def _stop_requested(stop_event) -> bool:
     return bool(stop_event and stop_event.is_set())
+
+
+def _make_resume_image_attacher(config: dict, db, workbench_log=None):
+    """Build the best-effort resume-image step that runs before a tab is closed.
+
+    Returns ``None`` when the feature is off, so the send loop stays untouched
+    for anyone who does not want images. The returned callable never raises: it
+    wraps the upload in the same conversation the greeting was just sent in and
+    reports the outcome through the console and the job's history.
+    """
+    settings = resume_image_settings(config)
+    if not settings["enabled"]:
+        return None
+    if not settings["ready"]:
+        for entry in settings["entries"]:
+            console.print(f"[yellow]  ! 简历图片不可用: {entry['path']} → {entry['reason']}[/yellow]")
+        return None
+
+    def attach(target_id: str, job: dict, greeting: str, stop_event) -> dict:
+        job_id = str(job.get("id") or "")
+        if job_id and _resume_images_already_sent(db, job_id):
+            console.print("[dim]    简历图片此前已发送，跳过重复上传[/dim]")
+            return {"success": True, "skipped": True, "reason": "already_sent"}
+
+        result = attach_resume_images(
+            target_id,
+            config,
+            job=job,
+            stop_event=stop_event,
+            logger=workbench_log,
+        )
+        if result.get("success") and job_id:
+            try:
+                add_history(
+                    db,
+                    job_id,
+                    "resume_images",
+                    "、".join(Path(path).name for path in result.get("files", [])),
+                )
+            except Exception as exc:  # history is bookkeeping only
+                console.print(f"[yellow]    ! 简历图片发送成功但记录历史失败: {exc}[/yellow]")
+        return result
+
+    return attach
+
+
+def _resume_images_already_sent(db, job_id: str) -> bool:
+    """Guard against re-uploading images when a send is retried or forced."""
+    if db is None or not job_id:
+        return False
+    try:
+        row = db.execute(
+            "SELECT 1 FROM history WHERE job_id = ? AND action = ? LIMIT 1",
+            (job_id, "resume_images"),
+        ).fetchone()
+    except Exception:
+        return False
+    return bool(row)
+
+
+def _order_jobs_by_city_priority(jobs: list[dict], city_priority) -> list[dict]:
+    """Deliver the cities the caller cares about first, score only breaking ties.
+
+    Matching is exact, not substring, so listing "上海" does not sweep in a
+    differently-named variant the user never asked for.
+    """
+    priority = [str(city).strip() for city in (city_priority or []) if str(city).strip()]
+    if not priority:
+        return jobs
+    rank = {city: index for index, city in enumerate(priority)}
+    return sorted(
+        jobs,
+        key=lambda job: (
+            rank.get(str(job.get("city") or "").strip(), len(rank)),
+            -(int(job.get("score") or 0)),
+        ),
+    )
+
+
+def _finish_greeting_send(target_id: str, job: dict, greeting: str, throttle_config: dict, stop_event) -> None:
+    """Attach optional resume images, then close the conversation tab.
+
+    Strictly additive: the resume-image step never raises and never changes the
+    delivery verdict the caller is about to return. Without images configured
+    this is exactly ``close_tab(target_id)``.
+    """
+    attacher = throttle_config.get("_attach_resume_images")
+    if callable(attacher) and target_id:
+        try:
+            attacher(target_id, job, greeting, stop_event)
+        except Exception as exc:
+            console.print(f"[yellow]    ! 简历图片发送异常（不影响招呼语状态）: {exc}[/yellow]")
+    close_tab(target_id)
 
 
 def _sleep_or_stop(seconds: float, stop_event) -> bool:
@@ -887,7 +982,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     if not chat_ready.get("success"):
         if contact_action == "first_contact_submitted":
             if _verify_greeting_in_chat_list(job, greeting, stop_event):
-                close_tab(target_id)
+                _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
                 return {
                     "success": True,
                     "verified": True,
@@ -926,14 +1021,14 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                     close_tab(target_id)
                     return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
                 if _message_delivery_state(target_id, greeting) == "delivered":
-                    close_tab(target_id)
+                    _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
                     return {
                         "success": True,
                         "verified": True,
                         "first_contact": True,
                     }, None
                 if _verify_greeting_in_chat_list(job, greeting, stop_event):
-                    close_tab(target_id)
+                    _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
                     return {
                         "success": True,
                         "verified": True,
@@ -947,7 +1042,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                     "skip_backoff": True,
                 }, target_id
         if _verify_greeting_in_chat_list(job, greeting, stop_event):
-            close_tab(target_id)
+            _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
             return {
                 "success": True,
                 "verified": True,
@@ -963,7 +1058,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
 
     existing_state = _message_delivery_state(target_id, greeting)
     if existing_state == "delivered":
-        close_tab(target_id)
+        _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
         return {"success": True, "already_present": True, "verified": True}, None
     if existing_state in {"pending", "failed"}:
         return {
@@ -1016,10 +1111,10 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
                 close_tab(target_id)
                 return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}, None
             if _message_delivery_state(target_id, greeting) == "delivered":
-                close_tab(target_id)
+                _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
                 return {"success": True, "verified": True}, None
             if _verify_greeting_in_chat_list(job, greeting, stop_event):
-                close_tab(target_id)
+                _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
                 return {
                     "success": True,
                     "verified": True,
@@ -1033,7 +1128,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
             }, target_id
 
     if _verify_greeting_in_chat_list(job, greeting, stop_event):
-        close_tab(target_id)
+        _finish_greeting_send(target_id, job, greeting, throttle_config, stop_event)
         return {
             "success": True,
             "verified": True,
@@ -1160,6 +1255,10 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
         db.close()
         return 0
 
+    # Cities the caller cares about go first, so a quota-limited run cannot spend
+    # the whole budget on the long tail before reaching them.
+    jobs = _order_jobs_by_city_priority(jobs, config.get("_send_city_priority"))
+
     jobs_to_send = jobs[:remaining_quota]
     send_report["scheduled_count"] = len(jobs_to_send)
     send_report["quota_deferred_count"] = max(len(jobs) - len(jobs_to_send), 0)
@@ -1169,6 +1268,10 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     backoff = ProgressiveBackoff()
     sent_count = 0
     workbench_log = config.get("_workbench_log")
+
+    # Resume images are strictly additive: built once, and a missing/broken
+    # configuration only disables the upload step, never the greeting itself.
+    throttle_config["_attach_resume_images"] = _make_resume_image_attacher(config, db, workbench_log)
 
     console.print(f"[bold]准备发送 {len(jobs_to_send)} 条招呼语[/bold] (今日已发 {already_sent}/{daily_limit})")
 

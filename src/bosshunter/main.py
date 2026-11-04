@@ -251,6 +251,80 @@ def resume(ctx: click.Context, job_id: str | None) -> None:
         console.print("[yellow]请指定 --job-id[/yellow]")
 
 
+@cli.command(name="resume-images")
+@click.option("--probe", is_flag=True, help="在 BOSS 聊天页探测可用的文件上传控件（不发送任何文件）")
+@click.pass_context
+def resume_images(ctx: click.Context, probe: bool) -> None:
+    """检查简历图片配置，或探测聊天页的文件上传控件"""
+    from bosshunter.executor.resume_images import pick_file_input, probe_file_inputs, resume_image_settings
+
+    config = ctx.obj["config"]
+    settings = resume_image_settings(config)
+
+    if not probe:
+        state = "[green]已开启[/green]" if settings["enabled"] else "[yellow]未开启[/yellow]"
+        console.print(f"简历图片发送: {state}")
+        if not settings["entries"]:
+            console.print("[yellow]未配置简历图片（profile.resume_images 为空）[/yellow]")
+        for entry in settings["entries"]:
+            if entry["exists"]:
+                console.print(f"  [green]✓[/green] {entry['path']} ({entry['size']} 字节)")
+            else:
+                console.print(f"  [red]✗[/red] {entry['path']} → {entry['reason']}")
+        console.print("[dim]提示: 加 --probe 可在 BOSS 聊天页探测上传控件[/dim]")
+        return
+
+    from bosshunter.browser import close_tab, configure, find_boss_tab, get_page_targets
+
+    configure(config)
+    chat_url = config.get("monitor", {}).get("chat_url", "https://www.zhipin.com/web/geek/chat")
+
+    # Reuse a tab the user already opened: an HR conversation is the only page
+    # where the chat upload control actually exists, so probing a freshly opened
+    # chat-list tab would find nothing and mislead the user.
+    pages = get_page_targets()
+    conversations = [
+        target
+        for target in pages
+        if "zhipin.com/web/geek/chat" in str(target.get("url") or "")
+        and str(target.get("url") or "").rstrip("/\\") != chat_url.rstrip("/\\")
+    ]
+    target_id = conversations[-1].get("targetId") if conversations else (find_boss_tab() or {}).get("targetId")
+    opened_here = False
+    if not target_id:
+        console.print("[dim]未发现已打开的 BOSS 会话，改用聊天页探测[/dim]")
+        from bosshunter.browser import new_tab
+
+        target_id = new_tab(chat_url, background=False)
+        opened_here = True
+    if not target_id:
+        console.print("[red]无法打开聊天页，请先按 README 启动带调试端口的 Chrome[/red]")
+        raise SystemExit(1)
+    try:
+        found = probe_file_inputs(target_id)
+        console.print(f"当前页面: {found.get('url', '未知')}")
+        if conversations:
+            console.print("[green]已复用你打开的 HR 会话标签页[/green]")
+        console.print(f"发现 {found.get('count', len(found.get('inputs', [])))} 个文件上传控件：")
+        for meta in found.get("inputs", []):
+            console.print(
+                f"  #{meta.get('index')} score={meta.get('score')} "
+                f"accept={meta.get('accept') or '(无)'} "
+                f"multiple={meta.get('multiple')} "
+                f"visible={meta.get('rendered')} 祖先: {meta.get('ancestors', '')}"
+            )
+        if not found.get("inputs"):
+            console.print(
+                "[yellow]未发现上传控件。请在 BOSS 里点开某个 HR 会话（让他有一条对话记录），再运行 --probe[/yellow]"
+            )
+        else:
+            best = pick_file_input(found["inputs"])
+            console.print(f"[dim]自动选择: #{best.get('index')}（打分最高）[/dim]")
+    finally:
+        if opened_here:
+            close_tab(target_id)
+
+
 @cli.command()
 @click.option("--once", is_flag=True, help="只检查一次（不循环）")
 @click.option("--interval", default=None, type=int, help="循环检查间隔(分钟)，默认读取配置文件")

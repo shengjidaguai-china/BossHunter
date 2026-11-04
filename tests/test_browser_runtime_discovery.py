@@ -252,6 +252,24 @@ def _devtools_active_port_path(home):
     return home / ".config" / "google-chrome" / "DevToolsActivePort"
 
 
+def _dedicated_devtools_active_port_path(home):
+    """Where the launchers' dedicated BossHunterChrome profile records its port."""
+    if sys.platform.startswith("win"):
+        return home / "BossHunterChrome" / "DevToolsActivePort"
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "BossHunterChrome" / "DevToolsActivePort"
+    return home / ".config" / "BossHunterChrome" / "DevToolsActivePort"
+
+
+def _dedicated_port_marker_path(home):
+    """The ``.bosshunter-port`` file written by scripts/*/start_bosshunter.*"""
+    if sys.platform.startswith("win"):
+        return home / "BossHunterChrome" / ".bosshunter-port"
+    if sys.platform == "darwin":
+        return home / ".bosshunter-chrome" / ".bosshunter-port"
+    return home / ".config" / "BossHunterChrome" / ".bosshunter-port"
+
+
 def _http_json(url, timeout=3.0):
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return response.status, json.loads(response.read().decode("utf-8"))
@@ -283,10 +301,24 @@ class BrowserRuntimeDiscoveryTests(unittest.TestCase):
         self.decoy.close()
         self.tmp.cleanup()
 
-    def _start_proxy_with_active_port_file(self, content, chrome_ports=None):
-        port_file = _devtools_active_port_path(self.home)
-        port_file.parent.mkdir(parents=True, exist_ok=True)
-        port_file.write_text(content, encoding="utf-8")
+    def _start_proxy(self, *, marker=None, dedicated=None, default=None, chrome_ports=None):
+        """Start the proxy with optional port files and a configured port list.
+
+        ``marker`` / ``dedicated`` / ``default`` are ``DevToolsActivePort`` (or
+        marker) file bodies; ``None`` means the file is not created at all.
+        """
+        if marker is not None:
+            path = _dedicated_port_marker_path(self.home)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(marker, encoding="utf-8")
+        if dedicated is not None:
+            path = _dedicated_devtools_active_port_path(self.home)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(dedicated, encoding="utf-8")
+        if default is not None:
+            path = _devtools_active_port_path(self.home)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(default, encoding="utf-8")
 
         env = os.environ.copy()
         env["HOME"] = str(self.home)
@@ -301,6 +333,9 @@ class BrowserRuntimeDiscoveryTests(unittest.TestCase):
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
         )
+
+    def _start_proxy_with_active_port_file(self, content, chrome_ports=None):
+        self._start_proxy(default=content, chrome_ports=chrome_ports)
 
     def _start_proxy_with_stale_port_file(self):
         # What a stale file looks like: a live port that does not speak CDP.
@@ -360,6 +395,64 @@ class BrowserRuntimeDiscoveryTests(unittest.TestCase):
         self.assertEqual(health["chromePort"], self.fake.port)
         self.assertEqual(health["connected"], True)
         self.assertEqual(health["browserProduct"], "Chrome/124.0.0.0")
+
+    def test_dedicated_profile_wins_over_the_default_profile(self):
+        """BossHunter's own profile must be driven, never the user's everyday Chrome.
+
+        Seen live on 2026-10-15: the user had enabled
+        ``chrome://inspect/#remote-debugging`` in their personal Chrome, whose
+        ``DevToolsActivePort`` was probed before the configured ``chrome_ports``.
+        The automation therefore ran against DeepSeek / 网易邮箱 / LeetCode tabs
+        while a perfectly good dedicated instance listened on 9222.
+        """
+        personal = _FakeCdp()
+        self.addCleanup(personal.close)
+        self._start_proxy(
+            dedicated=f"{self.fake.port}\n{self.fake.ws_path}\n",
+            default=f"{personal.port}\n{personal.ws_path}\n",
+            # The configured ports point elsewhere again, so only the dedicated
+            # profile file can explain a correct pick.
+            chrome_ports=self.decoy.port,
+        )
+        base = self._wait_for_targets()
+
+        _, health = _http_json(base + "/health")
+        self.assertEqual(health["chromePort"], self.fake.port, "必须优先使用专用配置实例")
+        self.assertNotEqual(health["chromePort"], personal.port)
+
+    def test_configured_ports_win_over_the_default_profile(self):
+        """With no dedicated profile running, 9222-style ports beat the personal Chrome."""
+        personal = _FakeCdp()
+        self.addCleanup(personal.close)
+        self._start_proxy(
+            dedicated=None,
+            default=f"{personal.port}\n{personal.ws_path}\n",
+            chrome_ports=self.fake.port,
+        )
+        base = self._wait_for_targets()
+
+        _, health = _http_json(base + "/health")
+        self.assertEqual(health["chromePort"], self.fake.port)
+        self.assertNotEqual(health["chromePort"], personal.port)
+
+    def test_launcher_marker_wins_over_everything(self):
+        """The port the launcher recorded beats both profiles and the port list.
+
+        Chrome does not always write ``DevToolsActivePort`` into a custom
+        ``--user-data-dir``, so the launcher leaves its own marker. That record is
+        the only unambiguous answer to "which Chrome did BossHunter start".
+        """
+        personal = _FakeCdp()
+        self.addCleanup(personal.close)
+        self._start_proxy(
+            marker=f"{self.fake.port}\n",
+            default=f"{personal.port}\n{personal.ws_path}\n",
+            chrome_ports=self.decoy.port,
+        )
+        base = self._wait_for_targets()
+
+        _, health = _http_json(base + "/health")
+        self.assertEqual(health["chromePort"], self.fake.port, "启动器记录的端口必须最优先")
 
     def test_decoy_port_is_not_a_devtools_endpoint(self):
         """Keep the fixture honest: the decoy must fail the /json/version probe."""
