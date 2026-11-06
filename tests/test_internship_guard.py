@@ -397,6 +397,14 @@ def test_persisted_card_evidence_is_one_internship_signal():
         "title": "软件测试", "jd": "职位类型：全职", "source_platform": "boss",
         "employment_source": BOSS_INTERNSHIP_CARD,
     }) == "unknown"
+    # A negated internship title is non-internship, not merely unverified.
+    for title in ("非实习测试", "不接受实习"):
+        job = {
+            "title": title, "jd": "", "source_platform": "boss",
+            "employment_source": BOSS_INTERNSHIP_CARD,
+        }
+        assert classify_employment(job) == "full_time"
+        assert internship_rejection(job, CONFIG) == "仅实习：非实习岗位"
     # Evidence is BOSS-only and value-exact.
     assert classify_employment({
         "title": "软件测试", "jd": "", "source_platform": "zhilian",
@@ -487,9 +495,10 @@ def scroll_card(job_id, tags=CARD_TAGS):
     }
 
 
-def test_scroll_batch_recheck_stops_before_new_cards():
+@pytest.mark.parametrize("recheck", [False, None, "true", {}, 0])
+def test_scroll_batch_recheck_stops_before_new_cards(recheck):
     batches = [[scroll_card("scroll-a")], [scroll_card("scroll-a"), scroll_card("scroll-b")]]
-    result, items = scroll_fixture(batches, verify_results=[True, False])
+    result, items = scroll_fixture(batches, verify_results=[True, recheck])
     assert result.reason_code == "internship_filter_not_applied"
     assert [c.source_job_id for c in items] == ["scroll-a"]
 
