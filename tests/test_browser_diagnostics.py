@@ -6,6 +6,14 @@ from rich.console import Console
 
 
 class BrowserDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        health = patch("bosshunter.browser.diagnostics.runtime_health", return_value={"runtime": "bosshunter"})
+        self.health = health.start()
+        self.addCleanup(health.stop)
+        zhilian = patch("bosshunter.browser.diagnostics.find_zhilian_tab", return_value=None)
+        zhilian.start()
+        self.addCleanup(zhilian.stop)
+
     def test_zhilian_page_script_recognizes_current_login_wall_markers(self):
         from bosshunter.browser.diagnostics import ZHILIAN_PAGE_STATE_SCRIPT
 
@@ -80,6 +88,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         check_node.return_value = {"available": False, "version": None, "error": "node missing"}
         ensure_runtime.return_value = False
+        self.health.return_value = None
 
         result = run_browser_diagnostics({})
 
