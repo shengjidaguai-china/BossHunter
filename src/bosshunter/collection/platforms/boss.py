@@ -16,7 +16,9 @@ import httpx
 from bosshunter.ai.prefilter import quick_score
 from bosshunter.employment import internship_config_error, internship_only, internship_rejection
 from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, wait_for_load
-from bosshunter.collection.base import CollectorHooks
+from bosshunter.cities import get_city_code
+from bosshunter.collection.city_yield import CityYieldTracker, TERMINAL_CITIES, normalize_city_policy
+from bosshunter.collection.base import CollectionError, CollectorHooks
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, PlatformCollectionResult
 from bosshunter.collection.platforms.boss_font import (
     JS_COLLECT_FONT_SOURCES,
@@ -24,13 +26,16 @@ from bosshunter.collection.platforms.boss_font import (
     collect_font_sources,
     parse_font_face_urls,
 )
-from bosshunter.config import CITY_CODES
 from bosshunter.db import add_risk_event
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 from bosshunter.throttle import PageThrottle
 
 
 SEARCH_URL = "https://www.zhipin.com/web/geek/job?query={keyword}&city={city_code}"
+JS_SEARCH_READY = """(() => Boolean(
+    document.querySelector('.job-list-box, .job-list-container, .search-job-result, .search-job-list')
+    && !document.querySelector('.job-list-loading, .loading-mask')
+))()"""
 
 BOSS_FILTER_OPTIONS: dict[str, dict[str, str]] = {
     "job_type": {"全职": "1901", "兼职": "1903", "实习": "1902"},
@@ -345,6 +350,7 @@ class BossCollector:
         randint: Callable[[int, int], int] | None = None,
         config: dict[str, Any] | None = None,
         safety_conn: Any | None = None,
+        clock: Callable = time.monotonic,
     ):
         self.browser = browser or BossBrowser()
         self.throttle_factory = throttle_factory
@@ -352,10 +358,11 @@ class BossCollector:
         self.randint = randint or random.SystemRandom().randint
         self.config = config or {}
         self.safety_conn = safety_conn
+        self.clock = clock
 
     @staticmethod
     def resolve_city_code(city: str, request: PlatformCollectionRequest) -> str | None:
-        return str(request.city_codes.get(city) or CITY_CODES.get(city) or "") or None
+        return str(request.city_codes.get(city) or get_city_code(city) or "") or None
 
     def collect(self, request: PlatformCollectionRequest, hooks: CollectorHooks) -> PlatformCollectionResult:
         type_config = {
@@ -364,6 +371,23 @@ class BossCollector:
         }
         if conflict := internship_config_error(type_config):
             return PlatformCollectionResult(self.platform, "failed", "internship_config_conflict", conflict)
+        city_results: dict[str, dict] = {}
+        active_city = ""
+        tracker = None
+        current_keyword = ""
+        skipped_cities: set[str] = set()
+        last_yield_reason = ""
+        consumed_receipt = 0
+        partial_cities: set[str] = set()
+        policy = normalize_city_policy(request.city_yield_policy, default_enabled=False)
+        if policy["enabled"] and hooks.last_save_receipt is None:
+            raise CollectionError("missing_save_receipt", "城市产出检查需要可靠的新增成功回执")
+
+        def make_result(*args, **kwargs):
+            if len(args) > 2 and args[2] == "user_stopped" and getattr(hooks.stop_event, "reason", "") == "session_deadline":
+                args = (*args[:2], "session_deadline", "持续采集会话已到期", *args[4:])
+            return PlatformCollectionResult(*args, **kwargs, city_results=city_results)
+
         collection_cfg = self.config.get("collection", {}) if isinstance(self.config.get("collection"), dict) else {}
         delay_multiplier = _bounded_float(
             collection_cfg.get("collection_delay_multiplier", 1.5),
@@ -384,8 +408,7 @@ class BossCollector:
             risk_pause_min,
             _positive_int(collection_cfg.get("risk_pause_max_minutes", 10), 10),
         )
-        # List cards can omit the type; keep every other prefilter setting and
-        # defer only the employment check until the detail JD has been read.
+        # List cards can omit the type; defer only that check until the detail JD.
         list_config = {**self.config, "platforms": {
             **self.config.get("platforms", {}), "boss": {
                 **self.config.get("platforms", {}).get("boss", {}), "search": {
@@ -403,7 +426,7 @@ class BossCollector:
         salary_decode_action = _salary_decode_failure_action(self.config)
 
         def limited(reason: str) -> PlatformCollectionResult:
-            return PlatformCollectionResult(
+            return make_result(
                 self.platform, "completed_with_shortage", reason,
                 (
                     "BOSS 采集暂时暂停：此前检测到风险提示，请稍后重试。"
@@ -430,7 +453,7 @@ class BossCollector:
                 )
             if guard is not None:
                 guard.lock(kind, minutes=pause_minutes)
-            return PlatformCollectionResult(
+            return make_result(
                 self.platform,
                 "blocked",
                 kind,
@@ -454,7 +477,7 @@ class BossCollector:
             first = inspect_risk(target_id)
             if first is None:
                 return None
-            if _wait_or_stop(hooks.stop_event, 1.0 * delay_multiplier, self.sleep):
+            if wait(1.0 * delay_multiplier):
                 return {"kind": "user_stopped", "evidence": ""}
             second = inspect_risk(target_id)
             if second is None or second["kind"] != first["kind"]:
@@ -468,7 +491,7 @@ class BossCollector:
                     "collection_consecutive_page_failures",
                     "BOSS 连续页面失败，本轮采集已结束；未写入账号风险锁",
                 )
-            return PlatformCollectionResult(
+            return make_result(
                 self.platform,
                 "completed_with_shortage",
                 "consecutive_page_failures",
@@ -499,38 +522,127 @@ class BossCollector:
             self.browser.scroll(worker_target, direction="top")
             self.browser.scroll(worker_target, direction="bottom")
             self.browser.evaluate(worker_target, JS_DISPATCH_LIST_SCROLL)
+            valid_list_seen = False
             for _ in range(10):
-                if _wait_or_stop(hooks.stop_event, 0.5 * delay_multiplier, self.sleep):
-                    raise ListStopped(PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止"))
+                if wait(0.5 * delay_multiplier):
+                    raise ListStopped(make_result(self.platform, "stopped", "user_stopped", "用户已停止"))
                 signal = inspect_risk(worker_target)
                 if signal:
                     signal = confirm_risk(worker_target)
                     if signal:
                         if signal["kind"] == "user_stopped":
-                            raise ListStopped(PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止"))
+                            raise ListStopped(make_result(self.platform, "stopped", "user_stopped", "用户已停止"))
                         raise ListStopped(risk(signal["kind"], signal["evidence"]))
                 jobs = read_list()
+                valid_list_seen = valid_list_seen or isinstance(jobs, list)
+                if isinstance(jobs, list):
+                    schedule()
                 if jobs is not None and list_ids(jobs) - loaded_ids:
                     new_jobs = [job for job in jobs if not isinstance(job, dict) or not job.get("url")
                                 or generate_boss_job_id(job["url"]) not in loaded_ids]
                     loaded_ids.update(list_ids(jobs))
                     return new_jobs
+            if not valid_list_seen:
+                raise ListStopped(make_result(self.platform, "failed", "list_parse_failed", "BOSS 滚动列表无法解析，需要检查页面"))
             hooks.on_parse_failed("BOSS 滚动后未出现新岗位，无法确认已加载下一批")
-            raise ListStopped(PlatformCollectionResult(
+            raise ListStopped(make_result(
                 self.platform, "completed_with_shortage", "search_page_not_advanced",
                 "BOSS 滚动后未出现新岗位，已停止；未将重复列表计入扫描，可稍后继续采集",
             ))
 
+
+        class CityYielded(Exception):
+            pass
+
+        def publish() -> None:
+            if tracker is None:
+                return
+            state = tracker.snapshot()
+            city_results[active_city] = state
+            hooks.on_city_state(active_city, state)
+            hooks.on_event(city_results=city_results, city_elapsed_ms=state["active_elapsed_ms"],
+                           next_check_ms=state["next_check_ms"], city_new_total=state["new_total"],
+                           last_window_new=state.get("last_window_new"))
+
+        def finish_city(status: str, reason: str = "") -> None:
+            if tracker is None:
+                return
+            tracker.state.update(status=status, reason_code=reason)
+            start = request.keyword_start.get(active_city, 0)
+            index = request.keywords.index(current_keyword) if current_keyword in request.keywords else start
+            tracker.state["next_keyword_index"] = ((index + 1) if status in {"low_yield", "yielded_no_ids"} else (start + 1)) % len(request.keywords)
+            publish()
+
+        def yield_city(reason: str, status: str = "yielded_no_ids") -> None:
+            nonlocal last_yield_reason
+            check_limits()
+            last_yield_reason = reason
+            finish_city(status, reason)
+            skipped_cities.add(active_city)
+            hooks.on_event(reason_code=reason, message=f"BOSS {active_city}：{reason}，跳过本城剩余关键词，切换下一城市")
+            raise CityYielded()
+
+        def check_limits() -> None:
+            if guard is not None:
+                try:
+                    guard.check_available("search_page", daily_limit=search_limit)
+                    guard.check_available("detail_page", daily_limit=detail_limit)
+                except PlatformSafetyStop as exc:
+                    raise ListStopped(limited(exc.reason)) from exc
+
+        def schedule() -> None:
+            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                raise ListStopped(make_result(self.platform, "stopped", "user_stopped", "用户已停止"))
+            if guard is not None:
+                try:
+                    guard.ensure_unlocked()
+                except PlatformSafetyStop as exc:
+                    raise ListStopped(limited(exc.reason)) from exc
+            if tracker is None:
+                return
+            if not hooks.can_checkpoint():
+                raise CollectionError("persistence_error", "存在未解决的保存失败，采集已停止")
+            if policy["enabled"] and tracker.elapsed_ms() >= tracker.state["next_check_ms"]:
+                check_limits()
+            decision = tracker.evaluate_due()
+            if decision == "timing_gap":
+                publish()
+                raise ListStopped(make_result(self.platform, "stopped", "timing_gap", "采集计时中断，请检查运行环境后继续"))
+            if decision == "low_yield":
+                yield_city("low_yield", "low_yield")
+            publish()
+
+        def wait(seconds: float) -> bool:
+            remaining = seconds
+            while remaining > 0:
+                step = min(remaining, 1.0)
+                if _wait_or_stop(hooks.stop_event, step, self.sleep):
+                    return True
+                remaining -= step
+            return False
+
         combos: list[tuple[str, str, str]] = []
+        resolved_codes: set[str] = set()
         for city in request.cities:
             city_code = self.resolve_city_code(city, request)
             if not city_code:
                 hooks.on_event(phase="searching", city=city, reason_code="no_valid_city", message=f"未识别的 BOSS 城市：{city}")
                 continue
-            for keyword in request.keywords:
+            if city_code in resolved_codes:
+                continue
+            resolved_codes.add(city_code)
+            saved_city = hooks.city_state(city)
+            if saved_city.get("status") in TERMINAL_CITIES:
+                city_results[city] = saved_city
+                continue
+            cursor = request.keyword_start.get(city, 0)
+            ordered_keywords = request.keywords[cursor:] + request.keywords[:cursor]
+            for keyword in ordered_keywords:
                 combos.append((city, city_code, keyword))
         if not combos:
-            return PlatformCollectionResult(
+            if city_results:
+                return make_result(self.platform, "completed", "search_exhausted", "本轮城市均已处理")
+            return make_result(
                 self.platform, "completed_with_shortage", "no_valid_city", "没有有效的 BOSS 搜索组合"
             )
 
@@ -542,212 +654,276 @@ class BossCollector:
 
         try:
             for city, city_code, keyword in combos:
-                if hooks.stop_event is not None and hooks.stop_event.is_set():
-                    return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                # Only the explicitly resumed run supplies completed pages.
-                # New runs always start at page 1, regardless of older tasks.
-                start_page = hooks.completed_page(city, keyword) + 1
-                if start_page > request.max_pages:
-                    hooks.on_event(phase="resuming", keyword=keyword, city=city,
-                                   message="继续原任务：该搜索组合已完成")
+                if city in skipped_cities:
                     continue
-                combo_complete = True
-                scroll_list = False
-                loaded_page = 0
-                loaded_ids: set[str] = set()
-                page_fingerprints: set[frozenset[str]] = set()
-                for page in range(start_page, request.max_pages + 1):
+                if city != active_city:
+                    if tracker is not None and tracker.state["status"] == "running":
+                        finish_city("partial" if active_city in partial_cities else "completed_scope")
+                    active_city = city
+                    tracker = CityYieldTracker(policy, hooks.city_state(city), clock=self.clock)
+                    hooks.on_city_start(city, tracker)
+                current_keyword = keyword
+                try:
                     if hooks.stop_event is not None and hooks.stop_event.is_set():
-                        return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                    hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
-                    search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code)
-                    filter_query = build_boss_filter_query(request.filters)
-                    if filter_query: search_url += f"&{filter_query}"
-                    if request.sort == "newest": search_url += "&sortType=2"
-                    if page > 1: search_url += f"&page={page}"
-                    try:
-                        if scroll_list:
-                            jobs = advance_list(loaded_ids)
-                            loaded_page += 1
-                        else:
-                            if guard is not None: guard.reserve("search_page", daily_limit=search_limit)
-                            opened = self.browser.new_tab(search_url, background=True) if worker_target is None else self.browser.navigate(worker_target, search_url)
-                            if worker_target is None and opened:
-                                worker_target = str(opened)
-                            if not opened or worker_target is None:
-                                combo_complete = False
-                                page_failures += 1
-                                hooks.on_parse_failed("无法打开 BOSS 搜索页")
-                                if page_failures >= failure_limit: return page_failure_stop()
-                                continue
-                            if _wait_or_stop(hooks.stop_event, 3 * delay_multiplier, self.sleep):
-                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                            if not self.browser.wait_for_load(worker_target, timeout=10):
-                                combo_complete = False
-                                page_failures += 1
-                                hooks.on_parse_failed("BOSS 搜索页加载超时")
-                                if page_failures >= failure_limit: return page_failure_stop()
-                                continue
-                            signal = confirm_risk(worker_target)
-                            if signal and signal["kind"] == "user_stopped":
-                                return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                            if signal: return risk(signal["kind"], signal["evidence"])
-                            if only_internships:
-                                if self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is not True:
-                                    return PlatformCollectionResult(
-                                        self.platform, "completed_with_shortage", "internship_filter_not_applied",
-                                        "无法确认 BOSS 实习筛选已生效，已停止；请在网站核对职位类型后重试",
-                                    )
-                            self._refresh_font_digits(worker_target)
-                            scroll_list = self.browser.evaluate(worker_target, JS_IS_SCROLL_LIST) is True
-                            jobs = read_list()
-                            if scroll_list and jobs:
-                                loaded_page = 1
-                                loaded_ids = list_ids(jobs)
-                                # A resumed scroll list must be reconstructed from
-                                # its first batch; completed batches aren't processed again.
-                                while loaded_page < page:
-                                    jobs = advance_list(loaded_ids)
-                                    loaded_page += 1
-                    except PlatformSafetyStop as exc:
-                        return limited(exc.reason)
-                    except ListStopped as exc:
-                        return exc.result
-                    if not isinstance(jobs, list):
-                        combo_complete = False
-                        page_failures += 1
-                        hooks.on_parse_failed("BOSS 列表解析失败")
-                        if page_failures >= failure_limit: return page_failure_stop()
+                        return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                    # Only the explicitly resumed run supplies completed pages.
+                    # New runs always start at page 1, regardless of older tasks.
+                    start_page = hooks.completed_page(city, keyword) + 1
+                    if start_page > request.max_pages:
+                        hooks.on_event(phase="resuming", keyword=keyword, city=city,
+                                       message="继续原任务：该搜索组合已完成")
                         continue
-                    page_failures = 0
-                    if not jobs:
-                        # An empty extraction alone does not prove the search is exhausted.
-                        combo_complete = False
-                        hooks.on_event(message="BOSS 搜索页未读取到岗位")
-                        break
-                    fingerprint = frozenset(list_ids(jobs))
-                    if fingerprint and fingerprint in page_fingerprints:
-                        hooks.on_parse_failed("BOSS 翻页未生效：岗位 ID 与之前页面完全相同")
-                        return PlatformCollectionResult(
-                            self.platform, "completed_with_shortage", "repeated_search_page",
-                            f"BOSS {city} · {keyword} 第 {page} 页与之前页面重复，已停止；未将重复页面计入扫描",
-                        )
-                    if fingerprint:
-                        page_fingerprints.add(fingerprint)
-                    seen_jobs += len(jobs)
-                    for raw in jobs:
+                    combo_complete = True
+                    scroll_list = False
+                    loaded_page = 0
+                    loaded_ids: set[str] = set()
+                    page_fingerprints: set[frozenset[str]] = set()
+                    for page in range(start_page, request.max_pages + 1):
                         if hooks.stop_event is not None and hooks.stop_event.is_set():
-                            return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                        salary_source = str(raw.get("salary") or "") if isinstance(raw, dict) else ""
-                        raw = _decode_fields(raw) if isinstance(raw, dict) else raw
-                        if (isinstance(raw, dict) and salary_source
-                                and _PRIVATE_GLYPH.search(str(raw.get("salary") or ""))
-                                and self._refresh_font_digits(worker_target)):
-                            raw["salary"] = decode_boss_text(salary_source)
-                        candidate = self._list_candidate(raw, city, city_code, keyword)
-                        if not candidate:
-                            combo_complete = False
-                            hooks.on_parse_failed("BOSS 列表岗位缺少有效链接")
-                            continue
-                        if not hooks.on_list_candidate(candidate): continue
-                        if _PRIVATE_GLYPH.search(candidate.salary):
-                            if salary_decode_action != "skip_job":
-                                hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
-                                return PlatformCollectionResult(
-                                    self.platform, "completed_with_shortage", "salary_decode_failed",
-                                    "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
-                                )
-                            # Never keep a number we could not decode: an empty
-                            # salary lets filter_unparsed_salary decide instead
-                            # of dropping the whole run or storing garbage.
-                            undecodable_salary.add(candidate.source_job_id)
-                            raw["salary"] = ""
-                            candidate = replace(candidate, salary="")
-                            hooks.on_event(
-                                message="BOSS 薪资字体无法解析，已按配置保留该岗位（薪资留空）"
-                            )
-                        score, filter_reason = quick_score(raw, list_config) if self.config else (100, "")
-                        if score <= 0:
-                            hooks.on_event(message=f"BOSS 列表预筛：{filter_reason}", increment_filtered=True, filtered_candidate=candidate)
-                            continue
-                        if throttle.wait(hooks.stop_event):
-                            return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                        detail_url = f"https://www.zhipin.com{candidate.url}"
+                            return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                        schedule()
+                        hooks.on_event(phase="loading_list", keyword=keyword, city=city, page=page)
+                        search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code)
+                        filter_query = build_boss_filter_query(request.filters)
+                        if filter_query:
+                            search_url += f"&{filter_query}"
+                        if request.sort == "newest":
+                            search_url += "&sortType=2"
+                        if page > 1:
+                            search_url += f"&page={page}"
                         try:
-                            if guard is not None: guard.reserve("detail_page", daily_limit=detail_limit)
+                            if scroll_list:
+                                jobs = advance_list(loaded_ids)
+                                loaded_page += 1
+                            else:
+                                if guard is not None:
+                                    guard.reserve("search_page", daily_limit=search_limit)
+                                opened = self.browser.new_tab(search_url, background=True) if worker_target is None else self.browser.navigate(worker_target, search_url)
+                                if worker_target is None and opened:
+                                    worker_target = str(opened)
+                                if not opened or worker_target is None:
+                                    combo_complete = False
+                                    page_failures += 1
+                                    hooks.on_parse_failed("无法打开 BOSS 搜索页")
+                                    if page_failures >= failure_limit:
+                                        return page_failure_stop()
+                                    continue
+                                if wait(3 * delay_multiplier):
+                                    return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                                if not self.browser.wait_for_load(worker_target, timeout=10):
+                                    combo_complete = False
+                                    page_failures += 1
+                                    hooks.on_parse_failed("BOSS 搜索页加载超时")
+                                    if page_failures >= failure_limit:
+                                        return page_failure_stop()
+                                    continue
+                                signal = confirm_risk(worker_target)
+                                if signal and signal["kind"] == "user_stopped":
+                                    return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                                if signal:
+                                    return risk(signal["kind"], signal["evidence"])
+                                if only_internships:
+                                    if self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is not True:
+                                        return make_result(
+                                            self.platform, "completed_with_shortage", "internship_filter_not_applied",
+                                            "无法确认 BOSS 实习筛选已生效，已停止；请在网站核对职位类型后重试",
+                                        )
+                                self._refresh_font_digits(worker_target)
+                                scroll_list = self.browser.evaluate(worker_target, JS_IS_SCROLL_LIST) is True
+                                jobs = read_list()
+                                if scroll_list and jobs:
+                                    loaded_page = 1
+                                    loaded_ids = list_ids(jobs)
+                                    # A resumed scroll list must be reconstructed from
+                                    # its first batch; completed batches aren't processed again.
+                                    while loaded_page < page:
+                                        jobs = advance_list(loaded_ids)
+                                        loaded_page += 1
                         except PlatformSafetyStop as exc:
                             return limited(exc.reason)
-                        if scroll_list:
-                            opened = self.browser.new_tab(detail_url, background=True) if detail_worker is None else self.browser.navigate(detail_worker, detail_url)
-                            if opened and detail_worker is None:
-                                detail_worker = str(opened)
-                            detail_target = detail_worker
-                        else:
-                            opened = self.browser.navigate(worker_target, detail_url)
-                            detail_target = worker_target
-                        if not opened or not detail_target:
+                        except ListStopped as exc:
+                            if exc.result.reason_code == "search_page_not_advanced":
+                                yield_city(exc.result.reason_code)
+                            return exc.result
+                        if not isinstance(jobs, list):
                             combo_complete = False
                             page_failures += 1
-                            hooks.on_parse_failed("无法打开 BOSS 详情页")
-                            if page_failures >= failure_limit: return page_failure_stop()
-                            continue
-                        if _wait_or_stop(hooks.stop_event, 2 * delay_multiplier, self.sleep):
-                            return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                        self.browser.wait_for_load(detail_target, timeout=10)
-                        signal = confirm_risk(detail_target)
-                        if signal and signal["kind"] == "user_stopped":
-                            return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                        if signal: return risk(signal["kind"], signal["evidence"])
-                        detail_result = self.browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
-                        try:
-                            detail = json.loads(detail_result) if detail_result else None
-                        except (json.JSONDecodeError, TypeError):
-                            detail = None
-                        if not isinstance(detail, dict):
-                            combo_complete = False
-                            page_failures += 1
-                            hooks.on_parse_failed("BOSS 详情解析失败")
-                            if page_failures >= failure_limit: return page_failure_stop()
+                            hooks.on_parse_failed("BOSS 列表解析失败")
+                            if page_failures >= failure_limit:
+                                return page_failure_stop()
                             continue
                         page_failures = 0
-                        merged = self._merge_detail(candidate, detail, detail_url)
-                        if (merged.source_job_id in undecodable_salary
-                                and _PRIVATE_GLYPH.search(merged.salary)):
-                            merged = replace(merged, salary="")
-                        if not merged.title or not merged.company or not merged.url or not merged.jd:
+                        if not jobs:
+                            # An empty extraction alone does not prove the search is exhausted.
                             combo_complete = False
-                            hooks.on_parse_failed("BOSS 详情缺少职位、公司、链接或 JD")
-                            continue
-                        type_reason = internship_rejection(merged.as_job_record(), type_config)
-                        if type_reason:
-                            hooks.on_event(message=type_reason, increment_filtered=True)
-                            continue
-                        if not hooks.on_candidate(merged):
-                            return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
-                    if not hooks.can_checkpoint():
-                        combo_complete = False
-                    if combo_complete:
-                        hooks.on_page_complete(city, keyword, page)
-                    if page < request.max_pages and _wait_or_stop(hooks.stop_event, 0.2 * delay_multiplier, self.sleep):
-                        return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
-                if not combo_complete:
+                            signal = confirm_risk(worker_target)
+                            if signal and signal["kind"] == "user_stopped":
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                            if signal:
+                                return risk(signal["kind"], signal["evidence"])
+                            if self.browser.evaluate(worker_target, JS_SEARCH_READY) is not True:
+                                return make_result(self.platform, "failed", "list_load_unconfirmed", "BOSS 空列表尚未可靠加载，等待检查")
+                            yield_city("no_jobs_for_search")
+                        fingerprint = frozenset(list_ids(jobs))
+                        if fingerprint and fingerprint in page_fingerprints:
+                            hooks.on_parse_failed("BOSS 翻页未生效：岗位 ID 与之前页面完全相同")
+                            signal = confirm_risk(worker_target)
+                            if signal and signal["kind"] == "user_stopped":
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                            if signal:
+                                return risk(signal["kind"], signal["evidence"])
+                            yield_city("repeated_search_page")
+                        if fingerprint:
+                            page_fingerprints.add(fingerprint)
+                        schedule()
+                        seen_jobs += len(jobs)
+                        for raw in jobs:
+                            schedule()
+                            if hooks.stop_event is not None and hooks.stop_event.is_set():
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                            salary_source = str(raw.get("salary") or "") if isinstance(raw, dict) else ""
+                            raw = _decode_fields(raw) if isinstance(raw, dict) else raw
+                            if (isinstance(raw, dict) and salary_source
+                                    and _PRIVATE_GLYPH.search(str(raw.get("salary") or ""))
+                                    and self._refresh_font_digits(worker_target)):
+                                raw["salary"] = decode_boss_text(salary_source)
+                            candidate = self._list_candidate(raw, city, city_code, keyword)
+                            if not candidate:
+                                combo_complete = False
+                                hooks.on_parse_failed("BOSS 列表岗位缺少有效链接")
+                                continue
+                            if not hooks.on_list_candidate(candidate):
+                                continue
+                            if _PRIVATE_GLYPH.search(candidate.salary):
+                                if salary_decode_action != "skip_job":
+                                    hooks.on_parse_failed("BOSS 薪资包含未识别的字体字符")
+                                    return make_result(
+                                        self.platform, "completed_with_shortage", "salary_decode_failed",
+                                        "BOSS 薪资字体暂时无法解析，已停止；未将岗位判为薪资不匹配",
+                                    )
+                                # Never keep a number we could not decode: an empty
+                                # salary lets filter_unparsed_salary decide instead
+                                # of dropping the whole run or storing garbage.
+                                undecodable_salary.add(candidate.source_job_id)
+                                raw["salary"] = ""
+                                candidate = replace(candidate, salary="")
+                                hooks.on_event(
+                                    message="BOSS 薪资字体无法解析，已按配置保留该岗位（薪资留空）"
+                                )
+                            score, filter_reason = quick_score(raw, list_config) if self.config else (100, "")
+                            if score <= 0:
+                                hooks.on_event(message=f"BOSS 列表预筛：{filter_reason}", increment_filtered=True, filtered_candidate=candidate)
+                                continue
+                            schedule()
+                            if throttle.wait(hooks.stop_event):
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                            schedule()
+                            detail_url = f"https://www.zhipin.com{candidate.url}"
+                            try:
+                                if guard is not None:
+                                    guard.reserve("detail_page", daily_limit=detail_limit)
+                            except PlatformSafetyStop as exc:
+                                return limited(exc.reason)
+                            if scroll_list:
+                                opened = self.browser.new_tab(detail_url, background=True) if detail_worker is None else self.browser.navigate(detail_worker, detail_url)
+                                if opened and detail_worker is None:
+                                    detail_worker = str(opened)
+                                detail_target = detail_worker
+                            else:
+                                opened = self.browser.navigate(worker_target, detail_url)
+                                detail_target = worker_target
+                            if not opened or not detail_target:
+                                combo_complete = False
+                                page_failures += 1
+                                hooks.on_parse_failed("无法打开 BOSS 详情页")
+                                if page_failures >= failure_limit:
+                                    return page_failure_stop()
+                                continue
+                            if wait(2 * delay_multiplier):
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                            self.browser.wait_for_load(detail_target, timeout=10)
+                            signal = confirm_risk(detail_target)
+                            if signal and signal["kind"] == "user_stopped":
+                                return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                            if signal:
+                                return risk(signal["kind"], signal["evidence"])
+                            schedule()
+                            detail_result = self.browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
+                            try:
+                                detail = json.loads(detail_result) if detail_result else None
+                            except (json.JSONDecodeError, TypeError):
+                                detail = None
+                            if not isinstance(detail, dict):
+                                combo_complete = False
+                                page_failures += 1
+                                hooks.on_parse_failed("BOSS 详情解析失败")
+                                if page_failures >= failure_limit:
+                                    return page_failure_stop()
+                                continue
+                            page_failures = 0
+                            merged = self._merge_detail(candidate, detail, detail_url)
+                            if (merged.source_job_id in undecodable_salary
+                                    and _PRIVATE_GLYPH.search(merged.salary)):
+                                merged = replace(merged, salary="")
+                            if not merged.title or not merged.company or not merged.url or not merged.jd:
+                                combo_complete = False
+                                hooks.on_parse_failed("BOSS 详情缺少职位、公司、链接或 JD")
+                                continue
+                            type_reason = internship_rejection(merged.as_job_record(), type_config)
+                            if type_reason:
+                                hooks.on_event(message=type_reason, increment_filtered=True)
+                                continue
+                            should_continue = hooks.on_candidate(merged)
+                            if hooks.last_save_receipt is not None:
+                                receipt = hooks.last_save_receipt()
+                                if receipt.get("sequence", 0) <= consumed_receipt:
+                                    raise CollectionError("invalid_save_receipt", "保存回执序号无效")
+                                consumed_receipt = receipt["sequence"]
+                                if receipt.get("inserted"):
+                                    if receipt.get("job_id") != merged.storage_id or receipt.get("search_city") != city:
+                                        raise CollectionError("invalid_save_receipt", "保存回执城市或岗位不匹配")
+                                    if not receipt.get("recorded"):
+                                        tracker.record_inserted(merged.storage_id, receipt["event_elapsed_ms"])
+                            if not should_continue:
+                                return make_result(self.platform, "completed", "callback_stopped", "采集回调已停止")
+                            schedule()
+                        if not hooks.can_checkpoint():
+                            combo_complete = False
+                        if combo_complete:
+                            hooks.on_page_complete(city, keyword, page)
+                        if page < request.max_pages and wait(0.2 * delay_multiplier):
+                            return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
+                    if not combo_complete:
+                        incomplete_combos += 1
+                        partial_cities.add(city)
+                except CityYielded:
                     incomplete_combos += 1
+                    continue
+                except ListStopped as exc:
+                    return exc.result
+            if tracker is not None and tracker.state["status"] == "running":
+                finish_city("partial" if active_city in partial_cities else "completed_scope")
         finally:
-            if detail_worker:
-                self.browser.close_tab(detail_worker)
-            if worker_target:
-                self.browser.close_tab(worker_target)
+            try:
+                if tracker is not None and tracker.state["status"] == "running":
+                    tracker.state["status"] = "interrupted"
+                    publish()
+            finally:
+                if detail_worker:
+                    self.browser.close_tab(detail_worker)
+                if worker_target:
+                    self.browser.close_tab(worker_target)
         if not seen_jobs:
-            return PlatformCollectionResult(
-                self.platform, "completed_with_shortage", "no_jobs_extracted",
+            return make_result(
+                self.platform, "completed_with_shortage", last_yield_reason or "no_jobs_extracted",
                 "BOSS 本轮未读取到岗位，请检查搜索页是否加载完成、登录状态及搜索条件",
             )
         if incomplete_combos:
-            return PlatformCollectionResult(
-                self.platform, "completed_with_shortage", "incomplete_search",
+            return make_result(
+                self.platform, "completed_with_shortage", last_yield_reason or "incomplete_search",
                 f"BOSS 本轮搜索结束，{incomplete_combos} 个搜索组合未完整读取，可再次采集",
             )
-        return PlatformCollectionResult(self.platform, "completed", "search_exhausted", "BOSS 本轮搜索已结束")
+        return make_result(self.platform, "completed", "search_exhausted", "BOSS 本轮搜索已结束")
 
     def _refresh_font_digits(self, target_id: str) -> bool:
         """Rebuild the digit mapping from the font the tab actually loaded.

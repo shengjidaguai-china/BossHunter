@@ -1,5 +1,6 @@
 import json
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from unittest import TestCase
@@ -14,6 +15,7 @@ from bosshunter.collection.platforms.boss import (
     JS_DETECT_COLLECTION_RISK,
     JS_EXTRACT_DETAIL,
     JS_EXTRACT_LIST,
+    JS_SEARCH_READY,
     SEARCH_URL,
     BossBrowser,
     BossCollector,
@@ -119,6 +121,8 @@ class BossCollectorCollectionTests(TestCase):
                 return risk_raw
             if script == JS_EXTRACT_LIST:
                 return json.dumps(list_jobs)
+            if script == JS_SEARCH_READY:
+                return True
             if script == JS_EXTRACT_DETAIL:
                 return json.dumps(detail)
             return "{}"
@@ -213,7 +217,7 @@ class BossCollectorCollectionTests(TestCase):
             hooks,
         )
         self.assertEqual(result.status, "completed_with_shortage")
-        self.assertEqual(result.reason_code, "no_jobs_extracted")
+        self.assertEqual(result.reason_code, "no_jobs_for_search")
         self.assertNotIn("已采集完毕", result.message)
 
     def test_collection_extracts_candidates(self):
@@ -523,9 +527,7 @@ class BossFreshSearchTests(TestCase):
 
     def test_empty_or_failed_search_is_not_checkpointed(self):
         for raw in ("[]", None, "not-json", '[{"title": "missing URL"}]'):
-            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:
-                conn = get_db(Path(tmp) / "jobs.db")
-                self.addCleanup(conn.close)
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp, closing(get_db(Path(tmp) / "jobs.db")) as conn:
                 browser = self._make_browser()
                 original_evaluate = browser.evaluate
                 browser.evaluate = lambda target, script: (
@@ -538,7 +540,9 @@ class BossFreshSearchTests(TestCase):
                 ).collect(
                     PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=1), hooks,
                 )
-                self.assertEqual(result.status, "completed_with_shortage")
+                self.assertEqual(result.status, "failed" if raw == "[]" else "completed_with_shortage")
+                if raw == "[]":
+                    self.assertEqual(result.reason_code, "list_load_unconfirmed")
                 self.assertEqual(collected, [])
                 self.assertEqual(get_collected_combos(conn, "boss"), set())
                 self.assertEqual(get_page_progress(conn, "boss", "北京", "AI"), 0)
