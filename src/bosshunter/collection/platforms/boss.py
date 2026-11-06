@@ -720,7 +720,7 @@ class BossCollector:
                             continue
                         type_reason = internship_rejection(merged.as_job_record(), type_config)
                         if type_reason:
-                            hooks.on_event(message=type_reason, increment_filtered=True)
+                            hooks.on_event(message=type_reason, increment_filtered=True, filtered_candidate=merged)
                             continue
                         if not hooks.on_candidate(merged):
                             return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
