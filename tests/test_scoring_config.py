@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from bosshunter.config import load_config
-from bosshunter.ai.scorer import get_scoring_concurrency
+from bosshunter.ai.scorer import MAX_SCORING_CONCURRENCY, get_scoring_concurrency
 
 
 class ScoringConfigTests(unittest.TestCase):
@@ -19,9 +19,10 @@ class ScoringConfigTests(unittest.TestCase):
         self.assertEqual(config["ai"]["scoring_concurrency"], 1)
         self.assertEqual(get_scoring_concurrency(config), 1)
 
-    def test_scoring_concurrency_is_clamped_to_one_through_three(self):
+    def test_scoring_concurrency_is_user_configurable_with_safety_ceiling(self):
         self.assertEqual(get_scoring_concurrency({"ai": {"scoring_concurrency": 0}}), 1)
-        self.assertEqual(get_scoring_concurrency({"ai": {"scoring_concurrency": 99}}), 3)
+        self.assertEqual(get_scoring_concurrency({"ai": {"scoring_concurrency": 8}}), 8)
+        self.assertEqual(get_scoring_concurrency({"ai": {"scoring_concurrency": 99}}), MAX_SCORING_CONCURRENCY)
         self.assertEqual(get_scoring_concurrency({"ai": {"scoring_concurrency": "invalid"}}), 1)
 
     def test_malformed_config_sections_fall_back_to_safe_defaults(self):
