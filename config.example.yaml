@@ -145,6 +145,10 @@ follow_up:
 dedup:
   history_file: "./data/history.jsonl"
 
+automation:
+  collect_company_dedup: false     # true：采集时跳过近期已投递（任一平台）或岗位池中已有岗位的公司
+  company_cooldown_days: 1         # 已投递公司的冷却天数（含今天），范围 1–60
+
 safety:
   daily_platform_page_limit: 1100  # 仅 BOSS：采集、投递和监测合计的页面打开硬上限
   risk_lock_minutes: 10           # 旧版 24 小时锁已取消；投递/监测风险最多短时冷却
