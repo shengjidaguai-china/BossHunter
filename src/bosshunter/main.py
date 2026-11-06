@@ -91,6 +91,9 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
     ctx.obj["config"] = load_config(path)
     from bosshunter.browser import configure
     configure(ctx.obj["config"])
+    if ctx.invoked_subcommand in {"run", "scrape", "send", "monitor", "connect", "resume"}:
+        from bosshunter.browser.ownership import browser_execution
+        ctx.with_resource(browser_execution())
 
     # First run: no subcommand and no config → prompt setup
     if ctx.invoked_subcommand is None:

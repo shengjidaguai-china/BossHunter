@@ -171,7 +171,8 @@ def get_city_code(
 	needle = str(name or "").strip()
 	if not needle:
 		return None
-	return get_city_map(base_dir, cache_path=cache_path).get(needle)
+	city_map = get_city_map(base_dir, cache_path=cache_path)
+	return city_map.get(needle) or city_map.get(needle.removesuffix("市"))
 
 
 def _response_json(response: Any) -> Any:
