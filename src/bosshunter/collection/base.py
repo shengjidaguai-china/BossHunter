@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Event
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from bosshunter.collection.models import (
     JobCandidate,
@@ -40,6 +40,10 @@ class CollectorHooks:
     # Checkpoints belong to one explicitly selected run, never to global searches.
     completed_page: Callable[[str, str], int] = lambda city, keyword: 0
     on_page_complete: Callable[[str, str, int], None] = lambda city, keyword, page: None
+    last_save_receipt: Callable[[], dict] | None = None
+    on_city_start: Callable[[str, Any], None] = lambda city, tracker: None
+    city_state: Callable[[str], dict] = lambda city: {}
+    on_city_state: Callable[[str, dict], None] = lambda city, state: None
 
 
 class Collector(Protocol):
