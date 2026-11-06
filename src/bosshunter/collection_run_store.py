@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from bosshunter.cities import get_city_code
 from bosshunter.db import get_db
 
 
@@ -29,6 +30,8 @@ def create_collection_run(
     platform_states: dict[str, Any],
     task_id: str = "",
     enable_boss_resume: bool = False,
+    session_id: str | None = None,
+    session_round: int | None = None,
 ) -> dict[str, Any]:
     conn = get_db(db_path)
     try:
@@ -40,8 +43,10 @@ def create_collection_run(
             ) VALUES (?, ?, 'pending', ?, ?, '[]', '', '', '', NULL, ?)
             """,
             (run_id, task_id, _serialize(options), _serialize(platform_states),
-             _serialize({"version": 1, "pages": {}} if enable_boss_resume else {})),
+             _serialize({"version": 2, "pages": {}, "cities": {}} if enable_boss_resume else {})),
         )
+        if session_id:
+            conn.execute("UPDATE collection_runs SET session_id = ?, session_round = ? WHERE id = ?", (session_id, session_round, run_id))
         conn.commit()
     finally:
         conn.close()
@@ -84,6 +89,12 @@ def update_collection_run(
     values.append(run_id)
     conn = get_db(db_path)
     try:
+        if collected_job_ids is not None:
+            row = conn.execute("SELECT collected_job_ids_json FROM collection_runs WHERE id = ?", (run_id,)).fetchone()
+            if row:
+                existing = _decode(row[0], [])
+                index = assignments.index("collected_job_ids_json = ?") - 1
+                values[index] = _serialize(list(dict.fromkeys([*existing, *collected_job_ids])))
         conn.execute(
             f"UPDATE collection_runs SET {', '.join(assignments)} WHERE id = ?",
             values,
@@ -121,26 +132,30 @@ def can_resume_boss_run(run: dict[str, Any]) -> bool:
         return False
     options = run.get("options", {})
     checkpoint = run.get("boss_checkpoint", {})
-    if options.get("platform_order") != ["boss"] or checkpoint.get("version") != 1:
+    if run.get("session_id") or options.get("platform_order") != ["boss"] or checkpoint.get("version") not in {1, 2}:
         return False
     search = options.get("platforms", {}).get("boss", {})
     pages = checkpoint.get("pages", {})
     return any(
-        pages.get(boss_combo_key(city, keyword), 0) < search.get("max_pages", 1)
+        (search.get("city_codes", {}).get(city) or get_city_code(city))
+        and pages.get(boss_combo_key(city, keyword), 0) < search.get("max_pages", 1)
+        and checkpoint.get("cities", {}).get(city, {}).get("status") not in {"completed_scope", "low_yield", "yielded_no_ids"}
         for city in search.get("cities", []) for keyword in search.get("keywords", [])
     )
 
 
-def boss_resume_options(db_path: Path, run_id: str) -> dict[str, Any]:
+def boss_resume_options(db_path: Path, run_id: str, *, session_id: str | None = None) -> dict[str, Any]:
     run = get_collection_run(db_path, run_id)
-    if not run or not run["can_resume"]:
+    if not run or not (run["can_resume"] or (session_id and run.get("session_id") == session_id and can_resume_boss_run({**run, "session_id": None}))):
         raise ValueError("该任务没有可恢复的 BOSS 采集进度，请重新采集")
-    return {**run["options"], "resume_run_id": run_id}
+    options = run["options"]
+    options["platforms"]["boss"].setdefault("city_yield_policy", {"enabled": False})
+    return {**options, "resume_run_id": run_id}
 
 
-def claim_boss_resume(db_path: Path, run_id: str, task_id: str) -> dict[str, Any]:
+def claim_boss_resume(db_path: Path, run_id: str, task_id: str, *, session_id: str | None = None) -> dict[str, Any]:
     run = get_collection_run(db_path, run_id)
-    if not run or not run["can_resume"]:
+    if not run or not (run["can_resume"] or (session_id and run.get("session_id") == session_id and can_resume_boss_run({**run, "session_id": None}))):
         raise ValueError("该任务没有可恢复的 BOSS 采集进度，请重新采集")
     conn = get_db(db_path)
     try:
@@ -160,11 +175,37 @@ def claim_boss_resume(db_path: Path, run_id: str, task_id: str) -> dict[str, Any
 def save_boss_checkpoint(conn: sqlite3.Connection, run_id: str, pages: dict[str, int]) -> None:
     # Jobs are committed before this callback. A crash before the checkpoint
     # merely replays the current page and the job identity constraint deduplicates it.
+    row = conn.execute("SELECT boss_checkpoint_json FROM collection_runs WHERE id = ?", (run_id,)).fetchone()
+    state = _decode(row[0], {}) if row else {}
+    state.update(version=2, pages=pages)
     conn.execute(
         "UPDATE collection_runs SET boss_checkpoint_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (_serialize({"version": 1, "pages": pages}), run_id),
+        (_serialize(state), run_id),
     )
     conn.commit()
+
+
+def save_city_state(conn: sqlite3.Connection, run_id: str, city: str, state: dict, *, commit: bool = True) -> None:
+    row = conn.execute("SELECT boss_checkpoint_json FROM collection_runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        raise RuntimeError("Collection run disappeared")
+    checkpoint = _decode(row[0], {})
+    checkpoint["version"] = 2
+    checkpoint.setdefault("pages", {})
+    checkpoint.setdefault("cities", {})[city] = state
+    checkpoint["current_city"] = city
+    conn.execute("UPDATE collection_runs SET boss_checkpoint_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                 (_serialize(checkpoint), run_id))
+    if commit:
+        conn.commit()
+
+
+def append_run_job(conn: sqlite3.Connection, run_id: str, job_id: str) -> None:
+    row = conn.execute("SELECT collected_job_ids_json FROM collection_runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        raise RuntimeError("Collection run disappeared")
+    ids = list(dict.fromkeys([*_decode(row[0], []), job_id]))
+    conn.execute("UPDATE collection_runs SET collected_job_ids_json = ? WHERE id = ?", (_serialize(ids), run_id))
 
 
 def list_collection_runs(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:
