@@ -2,6 +2,7 @@
 
 import time
 import json
+import re
 
 from rich.console import Console
 
@@ -489,6 +490,54 @@ def _looks_like_non_rejection_action_card(text: str) -> bool:
     return False
 
 
+def _attachment_resume_notice(text: str) -> str:
+    """Recognize complete BOSS notices, never a request as proof of delivery."""
+    normalized = "".join(str(text or "").split()).rstrip("。.!！")
+    if normalized == "附件简历请求已发送":
+        return "requested"
+    if ("请求" not in normalized
+            and re.fullmatch(r"(?:您的)?附件简历[^，。！？!?]{0,80}已发送给(?:Boss|对方)", normalized, re.IGNORECASE)):
+        return "sent"
+    return ""
+
+
+def _resume_notice_was_checked(db, job_id: str, conversation: dict) -> bool:
+    """Skip an unchanged verified preview, but let unread messages reopen it."""
+    if conversation.get("has_unread"):
+        return False
+    row = db.execute(
+        "SELECT action, detail FROM history WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    return (
+        _row_text(row, "action") == "resume_notice_checked"
+        and _chat_list_fingerprint_from_detail(_row_text(row, "detail"))
+        == _reply_fingerprint_from_hr_question(conversation.get("last_message", ""))
+    )
+
+
+def _record_resume_notice_check(job_id: str, conversation: dict | None) -> None:
+    """Remember a completed notice check without claiming a resume was sent."""
+    if not _attachment_resume_notice((conversation or {}).get("last_message", "")):
+        return
+    db = get_db()
+    try:
+        if not db.execute(
+            "SELECT 1 FROM jobs WHERE id = ? AND deleted_at IS NULL "
+            "AND status IN ('sent', 'replied', 'needs_resume', 'resume_sent', 'follow_up_sent')",
+            (job_id,),
+        ).fetchone():
+            return
+        preview = dict(conversation, has_unread=False)
+        if not _resume_notice_was_checked(db, job_id, preview):
+            add_history(db, job_id, "resume_notice_checked", json.dumps({
+                "schema": "resume_notice.checked.v1",
+                "chat_list_last_message": _reply_fingerprint_from_hr_question(preview["last_message"]),
+            }, ensure_ascii=False))
+    finally:
+        db.close()
+
+
 def _looks_like_resume_request_card(text: str) -> bool:
     """Detect BOSS rich-card requests for the user's attachment resume.
 
@@ -497,6 +546,8 @@ def _looks_like_resume_request_card(text: str) -> bool:
     with an action or request signal.
     """
     text = text or ""
+    if _attachment_resume_notice(text):
+        return False
     attachment_signals = ["附件简历", "您的附件简历", "我的附件简历"]
     intent_signals = ["是否同意", "同意", "想要一份", "请求", "获取", "发送", "发给"]
     rejection_context = ["不匹配", "不合适", "不太合适", "不符合", "不太符合", "很遗憾", "无法推进", "祝", "已招满", "岗位已关闭"]
@@ -629,12 +680,15 @@ def _reconcile_conversation_messages(messages: list[dict], job: dict) -> list[di
         message = dict(raw_message) if isinstance(raw_message, dict) else {}
         text = str(message.get("text") or "")
         sender = str(message.get("sender") or "unknown")
-        strong_resume_request = (
+        notice = _attachment_resume_notice(text)
+        strong_resume_request = not notice and (
             message.get("kind") == "resume_request_card"
             or _looks_like_resume_request_card(text)
         )
-        if _looks_like_system_message(text) and not strong_resume_request:
+        if notice or (_looks_like_system_message(text) and not strong_resume_request):
             sender = "system"
+            if notice:
+                message["kind"] = "message"
         elif _matches_own_greeting(text, greeting):
             sender = "me"
         elif strong_resume_request and sender in {"unknown", "system"}:
@@ -659,6 +713,8 @@ def _reconcile_outbound_chat_preview(
         return messages
     preview = _normalized_message_text(str((conversation or {}).get("last_message") or ""))
     for message in reversed(messages):
+        if _attachment_resume_notice(message.get("text", "")):
+            continue
         full_text = _normalized_message_text(str(message.get("text") or ""))
         if preview and (
             full_text == preview
@@ -1296,6 +1352,25 @@ def _check_boss_replies(config: dict, tracked_jobs: list[dict] | None = None) ->
             break
         matched_job = _match_conversation_to_job(conv, all_tracked_jobs)
         if matched_job:
+            # A system preview can hide the HR request. Verify the full thread;
+            # neither a list preview nor a request-sent notice proves delivery.
+            notice = _attachment_resume_notice(conv.get("last_message", ""))
+            if notice:
+                if notice == "sent" and matched_job.get("status") == "resume_sent" and not conv.get("has_unread"):
+                    continue
+                pending = _get_unresolved_pending_reply(db, matched_job["id"])
+                handled = _get_latest_handled_reply(db, matched_job["id"])
+                if (
+                    (pending and _chat_list_fingerprint_from_detail(_row_text(pending, "detail"))
+                     and _pending_matches_chat_list(_row_text(pending, "detail"), conv))
+                    or (handled and _handled_reply_matches_chat_list(_row_text(handled, "detail"), conv))
+                    or _resume_notice_was_checked(db, matched_job["id"], conv)
+                ):
+                    continue
+                results.append({"job": matched_job, "conversation": conv})
+                if len(results) >= max_conversations:
+                    break
+                continue
             is_outbound = (
                 conv.get("last_direction") == "me"
                 or bool(conv.get("is_our_message"))
@@ -1485,6 +1560,7 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
     """Handle a single conversation that has an HR reply.
 
     Returns action taken: 'stopped', 'recorded_user_reply', 'skipped_user_replied',
+    'recorded_resume_sent', 'skipped_unverified_resume_notice',
     'skipped_existing_resume', 'rejected', 'needs_resume', 'auto_replied',
     or 'failed'.
     """
@@ -1537,9 +1613,48 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
 
     _monitor_safety_guard(config).record_page_success()
 
+    # Only a full-thread receipt after the latest HR message confirms delivery.
+    # An older receipt must not hide a new request, rejection or question.
+    last_hr = max((i for i, m in enumerate(messages) if m.get("sender") == "hr"), default=-1)
+    last_receipt = max((i for i, m in enumerate(messages)
+                        if m.get("sender") == "system"
+                        and _attachment_resume_notice(m.get("text", "")) == "sent"), default=-1)
+    if last_receipt >= 0 and last_receipt > last_hr and not _detect_rejection(messages):
+        if stop_requested(config):
+            close_tab(target_id)
+            return "stopped"
+        db = get_db()
+        try:
+            changed = db.execute(
+                "UPDATE jobs SET status = 'resume_sent', updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND deleted_at IS NULL "
+                "AND status IN ('sent', 'replied', 'needs_resume', 'follow_up_sent')",
+                (job["id"],),
+            ).rowcount
+            if changed:
+                add_history(db, job["id"], "resume_sent", "已核对完整会话中的附件简历发送回执（未自动发送）")
+            db.commit()
+            current = db.execute(
+                "SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL",
+                (job["id"],),
+            ).fetchone()
+        finally:
+            db.close()
+        # A receipt does not replace the user's later reply. Use the current
+        # status so a stale 'sent' scan snapshot cannot revert resume_sent.
+        recorded_reply = _row_text(current, "status") == "resume_sent" and _record_external_user_reply(
+            {**job, "status": "resume_sent"}, messages, conversation,
+        )
+        close_tab(target_id)
+        if recorded_reply:
+            return "recorded_user_reply"
+        return "recorded_resume_sent" if changed else "skipped_existing_resume"
+
     # Check if I already replied after the last HR message
     if _check_if_i_already_replied(messages):
         recorded = _record_external_user_reply(job, messages, conversation)
+        if not recorded:
+            _record_resume_notice_check(job["id"], conversation)
         console.print(
             "[green]    ✓ 已同步 BOSS 中手动发送的回复[/green]"
             if recorded else "[dim]    我已回复，且本轮无需重复同步[/dim]"
@@ -1547,11 +1662,18 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         close_tab(target_id)
         return "recorded_user_reply" if recorded else "skipped_user_replied"
 
+    if (_attachment_resume_notice((conversation or {}).get("last_message", ""))
+            and not _get_hr_messages_after_last_reply(messages)):
+        _record_resume_notice_check(job["id"], conversation)
+        close_tab(target_id)
+        return "skipped_unverified_resume_notice"
+
     db = get_db()
     existing_pending_reply = _has_existing_pending_reply(db, job["id"], messages)
     db.close()
     if existing_pending_reply:
         console.print("[dim]    相同HR消息已有待确认回复，跳过重复处理[/dim]")
+        _record_resume_notice_check(job["id"], conversation)
         close_tab(target_id)
         return "skipped_existing_pending"
 
@@ -1560,6 +1682,7 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
     db.close()
     if already_handled_reply:
         console.print("[dim]    相同HR消息已处理过，跳过重复回复[/dim]")
+        _record_resume_notice_check(job["id"], conversation)
         close_tab(target_id)
         return "skipped_handled_reply"
 
@@ -1586,6 +1709,7 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         db.close()
         if already_generated_resume:
             console.print("[dim]    定制简历已生成过，跳过重复生成和重复记录[/dim]")
+            _record_resume_notice_check(job["id"], conversation)
             close_tab(target_id)
             return "skipped_existing_resume"
 
@@ -1663,12 +1787,14 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
                 messages,
                 f"附件简历卡片请求已识别，未自动发送在线简历，定制PDF待手动发送: {resume_path}",
                 "needs_resume.v1",
+                conversation=conversation,
             )
         else:
             history_detail = _build_reply_detail(
                 messages,
                 f"{portfolio_status}，定制PDF待手动发送: {resume_path}",
                 "needs_resume.v1",
+                conversation=conversation,
             )
 
         if stop_requested(config):
@@ -2156,6 +2282,8 @@ def monitor_and_send_resumes(config: dict) -> dict:
                 break
             if action in (
                 "recorded_user_reply",
+                "recorded_resume_sent",
+                "skipped_unverified_resume_notice",
                 "skipped_user_replied",
                 "skipped_existing_resume",
                 "skipped_existing_pending",
