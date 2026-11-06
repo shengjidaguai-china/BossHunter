@@ -59,6 +59,7 @@ class JobCandidate:
     company_industry: str = ""
     url: str = ""
     source_keyword: str = ""
+    updated_days: float | None = None   # days since the platform last refreshed the posting; None = unknown
 
     @property
     def storage_id(self) -> str:

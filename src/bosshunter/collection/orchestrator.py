@@ -8,6 +8,7 @@ from threading import Event
 from typing import Any, Callable
 from uuid import uuid4
 
+from bosshunter.ai.prefilter import freshness_filter_result
 from bosshunter.collection.base import CollectionError, CollectorHooks
 from bosshunter.collection.models import (
     CollectionProgress,
@@ -294,6 +295,9 @@ class _SharedProcessor:
             self.event()
             return False
         profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
+        if reason := self._city_mismatch(candidate):
+            self.event(message=reason, increment_filtered=True, filtered_candidate=candidate)
+            return False
         if matched := matching_deal_breaker(candidate.title, profile.get("deal_breakers") or []):
             self.event(message=f"职位名命中排除词：{matched}", increment_filtered=True, filtered_candidate=candidate)
             return False
@@ -303,10 +307,29 @@ class _SharedProcessor:
         self.event()
         return True
 
+    def _city_mismatch(self, candidate: JobCandidate) -> str:
+        """Reason when a non-BOSS posting is located outside the searched cities ('' = fine or unknown)."""
+        wanted = [str(c).strip().removesuffix("市") for c in self.request.cities if str(c).strip()]
+        where = str(candidate.city or "").strip()
+        if candidate.platform == "boss" or not wanted or not where:
+            return ""
+        if any(city in where for city in wanted):
+            return ""
+        return f"工作地点不在目标城市：{where}（目标：{'、'.join(wanted)}）"
+
     def save(self, candidate: JobCandidate) -> bool:
         profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
         if matched := matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers") or []):
             self.event(message=f"JD 命中排除词：{matched}", increment_filtered=True, filtered_candidate=candidate)
+            return True
+        if reason := self._city_mismatch(candidate):
+            self.event(message=reason, increment_filtered=True, filtered_candidate=candidate)
+            return True
+        fresh_score, fresh_reason = freshness_filter_result(
+            {"hr_active": candidate.hr_active, "updated_days": candidate.updated_days}, profile
+        )
+        if fresh_score <= 0:
+            self.event(message=fresh_reason, increment_filtered=True, filtered_candidate=candidate)
             return True
         try:
             inserted = insert_job_if_new(self.conn, candidate.as_job_record(), rules=self.outsourcing_rules)
