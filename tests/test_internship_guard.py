@@ -603,15 +603,28 @@ def test_employment_source_migration_adds_null_column_and_is_idempotent(tmp_path
     )
     legacy.commit()
     legacy.close()
-    for _ in range(2):
-        db = get_db(db_path)
-        try:
-            _init_tables(db)
-            row = dict(db.execute("SELECT * FROM jobs WHERE id = 'legacy'").fetchone())
-        finally:
-            db.close()
-    assert "employment_source" in row
-    assert row["employment_source"] is None
+    db = get_db(db_path)
+    try:
+        _init_tables(db)
+        assert insert_job_if_new(db, _db_job_record())
+        legacy_row = dict(db.execute("SELECT * FROM jobs WHERE id = 'legacy'").fetchone())
+        assert legacy_row["recruitment_type"] == "unknown"
+    finally:
+        db.close()
+    # A second connection repeats the column migration and the one-time v1.4 backfill.
+    # Neither may drop the new column, null out saved evidence, or rewrite campus/social fields.
+    db = get_db(db_path)
+    try:
+        _init_tables(db)
+        legacy_row = dict(db.execute("SELECT * FROM jobs WHERE id = 'legacy'").fetchone())
+        evidence_row = dict(db.execute("SELECT * FROM jobs WHERE id = 'card-db'").fetchone())
+    finally:
+        db.close()
+    assert "employment_source" in legacy_row
+    assert legacy_row["employment_source"] is None
+    assert legacy_row["title"] == "Legacy Job"
+    assert legacy_row["recruitment_type"] == "unknown"
+    assert evidence_row["employment_source"] == BOSS_INTERNSHIP_CARD
 
 
 def test_list_extractor_returns_full_card_tags_for_evidence():

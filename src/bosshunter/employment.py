@@ -17,33 +17,33 @@ _INTERNSHIP_CARD_TAG = re.compile(r"^\s*\d+\s*(?:天/周|个月)\s*$")
 
 
 def has_internship_card_tag(tags) -> bool:
-	"""卡片标签里有「X天/周」或「X个月」。"""
-	return any(
-		isinstance(tag, str) and _INTERNSHIP_CARD_TAG.fullmatch(tag)
-		for tag in (tags or [])
-	)
+    """卡片标签里有「X天/周」或「X个月」。"""
+    return any(
+        isinstance(tag, str) and _INTERNSHIP_CARD_TAG.fullmatch(tag)
+        for tag in (tags or [])
+    )
 
 
 def classify_employment(job: Mapping[str, Any]) -> EmploymentType:
-	"""Require positive evidence; contradictory title/JD signals remain unknown."""
-	title = str(job.get("title") or "")
-	jd = str(job.get("jd") or "")
-	# A negative internship statement must not become positive internship evidence.
-	non_intern = bool(re.search(r"非实习|不招实习|不接受实习", title))
-	signals: set[EmploymentType] = set()
-	if non_intern or re.search(r"全职|正式岗", title):
-		signals.add("full_time")
-	if not non_intern and re.search(r"实习|\bintern(?:ship)?\b", title, re.I):
-		signals.add("internship")
-	if re.search(r"兼职", title):
-		signals.add("part_time")
-	if (str(job.get("source_platform") or "boss") == "boss"
-			and job.get("employment_source") == BOSS_INTERNSHIP_CARD
-			and not non_intern):
-		signals.add("internship")
-	signals.update(_TYPE_NAMES[match] for match in _EXPLICIT_TYPE.findall(jd))
-	# Daily pay, campus recruitment and past internship experience are not proof.
-	return next(iter(signals)) if len(signals) == 1 else "unknown"
+    """Require positive evidence; contradictory title/JD signals remain unknown."""
+    title = str(job.get("title") or "")
+    jd = str(job.get("jd") or "")
+    # A negative internship statement must not become positive internship evidence.
+    non_intern = bool(re.search(r"非实习|不招实习|不接受实习", title))
+    signals: set[EmploymentType] = set()
+    if non_intern or re.search(r"全职|正式岗", title):
+        signals.add("full_time")
+    if not non_intern and re.search(r"实习|\bintern(?:ship)?\b", title, re.I):
+        signals.add("internship")
+    if re.search(r"兼职", title):
+        signals.add("part_time")
+    if (str(job.get("source_platform") or "boss") == "boss"
+            and job.get("employment_source") == BOSS_INTERNSHIP_CARD
+            and not non_intern):
+        signals.add("internship")
+    signals.update(_TYPE_NAMES[match] for match in _EXPLICIT_TYPE.findall(jd))
+    # Daily pay, campus recruitment and past internship experience are not proof.
+    return next(iter(signals)) if len(signals) == 1 else "unknown"
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
