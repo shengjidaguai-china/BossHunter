@@ -179,6 +179,21 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     _init_score_traces(conn)
 
 
+def migration_applied(conn: sqlite3.Connection, name: str) -> bool:
+    """Return whether a one-time data backfill has already run on this database."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        "name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
+    return conn.execute("SELECT 1 FROM schema_migrations WHERE name = ?", (name,)).fetchone() is not None
+
+
+def mark_migration_applied(conn: sqlite3.Connection, name: str) -> None:
+    """Record a completed one-time data backfill so it never runs again."""
+    conn.execute("INSERT OR IGNORE INTO schema_migrations(name) VALUES (?)", (name,))
+    conn.commit()
+
+
 def job_exists(conn: sqlite3.Connection, job_id: str) -> bool:
     """Check if a job already exists in the database."""
     row = conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -471,6 +486,7 @@ def insert_job_if_new(
     job: dict[str, Any],
     *,
     rules: Rules | None = None,
+    commit: bool = True,
 ) -> bool:
     """Insert a job atomically and return True only when a row was inserted.
 
@@ -532,7 +548,8 @@ def insert_job_if_new(
         """,
         values,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cursor.rowcount == 1
 
 
@@ -1127,12 +1144,22 @@ def _migrate_v1_3(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v1_4(conn: sqlite3.Connection) -> None:
-    """Add education and recruitment-type fields without aggressive inference."""
+    """Add education and recruitment-type fields without aggressive inference.
+
+    Both UPDATE statements below keep the original value when no keyword matches,
+    and recruitment_type defaults to 'unknown', which its CASE also returns. Rows
+    therefore stay eligible for the WHERE clause forever, so without the one-time
+    guard every get_db() call rewrote the whole jobs table.
+    """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "education" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN education TEXT")
     if "recruitment_type" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN recruitment_type TEXT DEFAULT 'unknown'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruitment_type ON jobs(recruitment_type)")
+    conn.commit()
+    if migration_applied(conn, "v1_4"):
+        return
     searchable = "COALESCE(title, '') || ' ' || COALESCE(jd, '') || ' ' || COALESCE(experience, '')"
     conn.execute(f"""
         UPDATE jobs SET education = CASE
@@ -1155,8 +1182,7 @@ def _migrate_v1_4(conn: sqlite3.Connection) -> None:
         END
         WHERE recruitment_type IS NULL OR TRIM(recruitment_type) = '' OR recruitment_type = 'unknown'
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruitment_type ON jobs(recruitment_type)")
-    conn.commit()
+    mark_migration_applied(conn, "v1_4")
 
 
 def _migrate_v1_5(conn: sqlite3.Connection) -> None:
@@ -1296,6 +1322,21 @@ def _init_collection_runs(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(collection_runs)")}
     if "boss_checkpoint_json" not in columns:
         conn.execute("ALTER TABLE collection_runs ADD COLUMN boss_checkpoint_json TEXT NOT NULL DEFAULT '{}'")
+    if "session_id" not in columns:
+        conn.execute("ALTER TABLE collection_runs ADD COLUMN session_id TEXT")
+    if "session_round" not in columns:
+        conn.execute("ALTER TABLE collection_runs ADD COLUMN session_round INTEGER")
+    conn.executescript("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_collection_session_round ON collection_runs(session_id, session_round);
+        CREATE TABLE IF NOT EXISTS collection_sessions (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
     conn.commit()
 
 

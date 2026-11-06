@@ -37,6 +37,7 @@ from threading import Event, Lock
 
 from bosshunter.scoring_run_store import create_scoring_run, get_scoring_run, update_scoring_run
 from bosshunter.collection_run_store import create_collection_run, update_collection_run
+from bosshunter.collection_session_store import create_session, get_session
 from bosshunter.web.tasks import TaskAlreadyRunningError, WorkbenchTask, WorkbenchTaskRunner
 
 # datetime.UTC 自 Python 3.11 才提供，而 pyproject.toml 声明支持 >=3.10
@@ -523,7 +524,7 @@ class WebApiRouteTests(unittest.TestCase):
                 yaml.safe_dump({
                     "profile": {"resume_path": str(resume_path)},
                     "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]},
-                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"]}}},
+                    "platforms": {"boss": {"enabled": True, "search": {"keywords": ["AI engineer"], "cities": ["Shanghai"], "city_codes": {"Shanghai": "101020100"}}}},
                     "ai": {"api_key": "private-agent-key"},
                 }, allow_unicode=True),
                 encoding="utf-8",
@@ -544,6 +545,67 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(start.call_args.args[0], "full")
         self.assertTrue(start.call_args.args[1]["_collection_options"]["auto_score"])
         self.assertTrue(start.call_args.args[1]["_agent_workflow"])
+
+    def test_continuous_collection_rejected_in_full_workflow(self):
+        options = {"platform_order": ["boss"], "platforms": {"boss": {
+            "keywords": ["AI"], "cities": ["北京"]}}, "continuous_collection": {"enabled": True}}
+        with patch.object(server, "load_config", return_value={}), patch.object(server.task_runner, "start") as start:
+            status, _, body = self._request("/api/workbench/task", "POST", {"mode": "full", "options": options})
+        self.assertTrue(status.startswith("400"), body)
+        self.assertIn("持续采集不能用于完整流程", json.loads(body)["error"])
+        start.assert_not_called()
+
+    def test_mixed_valid_cities_and_legacy_region_pass_preflight_and_start(self):
+        config = {"search": {"keywords": ["AI"], "cities": ["深圳", "浙江", "杭州"]}}
+        options = {"platform_order": ["boss"], "platforms": {"boss": config["search"]}, "auto_score": False}
+        with (
+            patch.object(server, "load_config", return_value=config),
+            patch("bosshunter.web.preflight.check_browser_connection", return_value=[]),
+            patch.object(server, "_write_config"),
+            patch.object(server.task_runner, "start", return_value={"id": "local-test", "status": "running"}) as start,
+        ):
+            status, _, body = self._request("/api/workbench/preflight", "POST", {"mode": "collect", "options": options})
+            self.assertTrue(status.startswith("200"), body)
+            preflight = json.loads(body)
+            self.assertTrue(preflight["ok"], body)
+            self.assertTrue(any(check["status"] == "warning" and "浙江" in check["message"] for check in preflight["checks"]))
+            status, _, body = self._request("/api/workbench/task", "POST", {"mode": "collect", "options": options})
+            self.assertTrue(status.startswith("200"), body)
+        boss = start.call_args.args[1]["_collection_options"]["platforms"]["boss"]
+        self.assertEqual(boss["cities"], ["深圳", "浙江", "杭州"])
+        self.assertNotIn("浙江", boss["city_codes"])
+
+    def test_session_stop_and_failure_are_reflected_in_outer_task(self):
+        for status in ("stopped", "failed"):
+            with self.subTest(status=status):
+                result = {"id": "night", "status": status, "state": {"reason_code": "user_stopped" if status == "stopped" else "session_error"}, "collected_job_ids": []}
+                task = WorkbenchTask(id="task", mode="collect", label="采集")
+                with patch("bosshunter.collection.session.CollectionSession") as session:
+                    session.return_value.run.return_value = result
+                    if status == "failed":
+                        with self.assertRaisesRegex(RuntimeError, "session_error"):
+                            server._execute_collect(task, {"_collection_options": {"continuous_collection": {"enabled": True}}})
+                    else:
+                        server._execute_collect(task, {"_collection_options": {"continuous_collection": {"enabled": True}}})
+                        self.assertTrue(task.stop_requested.is_set())
+
+    def test_session_history_and_actions_survive_worker_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            path = Path(tmp) / "data" / "bosshunter.db"
+            state = {"owner": "worker", "phase": "waiting_user", "status": "running"}
+            create_session(path, "night", {}, state)
+            status, _, body = self._request("/api/collection/sessions")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body)[0]["id"], "night")
+            for action in ("continue", "stop"):
+                status, _, body = self._request(f"/api/collection/sessions/night/{action}", "POST", {})
+                self.assertTrue(status.startswith("200"), body)
+            saved = get_session(path, "night")["state"]
+            self.assertTrue(saved["stop_requested"])
+            self.assertEqual(saved["continue_version"], 1)
+            status, _, _ = self._request("/api/collection/sessions/night/invalid", "POST", {})
+            self.assertTrue(status.startswith("400"))
 
     def test_agent_local_guard_rejects_remote_rebinding_and_cross_origin(self):
         denied = [
