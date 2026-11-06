@@ -1,0 +1,3014 @@
+{
+  "snapshot": "2026-10-31T14:05:12+08:00",
+  "main_sha": "77f3572fa98aa1a2e0c73a79f0dace1c0619da70",
+  "project": [
+    {
+      "person": "yuppiez99999",
+      "rank": 1,
+      "points": 338,
+      "share_tenths": 138,
+      "dimensions": [
+        53,
+        33,
+        43,
+        47
+      ],
+      "weighted_dimensions": [
+        106,
+        99,
+        86,
+        47
+      ],
+      "case_count": 23,
+      "mean_points": 14.7
+    },
+    {
+      "person": "fengziliang43-cmyk",
+      "rank": 2,
+      "points": 189,
+      "share_tenths": 77,
+      "dimensions": [
+        26,
+        21,
+        26,
+        22
+      ],
+      "weighted_dimensions": [
+        52,
+        63,
+        52,
+        22
+      ],
+      "case_count": 8,
+      "mean_points": 23.62
+    },
+    {
+      "person": "yukinoshi",
+      "rank": 3,
+      "points": 159,
+      "share_tenths": 65,
+      "dimensions": [
+        20,
+        20,
+        21,
+        17
+      ],
+      "weighted_dimensions": [
+        40,
+        60,
+        42,
+        17
+      ],
+      "case_count": 9,
+      "mean_points": 17.67
+    },
+    {
+      "person": "shuaigechz-cloud",
+      "rank": 4,
+      "points": 148,
+      "share_tenths": 60,
+      "dimensions": [
+        18,
+        20,
+        19,
+        14
+      ],
+      "weighted_dimensions": [
+        36,
+        60,
+        38,
+        14
+      ],
+      "case_count": 6,
+      "mean_points": 24.67
+    },
+    {
+      "person": "D1822787566",
+      "rank": 5,
+      "points": 115,
+      "share_tenths": 47,
+      "dimensions": [
+        18,
+        15,
+        10,
+        14
+      ],
+      "weighted_dimensions": [
+        36,
+        45,
+        20,
+        14
+      ],
+      "case_count": 6,
+      "mean_points": 19.17
+    },
+    {
+      "person": "zhenian-666",
+      "rank": 6,
+      "points": 109,
+      "share_tenths": 44,
+      "dimensions": [
+        16,
+        15,
+        11,
+        10
+      ],
+      "weighted_dimensions": [
+        32,
+        45,
+        22,
+        10
+      ],
+      "case_count": 4,
+      "mean_points": 27.25
+    },
+    {
+      "person": "yuj-029",
+      "rank": 7,
+      "points": 76,
+      "share_tenths": 31,
+      "dimensions": [
+        10,
+        12,
+        7,
+        6
+      ],
+      "weighted_dimensions": [
+        20,
+        36,
+        14,
+        6
+      ],
+      "case_count": 3,
+      "mean_points": 25.33
+    },
+    {
+      "person": "GioiaZheng",
+      "rank": 8,
+      "points": 71,
+      "share_tenths": 29,
+      "dimensions": [
+        8,
+        8,
+        11,
+        9
+      ],
+      "weighted_dimensions": [
+        16,
+        24,
+        22,
+        9
+      ],
+      "case_count": 5,
+      "mean_points": 14.2
+    },
+    {
+      "person": "pikachuprogrammer01",
+      "rank": 9,
+      "points": 53,
+      "share_tenths": 22,
+      "dimensions": [
+        7,
+        7,
+        6,
+        6
+      ],
+      "weighted_dimensions": [
+        14,
+        21,
+        12,
+        6
+      ],
+      "case_count": 2,
+      "mean_points": 26.5
+    },
+    {
+      "person": "zepengfan145-netizen",
+      "rank": 9,
+      "points": 53,
+      "share_tenths": 22,
+      "dimensions": [
+        7,
+        8,
+        5,
+        5
+      ],
+      "weighted_dimensions": [
+        14,
+        24,
+        10,
+        5
+      ],
+      "case_count": 3,
+      "mean_points": 17.67
+    },
+    {
+      "person": "haohao-fly",
+      "rank": 11,
+      "points": 51,
+      "share_tenths": 21,
+      "dimensions": [
+        7,
+        7,
+        6,
+        4
+      ],
+      "weighted_dimensions": [
+        14,
+        21,
+        12,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 25.5
+    },
+    {
+      "person": "hdfhssg",
+      "rank": 12,
+      "points": 49,
+      "share_tenths": 20,
+      "dimensions": [
+        8,
+        7,
+        4,
+        4
+      ],
+      "weighted_dimensions": [
+        16,
+        21,
+        8,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 24.5
+    },
+    {
+      "person": "Hr18798895295",
+      "rank": 13,
+      "points": 48,
+      "share_tenths": 20,
+      "dimensions": [
+        7,
+        6,
+        6,
+        4
+      ],
+      "weighted_dimensions": [
+        14,
+        18,
+        12,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 24.0
+    },
+    {
+      "person": "Rainmemery",
+      "rank": 13,
+      "points": 48,
+      "share_tenths": 20,
+      "dimensions": [
+        7,
+        6,
+        5,
+        6
+      ],
+      "weighted_dimensions": [
+        14,
+        18,
+        10,
+        6
+      ],
+      "case_count": 3,
+      "mean_points": 16.0
+    },
+    {
+      "person": "meixiaoxie",
+      "rank": 15,
+      "points": 46,
+      "share_tenths": 19,
+      "dimensions": [
+        5,
+        6,
+        7,
+        4
+      ],
+      "weighted_dimensions": [
+        10,
+        18,
+        14,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 23.0
+    },
+    {
+      "person": "EricKingWhy",
+      "rank": 16,
+      "points": 45,
+      "share_tenths": 18,
+      "dimensions": [
+        6,
+        6,
+        5,
+        5
+      ],
+      "weighted_dimensions": [
+        12,
+        18,
+        10,
+        5
+      ],
+      "case_count": 2,
+      "mean_points": 22.5
+    },
+    {
+      "person": "Nourishman",
+      "rank": 17,
+      "points": 40,
+      "share_tenths": 16,
+      "dimensions": [
+        4,
+        6,
+        5,
+        4
+      ],
+      "weighted_dimensions": [
+        8,
+        18,
+        10,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 20.0
+    },
+    {
+      "person": "Spades6",
+      "rank": 17,
+      "points": 40,
+      "share_tenths": 16,
+      "dimensions": [
+        5,
+        6,
+        4,
+        4
+      ],
+      "weighted_dimensions": [
+        10,
+        18,
+        8,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 20.0
+    },
+    {
+      "person": "Hebuyu688",
+      "rank": 19,
+      "points": 35,
+      "share_tenths": 14,
+      "dimensions": [
+        4,
+        5,
+        4,
+        4
+      ],
+      "weighted_dimensions": [
+        8,
+        15,
+        8,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 17.5
+    },
+    {
+      "person": "Pototoooo",
+      "rank": 19,
+      "points": 35,
+      "share_tenths": 14,
+      "dimensions": [
+        5,
+        4,
+        5,
+        3
+      ],
+      "weighted_dimensions": [
+        10,
+        12,
+        10,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 35.0
+    },
+    {
+      "person": "kai04072911-sudo",
+      "rank": 21,
+      "points": 32,
+      "share_tenths": 13,
+      "dimensions": [
+        4,
+        5,
+        3,
+        3
+      ],
+      "weighted_dimensions": [
+        8,
+        15,
+        6,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 32.0
+    },
+    {
+      "person": "zeroTwo0617",
+      "rank": 21,
+      "points": 32,
+      "share_tenths": 13,
+      "dimensions": [
+        5,
+        5,
+        3,
+        1
+      ],
+      "weighted_dimensions": [
+        10,
+        15,
+        6,
+        1
+      ],
+      "case_count": 2,
+      "mean_points": 16.0
+    },
+    {
+      "person": "zh-hanlabs",
+      "rank": 21,
+      "points": 32,
+      "share_tenths": 13,
+      "dimensions": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "weighted_dimensions": [
+        8,
+        12,
+        8,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 16.0
+    },
+    {
+      "person": "atticus-zhou",
+      "rank": 24,
+      "points": 30,
+      "share_tenths": 12,
+      "dimensions": [
+        4,
+        4,
+        4,
+        2
+      ],
+      "weighted_dimensions": [
+        8,
+        12,
+        8,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 30.0
+    },
+    {
+      "person": "CHNERUI",
+      "rank": 24,
+      "points": 30,
+      "share_tenths": 12,
+      "dimensions": [
+        3,
+        4,
+        4,
+        4
+      ],
+      "weighted_dimensions": [
+        6,
+        12,
+        8,
+        4
+      ],
+      "case_count": 2,
+      "mean_points": 15.0
+    },
+    {
+      "person": "gaogao34",
+      "rank": 26,
+      "points": 29,
+      "share_tenths": 12,
+      "dimensions": [
+        4,
+        5,
+        3,
+        0
+      ],
+      "weighted_dimensions": [
+        8,
+        15,
+        6,
+        0
+      ],
+      "case_count": 2,
+      "mean_points": 14.5
+    },
+    {
+      "person": "1028huli",
+      "rank": 27,
+      "points": 28,
+      "share_tenths": 11,
+      "dimensions": [
+        4,
+        3,
+        4,
+        3
+      ],
+      "weighted_dimensions": [
+        8,
+        9,
+        8,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 28.0
+    },
+    {
+      "person": "bactdt",
+      "rank": 27,
+      "points": 28,
+      "share_tenths": 11,
+      "dimensions": [
+        4,
+        4,
+        3,
+        2
+      ],
+      "weighted_dimensions": [
+        8,
+        12,
+        6,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 28.0
+    },
+    {
+      "person": "likris588-ux",
+      "rank": 27,
+      "points": 28,
+      "share_tenths": 11,
+      "dimensions": [
+        4,
+        5,
+        2,
+        1
+      ],
+      "weighted_dimensions": [
+        8,
+        15,
+        4,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 28.0
+    },
+    {
+      "person": "bianshilong0604",
+      "rank": 30,
+      "points": 26,
+      "share_tenths": 11,
+      "dimensions": [
+        4,
+        3,
+        3,
+        3
+      ],
+      "weighted_dimensions": [
+        8,
+        9,
+        6,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 26.0
+    },
+    {
+      "person": "miaomiao636",
+      "rank": 30,
+      "points": 26,
+      "share_tenths": 11,
+      "dimensions": [
+        3,
+        3,
+        4,
+        3
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        8,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 26.0
+    },
+    {
+      "person": "PetalEcho",
+      "rank": 30,
+      "points": 26,
+      "share_tenths": 11,
+      "dimensions": [
+        4,
+        3,
+        3,
+        3
+      ],
+      "weighted_dimensions": [
+        8,
+        9,
+        6,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 26.0
+    },
+    {
+      "person": "xinGeeks",
+      "rank": 30,
+      "points": 26,
+      "share_tenths": 11,
+      "dimensions": [
+        4,
+        4,
+        2,
+        2
+      ],
+      "weighted_dimensions": [
+        8,
+        12,
+        4,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 26.0
+    },
+    {
+      "person": "c4002159",
+      "rank": 34,
+      "points": 24,
+      "share_tenths": 10,
+      "dimensions": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        6,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 24.0
+    },
+    {
+      "person": "fenghuangyuan1412",
+      "rank": 34,
+      "points": 24,
+      "share_tenths": 10,
+      "dimensions": [
+        2,
+        4,
+        3,
+        2
+      ],
+      "weighted_dimensions": [
+        4,
+        12,
+        6,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 24.0
+    },
+    {
+      "person": "qingmuy",
+      "rank": 34,
+      "points": 24,
+      "share_tenths": 10,
+      "dimensions": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        6,
+        3
+      ],
+      "case_count": 1,
+      "mean_points": 24.0
+    },
+    {
+      "person": "solplum",
+      "rank": 37,
+      "points": 23,
+      "share_tenths": 9,
+      "dimensions": [
+        3,
+        3,
+        3,
+        2
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        6,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 23.0
+    },
+    {
+      "person": "txz990",
+      "rank": 37,
+      "points": 23,
+      "share_tenths": 9,
+      "dimensions": [
+        3,
+        3,
+        3,
+        2
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        6,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 23.0
+    },
+    {
+      "person": "1115yt",
+      "rank": 39,
+      "points": 21,
+      "share_tenths": 9,
+      "dimensions": [
+        2,
+        3,
+        3,
+        2
+      ],
+      "weighted_dimensions": [
+        4,
+        9,
+        6,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 21.0
+    },
+    {
+      "person": "Henry369-0",
+      "rank": 39,
+      "points": 21,
+      "share_tenths": 9,
+      "dimensions": [
+        3,
+        3,
+        2,
+        2
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        4,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 21.0
+    },
+    {
+      "person": "lau0708",
+      "rank": 39,
+      "points": 21,
+      "share_tenths": 9,
+      "dimensions": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "weighted_dimensions": [
+        8,
+        9,
+        2,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 21.0
+    },
+    {
+      "person": "lujie-cmd",
+      "rank": 42,
+      "points": 20,
+      "share_tenths": 8,
+      "dimensions": [
+        2,
+        2,
+        4,
+        2
+      ],
+      "weighted_dimensions": [
+        4,
+        6,
+        8,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 20.0
+    },
+    {
+      "person": "CaoJun1015",
+      "rank": 43,
+      "points": 19,
+      "share_tenths": 8,
+      "dimensions": [
+        2,
+        3,
+        2,
+        2
+      ],
+      "weighted_dimensions": [
+        4,
+        9,
+        4,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 19.0
+    },
+    {
+      "person": "cangyuyi",
+      "rank": 44,
+      "points": 18,
+      "share_tenths": 7,
+      "dimensions": [
+        3,
+        3,
+        1,
+        1
+      ],
+      "weighted_dimensions": [
+        6,
+        9,
+        2,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 18.0
+    },
+    {
+      "person": "heroims",
+      "rank": 44,
+      "points": 18,
+      "share_tenths": 7,
+      "dimensions": [
+        2,
+        3,
+        2,
+        1
+      ],
+      "weighted_dimensions": [
+        4,
+        9,
+        4,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 18.0
+    },
+    {
+      "person": "Changxin-YR",
+      "rank": 46,
+      "points": 17,
+      "share_tenths": 7,
+      "dimensions": [
+        1,
+        3,
+        2,
+        2
+      ],
+      "weighted_dimensions": [
+        2,
+        9,
+        4,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 17.0
+    },
+    {
+      "person": "Jinxuans",
+      "rank": 46,
+      "points": 17,
+      "share_tenths": 7,
+      "dimensions": [
+        1,
+        3,
+        2,
+        2
+      ],
+      "weighted_dimensions": [
+        2,
+        9,
+        4,
+        2
+      ],
+      "case_count": 1,
+      "mean_points": 17.0
+    },
+    {
+      "person": "AcNHong",
+      "rank": 48,
+      "points": 11,
+      "share_tenths": 4,
+      "dimensions": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "weighted_dimensions": [
+        2,
+        6,
+        2,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 11.0
+    },
+    {
+      "person": "HanmmJade",
+      "rank": 48,
+      "points": 11,
+      "share_tenths": 4,
+      "dimensions": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "weighted_dimensions": [
+        2,
+        6,
+        2,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 11.0
+    },
+    {
+      "person": "kgleonc",
+      "rank": 48,
+      "points": 11,
+      "share_tenths": 4,
+      "dimensions": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "weighted_dimensions": [
+        2,
+        6,
+        2,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 11.0
+    },
+    {
+      "person": "Colin-Cai0318",
+      "rank": 51,
+      "points": 10,
+      "share_tenths": 4,
+      "dimensions": [
+        1,
+        1,
+        2,
+        1
+      ],
+      "weighted_dimensions": [
+        2,
+        3,
+        4,
+        1
+      ],
+      "case_count": 1,
+      "mean_points": 10.0
+    }
+  ],
+  "project_recent": [
+    {
+      "person": "D1822787566",
+      "rank": 1,
+      "points": 69,
+      "share_tenths": 181,
+      "case_count": 4
+    },
+    {
+      "person": "Hr18798895295",
+      "rank": 2,
+      "points": 48,
+      "share_tenths": 126,
+      "case_count": 2
+    },
+    {
+      "person": "Pototoooo",
+      "rank": 3,
+      "points": 35,
+      "share_tenths": 92,
+      "case_count": 1
+    },
+    {
+      "person": "CHNERUI",
+      "rank": 4,
+      "points": 30,
+      "share_tenths": 79,
+      "case_count": 2
+    },
+    {
+      "person": "EricKingWhy",
+      "rank": 5,
+      "points": 26,
+      "share_tenths": 68,
+      "case_count": 1
+    },
+    {
+      "person": "fengziliang43-cmyk",
+      "rank": 5,
+      "points": 26,
+      "share_tenths": 68,
+      "case_count": 1
+    },
+    {
+      "person": "miaomiao636",
+      "rank": 5,
+      "points": 26,
+      "share_tenths": 68,
+      "case_count": 1
+    },
+    {
+      "person": "PetalEcho",
+      "rank": 5,
+      "points": 26,
+      "share_tenths": 68,
+      "case_count": 1
+    },
+    {
+      "person": "xinGeeks",
+      "rank": 5,
+      "points": 26,
+      "share_tenths": 68,
+      "case_count": 1
+    },
+    {
+      "person": "c4002159",
+      "rank": 10,
+      "points": 24,
+      "share_tenths": 63,
+      "case_count": 1
+    },
+    {
+      "person": "lujie-cmd",
+      "rank": 11,
+      "points": 20,
+      "share_tenths": 53,
+      "case_count": 1
+    },
+    {
+      "person": "yuj-029",
+      "rank": 12,
+      "points": 19,
+      "share_tenths": 50,
+      "case_count": 1
+    },
+    {
+      "person": "yuppiez99999",
+      "rank": 13,
+      "points": 6,
+      "share_tenths": 16,
+      "case_count": 1
+    }
+  ],
+  "maintenance": [
+    {
+      "person": "yuppiez99999",
+      "rank": 1,
+      "points": 890,
+      "share_tenths": 490,
+      "dimensions": [
+        201,
+        156,
+        98,
+        78
+      ],
+      "weighted_dimensions": [
+        402,
+        312,
+        98,
+        78
+      ],
+      "case_count": 95,
+      "mean_points": 9.37,
+      "coverage": {
+        "start": "2026-08-29",
+        "case_count": 95,
+        "pr_count": 81,
+        "pr_numbers": [
+          61,
+          67,
+          69,
+          73,
+          77,
+          82,
+          90,
+          92,
+          104,
+          139,
+          143,
+          145,
+          164,
+          172,
+          175,
+          176,
+          181,
+          183,
+          189,
+          193,
+          195,
+          196,
+          202,
+          204,
+          208,
+          209,
+          210,
+          212,
+          217,
+          220,
+          221,
+          222,
+          225,
+          226,
+          227,
+          229,
+          233,
+          238,
+          239,
+          241,
+          247,
+          249,
+          250,
+          251,
+          252,
+          253,
+          254,
+          255,
+          256,
+          258,
+          259,
+          261,
+          263,
+          264,
+          267,
+          268,
+          269,
+          270,
+          271,
+          272,
+          273,
+          276,
+          277,
+          278,
+          280,
+          283,
+          285,
+          286,
+          287,
+          288,
+          290,
+          291,
+          292,
+          294,
+          295,
+          296,
+          298,
+          299,
+          300,
+          303,
+          305
+        ],
+        "issue_count": 36,
+        "issue_numbers": [
+          70,
+          78,
+          91,
+          93,
+          144,
+          160,
+          168,
+          174,
+          178,
+          186,
+          187,
+          188,
+          192,
+          198,
+          213,
+          216,
+          228,
+          230,
+          231,
+          232,
+          234,
+          235,
+          236,
+          240,
+          242,
+          243,
+          244,
+          245,
+          248,
+          284,
+          289,
+          293,
+          297,
+          301,
+          302,
+          304
+        ],
+        "review_records": 97,
+        "review_records_dedup_text": 97,
+        "issue_reply_records": 50,
+        "active_days": 43,
+        "active_dates": [
+          "2026-08-29",
+          "2026-09-01",
+          "2026-09-02",
+          "2026-09-03",
+          "2026-09-05",
+          "2026-09-06",
+          "2026-09-07",
+          "2026-09-08",
+          "2026-09-09",
+          "2026-09-10",
+          "2026-09-11",
+          "2026-09-12",
+          "2026-09-13",
+          "2026-09-15",
+          "2026-09-16",
+          "2026-09-17",
+          "2026-09-18",
+          "2026-09-19",
+          "2026-09-20",
+          "2026-09-21",
+          "2026-09-23",
+          "2026-09-24",
+          "2026-09-27",
+          "2026-09-28",
+          "2026-09-29",
+          "2026-09-30",
+          "2026-10-01",
+          "2026-10-03",
+          "2026-10-04",
+          "2026-10-05",
+          "2026-10-07",
+          "2026-10-08",
+          "2026-10-09",
+          "2026-10-14",
+          "2026-10-16",
+          "2026-10-21",
+          "2026-10-22",
+          "2026-10-24",
+          "2026-10-25",
+          "2026-10-27",
+          "2026-10-29",
+          "2026-10-30",
+          "2026-10-31"
+        ],
+        "merged_prs": 49,
+        "open_prs": 19,
+        "closed_unmerged_prs": 13
+      }
+    },
+    {
+      "person": "bianshilong0604",
+      "rank": 2,
+      "points": 388,
+      "share_tenths": 214,
+      "dimensions": [
+        87,
+        66,
+        64,
+        18
+      ],
+      "weighted_dimensions": [
+        174,
+        132,
+        64,
+        18
+      ],
+      "case_count": 30,
+      "mean_points": 12.93,
+      "coverage": {
+        "start": "2026-08-30",
+        "case_count": 30,
+        "pr_count": 29,
+        "pr_numbers": [
+          88,
+          90,
+          176,
+          206,
+          218,
+          221,
+          222,
+          237,
+          238,
+          239,
+          241,
+          247,
+          254,
+          256,
+          266,
+          269,
+          270,
+          271,
+          272,
+          273,
+          276,
+          278,
+          287,
+          288,
+          290,
+          291,
+          295,
+          296,
+          300
+        ],
+        "issue_count": 1,
+        "issue_numbers": [
+          216
+        ],
+        "review_records": 30,
+        "review_records_dedup_text": 30,
+        "issue_reply_records": 1,
+        "active_days": 14,
+        "active_dates": [
+          "2026-08-30",
+          "2026-09-07",
+          "2026-09-14",
+          "2026-09-22",
+          "2026-09-24",
+          "2026-09-26",
+          "2026-09-28",
+          "2026-10-08",
+          "2026-10-10",
+          "2026-10-16",
+          "2026-10-24",
+          "2026-10-26",
+          "2026-10-28",
+          "2026-10-30"
+        ],
+        "merged_prs": 22,
+        "open_prs": 6,
+        "closed_unmerged_prs": 1
+      }
+    },
+    {
+      "person": "yukinoshi",
+      "rank": 3,
+      "points": 337,
+      "share_tenths": 186,
+      "dimensions": [
+        81,
+        50,
+        56,
+        19
+      ],
+      "weighted_dimensions": [
+        162,
+        100,
+        56,
+        19
+      ],
+      "case_count": 32,
+      "mean_points": 10.53,
+      "coverage": {
+        "start": "2026-08-29",
+        "case_count": 32,
+        "pr_count": 32,
+        "pr_numbers": [
+          86,
+          92,
+          161,
+          162,
+          164,
+          171,
+          172,
+          176,
+          179,
+          181,
+          189,
+          200,
+          202,
+          205,
+          206,
+          212,
+          215,
+          217,
+          219,
+          221,
+          225,
+          226,
+          227,
+          229,
+          233,
+          249,
+          255,
+          259,
+          261,
+          262,
+          263,
+          265
+        ],
+        "issue_count": 2,
+        "issue_numbers": [
+          84,
+          163
+        ],
+        "review_records": 35,
+        "review_records_dedup_text": 34,
+        "issue_reply_records": 2,
+        "active_days": 11,
+        "active_dates": [
+          "2026-08-30",
+          "2026-09-01",
+          "2026-09-02",
+          "2026-09-05",
+          "2026-09-06",
+          "2026-09-09",
+          "2026-09-12",
+          "2026-09-19",
+          "2026-09-25",
+          "2026-09-30",
+          "2026-10-04"
+        ],
+        "merged_prs": 29,
+        "open_prs": 1,
+        "closed_unmerged_prs": 2
+      }
+    },
+    {
+      "person": "fengziliang43-cmyk",
+      "rank": 4,
+      "points": 199,
+      "share_tenths": 110,
+      "dimensions": [
+        45,
+        31,
+        34,
+        13
+      ],
+      "weighted_dimensions": [
+        90,
+        62,
+        34,
+        13
+      ],
+      "case_count": 15,
+      "mean_points": 13.27,
+      "coverage": {
+        "start": "2026-08-30",
+        "case_count": 15,
+        "pr_count": 15,
+        "pr_numbers": [
+          73,
+          147,
+          151,
+          200,
+          205,
+          209,
+          250,
+          252,
+          256,
+          259,
+          264,
+          267,
+          277,
+          280,
+          282
+        ],
+        "issue_count": 0,
+        "issue_numbers": [],
+        "review_records": 13,
+        "review_records_dedup_text": 13,
+        "issue_reply_records": 0,
+        "active_days": 5,
+        "active_dates": [
+          "2026-09-06",
+          "2026-09-13",
+          "2026-09-27",
+          "2026-09-30",
+          "2026-10-12"
+        ],
+        "merged_prs": 10,
+        "open_prs": 3,
+        "closed_unmerged_prs": 2
+      }
+    }
+  ],
+  "project_total": 2454,
+  "project_recent_total": 381,
+  "maintenance_total": 1814,
+  "project_pending": [
+    {
+      "id": "p016",
+      "person": "elowenzhouyb-source",
+      "title": "可靠性方案与联合署名（待分项）",
+      "dimensions": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "points": 0,
+      "reason": "已确认方案被采用，但无法从当前材料分离出独立实现份额；保留署名，暂不与代码作者重复量化。",
+      "source_prs": [
+        27,
+        28
+      ],
+      "source_urls": [
+        "https://github.com/shengjidaguai-china/BossHunter/pull/27",
+        "https://github.com/shengjidaguai-china/BossHunter/pull/28"
+      ],
+      "adoptions": [
+        {
+          "pr": 28,
+          "adopted_at": "2026-08-02T15:34:55Z",
+          "points": 0
+        }
+      ],
+      "status": "pending_allocation"
+    }
+  ],
+  "sensitivity": {
+    "project": {
+      "scenarios": [
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "atticus-zhou",
+            "CHNERUI",
+            "gaogao34",
+            "1028huli",
+            "bactdt",
+            "likris588-ux",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "fenghuangyuan1412",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Rainmemery",
+            "Hr18798895295",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "zh-hanlabs",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "CHNERUI",
+            "atticus-zhou",
+            "1028huli",
+            "bactdt",
+            "gaogao34",
+            "likris588-ux",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "qingmuy",
+            "fenghuangyuan1412",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "Hr18798895295",
+            "hdfhssg",
+            "meixiaoxie",
+            "Rainmemery",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Pototoooo",
+            "Hebuyu688",
+            "zh-hanlabs",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "atticus-zhou",
+            "CHNERUI",
+            "1028huli",
+            "gaogao34",
+            "bactdt",
+            "likris588-ux",
+            "miaomiao636",
+            "bianshilong0604",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "fenghuangyuan1412",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "lujie-cmd",
+            "Henry369-0",
+            "lau0708",
+            "CaoJun1015",
+            "heroims",
+            "cangyuyi",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "Colin-Cai0318",
+            "HanmmJade",
+            "kgleonc"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "GioiaZheng",
+            "yuj-029",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "Hr18798895295",
+            "Rainmemery",
+            "hdfhssg",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Pototoooo",
+            "Hebuyu688",
+            "zh-hanlabs",
+            "kai04072911-sudo",
+            "CHNERUI",
+            "zeroTwo0617",
+            "atticus-zhou",
+            "1028huli",
+            "bactdt",
+            "gaogao34",
+            "miaomiao636",
+            "bianshilong0604",
+            "likris588-ux",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "qingmuy",
+            "fenghuangyuan1412",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "lujie-cmd",
+            "Henry369-0",
+            "lau0708",
+            "CaoJun1015",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "cangyuyi",
+            "AcNHong",
+            "Colin-Cai0318",
+            "HanmmJade",
+            "kgleonc"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "zepengfan145-netizen",
+            "pikachuprogrammer01",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "gaogao34",
+            "atticus-zhou",
+            "CHNERUI",
+            "likris588-ux",
+            "bactdt",
+            "1028huli",
+            "xinGeeks",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "fenghuangyuan1412",
+            "c4002159",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "CaoJun1015",
+            "lujie-cmd",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "zepengfan145-netizen",
+            "pikachuprogrammer01",
+            "haohao-fly",
+            "hdfhssg",
+            "Rainmemery",
+            "Hr18798895295",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "CHNERUI",
+            "atticus-zhou",
+            "gaogao34",
+            "likris588-ux",
+            "bactdt",
+            "1028huli",
+            "xinGeeks",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "fenghuangyuan1412",
+            "c4002159",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "CaoJun1015",
+            "lujie-cmd",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "zepengfan145-netizen",
+            "pikachuprogrammer01",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "meixiaoxie",
+            "Rainmemery",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "atticus-zhou",
+            "CHNERUI",
+            "gaogao34",
+            "likris588-ux",
+            "bactdt",
+            "1028huli",
+            "miaomiao636",
+            "xinGeeks",
+            "bianshilong0604",
+            "PetalEcho",
+            "fenghuangyuan1412",
+            "c4002159",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lujie-cmd",
+            "lau0708",
+            "CaoJun1015",
+            "heroims",
+            "cangyuyi",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zh-hanlabs",
+            "zeroTwo0617",
+            "CHNERUI",
+            "atticus-zhou",
+            "gaogao34",
+            "1028huli",
+            "bactdt",
+            "likris588-ux",
+            "miaomiao636",
+            "bianshilong0604",
+            "PetalEcho",
+            "xinGeeks",
+            "fenghuangyuan1412",
+            "c4002159",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lujie-cmd",
+            "lau0708",
+            "CaoJun1015",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "cangyuyi",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "EricKingWhy",
+            "meixiaoxie",
+            "Spades6",
+            "Nourishman",
+            "Pototoooo",
+            "Hebuyu688",
+            "zeroTwo0617",
+            "kai04072911-sudo",
+            "zh-hanlabs",
+            "atticus-zhou",
+            "CHNERUI",
+            "gaogao34",
+            "1028huli",
+            "bactdt",
+            "likris588-ux",
+            "bianshilong0604",
+            "PetalEcho",
+            "xinGeeks",
+            "miaomiao636",
+            "c4002159",
+            "qingmuy",
+            "fenghuangyuan1412",
+            "solplum",
+            "txz990",
+            "lau0708",
+            "Henry369-0",
+            "1115yt",
+            "lujie-cmd",
+            "cangyuyi",
+            "CaoJun1015",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Rainmemery",
+            "Hr18798895295",
+            "EricKingWhy",
+            "meixiaoxie",
+            "Spades6",
+            "Nourishman",
+            "Pototoooo",
+            "Hebuyu688",
+            "zh-hanlabs",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "atticus-zhou",
+            "CHNERUI",
+            "1028huli",
+            "bactdt",
+            "gaogao34",
+            "likris588-ux",
+            "bianshilong0604",
+            "PetalEcho",
+            "xinGeeks",
+            "miaomiao636",
+            "c4002159",
+            "qingmuy",
+            "fenghuangyuan1412",
+            "solplum",
+            "txz990",
+            "lau0708",
+            "Henry369-0",
+            "1115yt",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Pototoooo",
+            "Hebuyu688",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "kai04072911-sudo",
+            "atticus-zhou",
+            "CHNERUI",
+            "1028huli",
+            "gaogao34",
+            "bactdt",
+            "likris588-ux",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "qingmuy",
+            "fenghuangyuan1412",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "Colin-Cai0318",
+            "HanmmJade",
+            "kgleonc"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Pototoooo",
+            "Hebuyu688",
+            "zh-hanlabs",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "atticus-zhou",
+            "CHNERUI",
+            "1028huli",
+            "bactdt",
+            "gaogao34",
+            "bianshilong0604",
+            "likris588-ux",
+            "miaomiao636",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "qingmuy",
+            "fenghuangyuan1412",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "Colin-Cai0318",
+            "HanmmJade",
+            "kgleonc"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "zepengfan145-netizen",
+            "pikachuprogrammer01",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "EricKingWhy",
+            "meixiaoxie",
+            "Spades6",
+            "Nourishman",
+            "Hebuyu688",
+            "Pototoooo",
+            "zeroTwo0617",
+            "kai04072911-sudo",
+            "zh-hanlabs",
+            "gaogao34",
+            "atticus-zhou",
+            "likris588-ux",
+            "CHNERUI",
+            "bactdt",
+            "1028huli",
+            "xinGeeks",
+            "bianshilong0604",
+            "PetalEcho",
+            "miaomiao636",
+            "fenghuangyuan1412",
+            "c4002159",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "lau0708",
+            "Henry369-0",
+            "1115yt",
+            "cangyuyi",
+            "CaoJun1015",
+            "lujie-cmd",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "zepengfan145-netizen",
+            "pikachuprogrammer01",
+            "haohao-fly",
+            "hdfhssg",
+            "Rainmemery",
+            "Hr18798895295",
+            "EricKingWhy",
+            "meixiaoxie",
+            "Spades6",
+            "Nourishman",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "atticus-zhou",
+            "CHNERUI",
+            "gaogao34",
+            "likris588-ux",
+            "bactdt",
+            "1028huli",
+            "xinGeeks",
+            "bianshilong0604",
+            "PetalEcho",
+            "miaomiao636",
+            "c4002159",
+            "fenghuangyuan1412",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "lau0708",
+            "Henry369-0",
+            "1115yt",
+            "CaoJun1015",
+            "cangyuyi",
+            "lujie-cmd",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "zepengfan145-netizen",
+            "pikachuprogrammer01",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Pototoooo",
+            "Hebuyu688",
+            "zeroTwo0617",
+            "kai04072911-sudo",
+            "zh-hanlabs",
+            "atticus-zhou",
+            "gaogao34",
+            "CHNERUI",
+            "likris588-ux",
+            "bactdt",
+            "1028huli",
+            "xinGeeks",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "fenghuangyuan1412",
+            "c4002159",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "fengziliang43-cmyk",
+            "yukinoshi",
+            "shuaigechz-cloud",
+            "D1822787566",
+            "zhenian-666",
+            "yuj-029",
+            "GioiaZheng",
+            "pikachuprogrammer01",
+            "zepengfan145-netizen",
+            "haohao-fly",
+            "hdfhssg",
+            "Hr18798895295",
+            "Rainmemery",
+            "meixiaoxie",
+            "EricKingWhy",
+            "Nourishman",
+            "Spades6",
+            "Hebuyu688",
+            "Pototoooo",
+            "kai04072911-sudo",
+            "zeroTwo0617",
+            "zh-hanlabs",
+            "atticus-zhou",
+            "CHNERUI",
+            "gaogao34",
+            "1028huli",
+            "bactdt",
+            "likris588-ux",
+            "bianshilong0604",
+            "miaomiao636",
+            "PetalEcho",
+            "xinGeeks",
+            "c4002159",
+            "fenghuangyuan1412",
+            "qingmuy",
+            "solplum",
+            "txz990",
+            "1115yt",
+            "Henry369-0",
+            "lau0708",
+            "lujie-cmd",
+            "CaoJun1015",
+            "cangyuyi",
+            "heroims",
+            "Changxin-YR",
+            "Jinxuans",
+            "AcNHong",
+            "HanmmJade",
+            "kgleonc",
+            "Colin-Cai0318"
+          ]
+        }
+      ],
+      "rank_ranges": {
+        "yuppiez99999": [
+          1,
+          1
+        ],
+        "fengziliang43-cmyk": [
+          2,
+          2
+        ],
+        "yukinoshi": [
+          3,
+          3
+        ],
+        "shuaigechz-cloud": [
+          4,
+          4
+        ],
+        "D1822787566": [
+          5,
+          5
+        ],
+        "zhenian-666": [
+          6,
+          6
+        ],
+        "yuj-029": [
+          7,
+          8
+        ],
+        "GioiaZheng": [
+          7,
+          8
+        ],
+        "pikachuprogrammer01": [
+          9,
+          10
+        ],
+        "zepengfan145-netizen": [
+          9,
+          10
+        ],
+        "haohao-fly": [
+          11,
+          11
+        ],
+        "hdfhssg": [
+          12,
+          14
+        ],
+        "Hr18798895295": [
+          12,
+          14
+        ],
+        "Rainmemery": [
+          12,
+          14
+        ],
+        "meixiaoxie": [
+          13,
+          16
+        ],
+        "EricKingWhy": [
+          15,
+          16
+        ],
+        "Nourishman": [
+          17,
+          18
+        ],
+        "Spades6": [
+          17,
+          18
+        ],
+        "Hebuyu688": [
+          19,
+          20
+        ],
+        "Pototoooo": [
+          19,
+          20
+        ],
+        "kai04072911-sudo": [
+          21,
+          23
+        ],
+        "zeroTwo0617": [
+          21,
+          24
+        ],
+        "zh-hanlabs": [
+          21,
+          23
+        ],
+        "atticus-zhou": [
+          24,
+          25
+        ],
+        "CHNERUI": [
+          23,
+          27
+        ],
+        "gaogao34": [
+          24,
+          27
+        ],
+        "1028huli": [
+          26,
+          29
+        ],
+        "bactdt": [
+          27,
+          28
+        ],
+        "likris588-ux": [
+          26,
+          30
+        ],
+        "bianshilong0604": [
+          29,
+          32
+        ],
+        "miaomiao636": [
+          29,
+          33
+        ],
+        "PetalEcho": [
+          29,
+          32
+        ],
+        "xinGeeks": [
+          30,
+          33
+        ],
+        "c4002159": [
+          34,
+          35
+        ],
+        "fenghuangyuan1412": [
+          34,
+          36
+        ],
+        "qingmuy": [
+          34,
+          35
+        ],
+        "solplum": [
+          36,
+          37
+        ],
+        "txz990": [
+          36,
+          37
+        ],
+        "1115yt": [
+          39,
+          41
+        ],
+        "Henry369-0": [
+          39,
+          41
+        ],
+        "lau0708": [
+          39,
+          42
+        ],
+        "lujie-cmd": [
+          39,
+          44
+        ],
+        "CaoJun1015": [
+          42,
+          43
+        ],
+        "cangyuyi": [
+          42,
+          47
+        ],
+        "heroims": [
+          44,
+          45
+        ],
+        "Changxin-YR": [
+          45,
+          46
+        ],
+        "Jinxuans": [
+          45,
+          46
+        ],
+        "AcNHong": [
+          48,
+          48
+        ],
+        "HanmmJade": [
+          48,
+          48
+        ],
+        "kgleonc": [
+          48,
+          48
+        ],
+        "Colin-Cai0318": [
+          48,
+          51
+        ]
+      }
+    },
+    "maintenance": {
+      "scenarios": [
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            4,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            4,
+            6,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            4,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            4,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            4,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            6,
+            4
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        },
+        {
+          "weight_factors_fifths": [
+            6,
+            6,
+            6,
+            6
+          ],
+          "order": [
+            "yuppiez99999",
+            "bianshilong0604",
+            "yukinoshi",
+            "fengziliang43-cmyk"
+          ]
+        }
+      ],
+      "rank_ranges": {
+        "yuppiez99999": [
+          1,
+          1
+        ],
+        "bianshilong0604": [
+          2,
+          2
+        ],
+        "yukinoshi": [
+          3,
+          3
+        ],
+        "fengziliang43-cmyk": [
+          4,
+          4
+        ]
+      }
+    }
+  },
+  "ledger_sha256": "567692590b72123277994229674986963c2d2c845468d8b4a36f4bf8988d741a"
+}
