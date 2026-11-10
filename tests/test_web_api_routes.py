@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -431,6 +432,30 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["preferences"]["cities"], ["杭州"])
         self.assertNotIn("private-agent-key", apply_body)
+
+    @unittest.skipUnless(os.name == "nt", "Windows sharing semantics")
+    def test_agent_block_company_save_recovers_from_windows_reader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            config_path = base_dir / "config.yaml"
+            config_path.write_text("profile:\n  blocked_companies: []\n", encoding="utf-8")
+            server.set_base_dir(base_dir)
+            request = {"preferences": {"blocked_companies": ["Test Company"]}}
+            status, _, body = self._request("/api/agent/config/preview", "POST", request)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(yaml.safe_load(config_path.read_text())["profile"]["blocked_companies"], [])
+
+            with config_path.open(encoding="utf-8") as reader:
+                with patch("bosshunter.config.time.sleep", side_effect=lambda _: reader.close()) as wait:
+                    status, _, body = self._request(
+                        "/api/agent/config/apply", "POST", {**request, "confirm": True}
+                    )
+                wait.assert_called_once()
+
+            self.assertTrue(status.startswith("200"), body)
+            self.assertTrue(json.loads(body)["success"])
+            self.assertEqual(yaml.safe_load(config_path.read_text())["profile"]["blocked_companies"], ["Test Company"])
+            self.assertEqual(list(base_dir.glob("*.tmp")), [])
 
     def test_agent_onboarding_uses_local_preferences_not_platform_history(self):
         with tempfile.TemporaryDirectory() as tmp:
