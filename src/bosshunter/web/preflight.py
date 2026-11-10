@@ -13,10 +13,12 @@ import httpx
 
 from bosshunter import __version__
 from bosshunter.ai.credentials import (
+	ai_uses_no_auth,
 	get_ai_api_key,
 	get_ai_base_url,
 	get_ai_base_url_source,
 	get_ai_key_source,
+	get_ai_provider,
 	get_ai_service,
 )
 from bosshunter.browser.diagnostics import run_browser_diagnostics
@@ -122,16 +124,26 @@ def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, s
 
 def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 	"""Run the AI configuration and connectivity checks."""
+	from bosshunter.ai.local_cli import is_local_ai, local_ai_authorized
+	if is_local_ai(config):
+		authorized = local_ai_authorized(config)
+		return [_check(
+			"ai_connection", "本机 AI 授权", "pass" if authorized else ("error" if required else "warning"),
+			"本机 AI 已验证授权" if authorized else "本机 AI 尚未授权或工具/模型已变更",
+			"执行任务时由工具使用自身登录状态；请确保登录和额度仍然有效。" if authorized
+			else "打开“配置 → AI 设置”，保存工具和模型选择后点击“验证并授权”。",
+			"config",
+		)]
 	ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
 	severity = "error" if required else "warning"
-	provider = str(ai_cfg.get("provider") or "anthropic")
+	provider = get_ai_provider(config)
 	service = get_ai_service(config)
 	credential = get_ai_api_key(config)
 	key_source = get_ai_key_source(config)
 	base_url_value = get_ai_base_url(config)
 	base_url_source = get_ai_base_url_source(config)
 	model = str(ai_cfg.get("model") or "").strip()
-	if not credential:
+	if not credential and not ai_uses_no_auth(config):
 		return [
 			_check(
 				"ai_credentials",
@@ -155,7 +167,7 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 		]
 
 	base_url = str(base_url_value or "").strip()
-	if service == "custom" and provider == "openai_compatible" and not base_url:
+	if service == "custom" and not base_url:
 		return [
 			_check(
 				"ai_base_url",
@@ -169,13 +181,10 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 
 	if provider == "openai_compatible":
 		models_url = f"{base_url.rstrip('/')}/models"
-		headers = {"Authorization": f"Bearer {credential}"}
+		headers = {"Authorization": f"Bearer {credential}"} if credential else {}
 	else:
-		models_url = (
-			f"{base_url.rstrip('/')}/v1/models"
-			if base_url
-			else "https://api.anthropic.com/v1/models"
-		)
+		root = base_url.rstrip('/') if base_url else "https://api.anthropic.com"
+		models_url = f"{root}/models" if root.endswith('/v1') else f"{root}/v1/models"
 		# 凭证块整体优先：config 任一凭证字段非空就不读 env，与 credentials 解析保持一致。
 		if ai_cfg.get("api_key") or ai_cfg.get("auth_token"):
 			auth_token = ai_cfg.get("auth_token")
@@ -288,8 +297,9 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 			"AI 接口连接",
 			"pass",
 			"AI 接口连接正常",
-			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。"
-			"本次仅检测模型列表接口，未发送生成请求；评分等任务的参数兼容性需在实际调用时验证。",
+			(f"已连接无需认证的模型服务，当前模型：{model}。" if ai_uses_no_auth(config) else
+			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。")
+			+ "本次仅检测模型列表接口，未发送生成请求；评分等任务的参数兼容性需在实际调用时验证。",
 		)
 	]
 

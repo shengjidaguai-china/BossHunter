@@ -4,6 +4,29 @@
 
 面板中填写的 AI API Key 或 Auth Token 会保存在与配置文件同目录的隐藏凭据文件（默认 `.config.credentials.yaml`），并以仅当前用户可读写的权限写入；普通 `config.yaml`、配置下载和浏览器接口都不包含原始凭据。旧版写在 `config.yaml` 中的凭据会在下次启动 BossHunter 时自动迁移。不要分享隐藏凭据文件。
 
+## 通用模型与服务商接入
+
+在「配置 → AI 设置」选择接入方式：
+
+- 模型服务：支持 OpenAI、Claude、Gemini、DeepSeek、豆包、通义千问、Kimi、智谱、MiniMax、硅基流动、OpenRouter，以及本地或远程的 Ollama、LM Studio。选择预设后，填写 API Key 和模型 ID，保存后测试连接；地址始终可以修改。
+- 其他服务商：选择「自定义服务」，指定 OpenAI 兼容 Chat Completions 或 Anthropic 兼容 Messages 协议，填写服务地址、API Key 与任意模型 ID。预设不构成服务商或模型白名单；私有部署、代理网关、其他设备上的推理服务同样可以接入。服务需支持所选文本接口；只有厂商专有接口、仅 Responses/嵌入/图像生成接口的服务不能直接用 Chat Completions 代替。
+- 无需认证的接口：选择「无需认证」，可在没有 API Key 的情况下获取模型和执行任务，系统不会读取或发送环境变量或已保存的凭据。Ollama、LM Studio 预设默认此方式；远程服务启用认证后请改为 API Key。
+- 本机 AI：选择「本机 Codex」或「本机 Claude Code」。先在终端安装并登录对应工具，保存配置，再点击「验证并授权」。Codex 模型留空时会读取 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）顶层的 `model` 设置，并显式传给 CLI，以避免旧版 CLI 回退到账号不可用的内置模型。只读取该公开模型设置，不加载其中的 Hook、MCP 或凭据；Claude Code 留空时使用工具默认模型。显式填写模型时优先使用填写值。
+
+从 Codex 桌面应用启动时，优先使用应用通过 `CODEX_CLI_PATH` 提供的 CLI，再回退到系统 PATH 中的版本，避免全局旧版本不支持当前账号模型。应用内不升级或修改全局 CLI。默认模型设置变化和 CLI 路径/版本变化都会使旧授权失效，需要重新验证。模型不支持、登录失效、版本参数不兼容等失败会显示对应的脱敏提示。
+
+模型可从接口获取，也可手动填写，大小写与带 `/` 的模型标识会保留（DeepSeek 沿用其原有大小写规范化）。新服务商不继承旧服务的模型 ID 和凭据；请填写当前服务支持的 ID。OpenAI 预设使用 `max_completion_tokens`，其余兼容预设默认 `max_tokens`；可根据模型说明在「输出 Token 参数」切换。使用 `max_completion_tokens` 时不额外传入温度，以兼容固定温度的推理模型。不同地区和账户的服务地址可能不同，请以账户控制台为准。
+
+服务商列表由后端注册表统一提供给配置页和配置 schema，新增预设无需在前端再次维护名单。预设地址参考官方接入文档：[Gemini](https://ai.google.dev/gemini-api/docs/openai)、[通义千问](https://www.alibabacloud.com/help/en/model-studio/regions)、[Kimi](https://platform.kimi.ai/docs/overview)、[智谱](https://docs.bigmodel.cn/cn/guide/develop/openai/introduction)、[MiniMax](https://platform.minimax.io/docs/api-reference/text-openai-api)、[硅基流动](https://docs.siliconflow.cn/docs/userguide/quickstart)、[OpenRouter](https://openrouter.ai/docs/quickstart)、[Ollama](https://docs.ollama.com/api/openai-compatibility)、[LM Studio](https://lmstudio.ai/docs/developer/openai-compat)。
+
+验证会发送一条简短请求并消耗少量额度，收到正确回复后才保存授权。授权涵盖岗位评分、招呼语、简历生成和回复建议所需的文本调用：相关简历和岗位文本会交给所选工具，并可能发送至工具使用的模型服务。「本机」指通过本机 CLI 接入，不代表离线推理。BossHunter 不读取或复制这些工具的 OAuth、Cookie、会话 Token 或 Keychain 登录凭据。
+
+授权记录保存在 `.config.credentials.yaml`，不包含在普通配置、浏览器响应或配置下载中。切换工具或模型、安装文件变化后需要重新授权。点击「撤销授权」会阻止后续调用（已启动的请求可用任务停止按钮取消）。工具登录失效或额度不足时会提示调用失败，不会自动切换到其他服务。本机模式下「测试连接」只检查本地授权和安装标识，实时模型可用性由「验证并授权」请求及实际任务检查。
+
+调用从临时工作目录启动，任务文本经标准输入传入，不作为命令行参数。Codex 使用非交互、只读沙箱和临时会话，关闭命令执行与联网搜索；Claude Code 禁用内置工具、MCP、用户/项目设置、Hook 和会话持久化。需要支持这些参数的 CLI 版本；旧版本不兼容时应升级后重新验证。
+
+参考：[Codex 非交互模式](https://developers.openai.com/codex/noninteractive)、[Codex 配置参数](https://developers.openai.com/codex/config-reference)、[Claude Code CLI 参数](https://code.claude.com/docs/en/cli-reference)。
+
 ## 核心配置
 
 | 配置段 | 关键字段 | 说明 |
