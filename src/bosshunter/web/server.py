@@ -17,7 +17,7 @@ import time
 from copy import deepcopy
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from uuid import uuid4
 from wsgiref.simple_server import WSGIServer
 
@@ -32,7 +32,8 @@ from bosshunter.agent_api import (
 	validate_agent_evaluations,
 )
 from bosshunter import __version__
-from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_models
+from bosshunter.ai.credentials import AIRequestError, ai_uses_no_auth, get_ai_api_key, list_ai_models
+from bosshunter.ai.local_cli import is_local_ai, local_ai_authorized, verify_local_ai
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
 from bosshunter.config import (
@@ -130,6 +131,7 @@ mimetypes.add_type("text/javascript", ".cjs", strict=True)
 mimetypes.add_type("text/css", ".css", strict=True)
 
 app = Bottle()
+_LOCAL_AI_AUTH_LOCK = RLock()
 task_runner = WorkbenchTaskRunner()
 job_mutation_lock = Lock()
 greeting_activity = GreetingActivityRegistry()
@@ -146,7 +148,8 @@ def _is_loopback_address(value: str) -> bool:
 @app.hook("before_request")
 def _restrict_agent_to_local_requests():
 	"""Keep sensitive Agent routes local even when the workbench binds to LAN."""
-	if not (request.path == "/api/agent" or request.path.startswith("/api/agent/")):
+	if not (request.path == "/api/agent" or request.path.startswith("/api/agent/")
+		or request.path.startswith("/api/config/local-ai/")):
 		return
 	# Read the transport peer, never X-Forwarded-For/Forwarded supplied by a client.
 	peer = request.environ.get("REMOTE_ADDR", "")
@@ -277,8 +280,11 @@ def _mask_api_key(key):
 def _redact_config_for_response(config):
 	"""Hide secrets before returning config to the browser."""
 	redacted = deepcopy(config)
+	redacted.pop("_local_ai_config_path", None)
 	ai_cfg = redacted.get("ai")
 	if isinstance(ai_cfg, dict):
+		ai_cfg.pop("local_cli_grant", None)
+		ai_cfg["local_cli_authorized"] = local_ai_authorized(config)
 		key = ai_cfg.pop("api_key", None)
 		if key:
 			ai_cfg["api_key_masked"] = _mask_api_key(str(key))
@@ -293,19 +299,33 @@ def _config_download_payload(config: dict) -> str:
 	redacted = _redact_config_for_response(config)
 	ai_cfg = redacted.get("ai")
 	if isinstance(ai_cfg, dict):
+		ai_cfg.pop("local_cli_authorized", None)
 		ai_cfg.pop("api_key_masked", None)
 		ai_cfg.pop("auth_token_masked", None)
 	return yaml.dump(redacted, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
-def _write_config(config: dict) -> None:
+def _write_config(config: dict, *, local_cli_grant_update: bool = False) -> None:
 	"""Persist public settings separately from local AI credentials."""
-	save_config(config, CONFIG_PATH)
+	with _LOCAL_AI_AUTH_LOCK:
+		config = deepcopy(config)
+		if isinstance(config.get("ai"), dict) and not local_cli_grant_update:
+			# Ordinary writes (including stale task/resume snapshots) cannot issue
+			# or restore consent that was revoked in another request.
+			ai = config["ai"]
+			candidate_grant = ai.pop("local_cli_grant", None)
+			existing = load_config(CONFIG_PATH)["ai"]
+			if (ai.get("service") == existing.get("service")
+				and str(ai.get("model") or "").strip() == str(existing.get("model") or "").strip()
+				and candidate_grant and candidate_grant == existing.get("local_cli_grant")):
+				ai["local_cli_grant"] = existing["local_cli_grant"]
+		save_config(config, CONFIG_PATH)
 
 
 def _sanitize_config_for_write(data):
 	"""Remove browser-only fields and preserve existing secrets on blank posts."""
 	cleaned = remove_retired_collection_settings(deepcopy(data))
+	cleaned.pop("_local_ai_config_path", None)
 	ai_cfg = cleaned.get("ai")
 	if not isinstance(ai_cfg, dict):
 		return cleaned
@@ -314,6 +334,8 @@ def _sanitize_config_for_write(data):
 	ai_cfg.pop("has_api_key", None)
 	ai_cfg.pop("auth_token_masked", None)
 	ai_cfg.pop("has_auth_token", None)
+	ai_cfg.pop("local_cli_grant", None)
+	ai_cfg.pop("local_cli_authorized", None)
 
 	existing_ai = load_config(CONFIG_PATH).get("ai", {})
 	service = ai_cfg.get("service") or existing_ai.get("service")
@@ -321,14 +343,31 @@ def _sanitize_config_for_write(data):
 		provider = ai_cfg.get("provider") or existing_ai.get("provider") or "anthropic"
 		service = "custom" if provider == "openai_compatible" else "anthropic"
 	ai_cfg["service"] = service
-	ai_cfg["provider"] = AI_SERVICE_PRESETS[service]["provider"]
+	provider = ai_cfg.get("provider") or (existing_ai.get("provider") if service == existing_ai.get("service") else None)
+	ai_cfg["provider"] = (provider if service == "custom" and provider in {"anthropic", "openai_compatible"}
+		else AI_SERVICE_PRESETS[service]["provider"])
+	auth_mode = ai_cfg.get("auth_mode", AI_SERVICE_PRESETS[service]["auth_mode"])
+	if auth_mode not in {"api_key", "none"} or (auth_mode == "none" and ai_cfg["provider"] != "openai_compatible"):
+		raise ValueError("请选择有效的 AI 认证方式；无需认证仅适用于 OpenAI 兼容接口。")
+	if ai_cfg.get("token_limit_field", "max_tokens") not in {"max_tokens", "max_completion_tokens"}:
+		raise ValueError("请选择有效的输出 Token 参数。")
 
-	clear_credentials = bool(ai_cfg.pop("clear_credentials", False))
+	clear_credentials = bool(ai_cfg.pop("clear_credentials", False)) or (
+		service != existing_ai.get("service") or ai_cfg["provider"] != existing_ai.get("provider")
+	)
+	if (
+		not clear_credentials
+		and service == existing_ai.get("service")
+		and str(ai_cfg.get("model") or "").strip() == str(existing_ai.get("model") or "").strip()
+		and existing_ai.get("local_cli_grant")
+	):
+		ai_cfg["local_cli_grant"] = existing_ai["local_cli_grant"]
 
 	for field in ("api_key", "auth_token"):
 		if clear_credentials:
 			posted_value = ai_cfg.get(field)
-			if posted_value is None or str(posted_value).strip() == "":
+			existing_mask = _mask_api_key(str(existing_ai[field])) if existing_ai.get(field) else None
+			if posted_value is None or str(posted_value).strip() == "" or posted_value == existing_mask:
 				ai_cfg.pop(field, None)
 			continue
 		posted_value = ai_cfg.get(field)
@@ -364,8 +403,8 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 			resume_path = config.get("profile", {}).get("resume_path", "")
 			if not resume_path or not Path(str(resume_path)).exists():
 				messages.append("自动评分前请先在配置页上传 .md、.docx 或 .pdf 简历。")
-			if not get_ai_api_key(config):
-				messages.append("选择自动评分后，请先配置当前 AI 服务的 API Key。")
+			if not (get_ai_api_key(config) or ai_uses_no_auth(config) or local_ai_authorized(config)):
+				messages.append("选择自动评分后，请先配置 AI API Key 或验证授权本机 AI 工具。")
 			return messages
 
 	profile = config.get("profile", {})
@@ -386,8 +425,8 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 		from bosshunter.ai.greeter import greeting_config_error
 		if error := greeting_config_error(config):
 			messages.append(error)
-	if mode in {"full", "rescore"} and not get_ai_api_key(config):
-		messages.append("请先在配置页填写当前 AI 服务的 API Key，或设置对应的标准环境变量。")
+	if mode in {"full", "rescore"} and not (get_ai_api_key(config) or ai_uses_no_auth(config) or local_ai_authorized(config)):
+		messages.append("请先在配置页填写 AI API Key、设置对应环境变量，或验证授权本机 AI 工具。")
 
 	return messages
 
@@ -2609,7 +2648,10 @@ def api_config_post():
 			return _json_response({"error": "Empty body"}, 400)
 		if not isinstance(data, dict):
 			return _json_response({"error": "Config body must be an object"}, 400)
-		data = _sanitize_config_for_write(data)
+		try:
+			data = _sanitize_config_for_write(data)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
 		try:
 			validate_config_send_windows(data)
 		except ValueError as exc:
@@ -2632,6 +2674,41 @@ def api_config_post():
 		return _json_response({"error": str(e)}, 500)
 
 
+@app.route("/api/config/local-ai/authorize", method="POST")
+def api_local_ai_authorize():
+	"""An explicit UI action verifies the saved CLI before persisting consent."""
+	if not isinstance(request.json, dict) or request.json.get("confirm") is not True:
+		return _json_response({"error": "请明确确认验证并授权本机 AI"}, 400)
+	if not _LOCAL_AI_AUTH_LOCK.acquire(blocking=False):
+		return _json_response({"error": "本机 AI 正在验证，请稍后重试"}, 409)
+	try:
+		config = load_config(CONFIG_PATH)
+		if not is_local_ai(config):
+			return _json_response({"error": "请先保存本机 AI 工具配置"}, 400)
+		grant = verify_local_ai(config)
+		latest = load_config(CONFIG_PATH)
+		if latest.get("ai") != config.get("ai"):
+			return _json_response({"error": "验证期间 AI 配置已改变，请重新验证"}, 409)
+		latest["ai"]["local_cli_grant"] = grant
+		_write_config(latest, local_cli_grant_update=True)
+		return _json_response({"success": True, "message": "本机 AI 已验证并授权"})
+	except AIRequestError as exc:
+		return _json_response({"error": exc.user_message, "code": exc.kind}, 400)
+	except Exception:  # noqa: BLE001 - never expose CLI output or credentials on unexpected failures
+		return _json_response({"error": "本机 AI 验证失败，请检查工具安装和登录状态"}, 500)
+	finally:
+		_LOCAL_AI_AUTH_LOCK.release()
+
+
+@app.route("/api/config/local-ai/revoke", method="POST")
+def api_local_ai_revoke():
+	with _LOCAL_AI_AUTH_LOCK:
+		config = load_config(CONFIG_PATH)
+		config["ai"].pop("local_cli_grant", None)
+		_write_config(config, local_cli_grant_update=True)
+	return _json_response({"success": True, "message": "本机 AI 授权已撤销"})
+
+
 @app.route("/api/config/models", method="POST")
 def api_config_models():
 	"""Use draft AI settings and saved credentials without persisting the draft."""
@@ -2640,13 +2717,15 @@ def api_config_models():
 		if not isinstance(data, dict) or not isinstance(data.get("ai"), dict):
 			return _json_response({"error": "请提供 AI 配置"}, 400)
 		ai = data["ai"]
-		for field in ("service", "provider", "base_url", "api_key", "auth_token"):
+		for field in ("service", "provider", "base_url", "api_key", "auth_token", "auth_mode", "token_limit_field"):
 			if field in ai and not isinstance(ai[field], str):
 				return _json_response({"error": "AI 配置字段必须是文本"}, 400)
 		config = _sanitize_config_for_write({"ai": ai})
 		return _json_response({"models": list_ai_models(config)})
 	except AIRequestError as exc:
 		return _json_response({"error": exc.user_message}, 400)
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
 	except Exception:
 		return _json_response({"error": "获取模型列表失败，请检查 AI 配置后重试"}, 500)
 
@@ -2656,6 +2735,12 @@ def api_config_schema():
 	try:
 		with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
 			schema = json.load(f)
+		schema["ai_services"] = deepcopy(AI_SERVICE_PRESETS)
+		for section in schema.get("sections", []):
+			if section.get("key") == "ai":
+				for field in section.get("fields", []):
+					if field.get("key") == "service":
+						field["options"] = list(AI_SERVICE_PRESETS)
 		return _json_response(schema)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
@@ -2682,7 +2767,7 @@ def api_agent_state():
 			"api_version": AGENT_API_VERSION,
 			"preferences": agent_preferences(config),
 			"ai": {
-				"configured": bool(get_ai_api_key(config)),
+				"configured": bool(get_ai_api_key(config) or ai_uses_no_auth(config) or local_ai_authorized(config)),
 				"required_for": ["BossHunter 内置完整流程的评分、招呼语生成、自动回复和定制简历"],
 				"not_required_for": ["本机 Agent 提交结构化评分和招呼语"],
 			},
@@ -2795,7 +2880,7 @@ def api_agent_onboarding():
 			"missing": missing,
 			"ready_for_collection": not any(item["key"] in {"keywords", "cities", "platform_order"} for item in missing),
 			"ready_for_agent_workflow": has_resume and not missing,
-			"ready_for_full_workflow": has_resume and bool(get_ai_api_key(config)) and not missing,
+			"ready_for_full_workflow": has_resume and bool(get_ai_api_key(config) or ai_uses_no_auth(config) or local_ai_authorized(config)) and not missing,
 		})
 	except Exception as exc:
 		return _json_response({"error": str(exc)}, 500)
