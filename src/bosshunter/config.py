@@ -33,9 +33,10 @@ CITY_CODES: dict[str, str] = {
 }
 
 
-SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible"}
-SUPPORTED_AI_SERVICES = {"anthropic", "deepseek", "doubao", "custom"}
-AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
+SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "local_cli"}
+AI_SERVICE_PRESETS: dict[str, dict[str, object]] = {
+    "codex_cli": {"provider": "local_cli", "label": "本机 Codex", "base_url": "", "key_env": ""},
+    "claude_cli": {"provider": "local_cli", "label": "本机 Claude Code", "base_url": "", "key_env": ""},
     "anthropic": {
         "provider": "anthropic",
         "label": "Claude / Anthropic",
@@ -54,15 +55,52 @@ AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "key_env": "ARK_API_KEY",
     },
+    "opencode_go": {
+        "provider": "openai_compatible",
+        "label": "OpenCode Go / Zen",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "key_env": "OPENCODE_API_KEY",
+        # 该网关的生成接口要求非空的 x-opencode-session 才会路由，
+        # 否则一律返回 400 MissingSessionID；/models 列表接口不要求。
+        "required_headers": {"x-opencode-session": "bosshunter"},
+    },
     "custom": {
         "provider": "openai_compatible",
-        "label": "其他 OpenAI 兼容接口",
+        "label": "自定义服务（任意兼容模型）",
         "base_url": "",
         "key_env": "OPENAI_API_KEY",
     },
 }
 
-AI_CREDENTIAL_FIELDS = ("api_key", "auth_token")
+# Presets are conveniences; the custom service can select either API protocol.
+# All endpoints and model IDs remain editable, including remote deployments.
+for _service, _label, _base_url, _key_env in (
+    ("openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    ("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+    ("qwen", "通义千问 / 阿里云百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+    ("moonshot", "Kimi / Moonshot", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+    ("zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "ZHIPU_API_KEY"),
+    ("minimax", "MiniMax", "https://api.minimax.io/v1", "MINIMAX_API_KEY"),
+    ("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "SILICONFLOW_API_KEY"),
+    ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    ("ollama", "Ollama（本地或远程）", "http://127.0.0.1:11434/v1", "OLLAMA_API_KEY"),
+    ("lmstudio", "LM Studio（本地或远程）", "http://127.0.0.1:1234/v1", "LMSTUDIO_API_KEY"),
+):
+    AI_SERVICE_PRESETS[_service] = {
+        "provider": "openai_compatible", "label": _label,
+        "base_url": _base_url, "key_env": _key_env,
+    }
+
+_DEFAULT_MODELS = {"anthropic": "claude-sonnet-4-6", "opencode_go": "deepseek-v4.1-flash"}
+
+for _service, _preset in AI_SERVICE_PRESETS.items():
+    _preset["default_model"] = _DEFAULT_MODELS.get(_service, "")
+    _preset["auth_mode"] = "none" if _service in {"ollama", "lmstudio"} else "api_key"
+    _preset["token_limit_field"] = "max_completion_tokens" if _service == "openai" else "max_tokens"
+
+SUPPORTED_AI_SERVICES = set(AI_SERVICE_PRESETS)
+
+AI_CREDENTIAL_FIELDS = ("api_key", "auth_token", "local_cli_grant")
 
 
 DEFAULTS: dict[str, Any] = {
@@ -234,6 +272,15 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     if user_cfg:
         _deep_merge(cfg, user_cfg)
     _normalize_config_sections(cfg)
+    if (
+        cfg["ai"].get("service") not in {"anthropic", "deepseek", "doubao", "custom"}
+        and "model" not in (user_cfg.get("ai") or {})
+    ):
+        cfg["ai"]["model"] = ""
+    if cfg.get("ai", {}).get("service") in {"codex_cli", "claude_cli"}:
+        cfg["_local_ai_config_path"] = str(config_path.resolve())
+    if cfg["ai"].get("service") == "custom" and "provider" not in (user_cfg.get("ai") or {}):
+        cfg["ai"]["provider"] = "openai_compatible"
     _validate_ai_provider(cfg)
     validate_config_send_windows(cfg)
     return cfg
@@ -392,22 +439,35 @@ def _validate_ai_provider(config: dict[str, Any]) -> None:
     ai_cfg = config.get("ai", {})
     provider = ai_cfg.get("provider", "anthropic")
     if provider not in SUPPORTED_AI_PROVIDERS:
-        raise ValueError("当前版本支持 Anthropic 或 OpenAI 兼容接口。")
+        raise ValueError("当前版本支持 Anthropic、OpenAI 兼容接口或本机 AI 工具。")
     service = ai_cfg.get("service", "anthropic")
     if provider == "openai_compatible" and service == "anthropic":
         # Legacy configs only had `provider`; preserve them as custom OpenAI-compatible.
         ai_cfg["service"] = "custom"
         service = "custom"
     if service not in SUPPORTED_AI_SERVICES:
-        raise ValueError("当前版本支持 Claude、DeepSeek、豆包或自定义 OpenAI 兼容接口。")
+        raise ValueError("未知 AI 服务商，请选择服务商预设或使用 custom 自定义服务。")
     expected_provider = AI_SERVICE_PRESETS[service]["provider"]
-    if provider != expected_provider:
+    if service != "custom" and provider != expected_provider:
         ai_cfg["provider"] = expected_provider
+    if service == "custom" and provider == "local_cli":
+        raise ValueError("自定义服务请选择 OpenAI 兼容或 Anthropic 协议。")
+    auth_mode = ai_cfg.get("auth_mode", AI_SERVICE_PRESETS[service]["auth_mode"])
+    if auth_mode not in {"api_key", "none"}:
+        raise ValueError("AI 认证方式仅支持 api_key 或 none。")
+    if auth_mode == "none" and ai_cfg["provider"] != "openai_compatible":
+        raise ValueError("无需认证模式仅适用于 OpenAI 兼容接口。")
+    token_field = ai_cfg.get("token_limit_field", AI_SERVICE_PRESETS[service]["token_limit_field"])
+    if token_field not in {"max_tokens", "max_completion_tokens"}:
+        raise ValueError("输出 Token 参数仅支持 max_tokens 或 max_completion_tokens。")
 
 
 def _deep_copy_dict(d: dict) -> dict:
     result = {}
     for k, v in d.items():
+        # Runtime provenance is retained by task deepcopy(), never persisted.
+        if k == "_local_ai_config_path":
+            continue
         if isinstance(v, dict):
             result[k] = _deep_copy_dict(v)
         elif isinstance(v, list):

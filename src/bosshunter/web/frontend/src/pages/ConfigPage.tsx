@@ -14,6 +14,8 @@ import { useState, useEffect, useRef } from 'react'
 import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 
 const AI_SERVICES = {
+  codex_cli: { label: '本机 Codex', provider: 'local_cli', baseUrl: '', defaultModel: '', keyEnv: '' },
+  claude_cli: { label: '本机 Claude Code', provider: 'local_cli', baseUrl: '', defaultModel: '', keyEnv: '' },
   anthropic: {
     label: 'Claude / Anthropic',
     provider: 'anthropic',
@@ -36,7 +38,7 @@ const AI_SERVICES = {
     keyEnv: 'ARK_API_KEY',
   },
   custom: {
-    label: '其他 OpenAI 兼容接口',
+    label: '自定义服务（任意兼容模型）',
     provider: 'openai_compatible',
     baseUrl: '',
     defaultModel: '',
@@ -44,7 +46,11 @@ const AI_SERVICES = {
   },
 } as const
 
-type AiService = keyof typeof AI_SERVICES
+type AiService = string
+type AiPreset = {
+  label: string; provider: string; baseUrl: string; defaultModel: string; keyEnv: string
+  authMode?: string; tokenLimitField?: string
+}
 type PlatformId = 'boss' | 'zhilian' | '51job' | 'liepin'
 
 const BOSS_FILTER_OPTIONS = {
@@ -65,6 +71,44 @@ export default function ConfigPage() {
     ...(requestedSection ? { [requestedSection]: true } : {}),
   }))
   const [aiTest, setAiTest] = useState<{ testing: boolean; ok?: boolean; message?: string }>({ testing: false })
+  const [localAiBusy, setLocalAiBusy] = useState(false)
+  const localAi = ['codex_cli', 'claude_cli'].includes(config?.ai?.service)
+  // The backend registry owns provider choices and endpoints; no frontend vendor allowlist.
+  const aiServices: Record<string, AiPreset> = { ...AI_SERVICES }
+  for (const [id, preset] of Object.entries(schema?.ai_services || {}) as [string, Record<string, string>][]) {
+    aiServices[id] = {
+      label: preset.label, provider: preset.provider, baseUrl: preset.base_url,
+      defaultModel: preset.default_model || '', keyEnv: preset.key_env,
+      authMode: preset.auth_mode, tokenLimitField: preset.token_limit_field,
+    }
+  }
+  const selectedService = config?.ai?.service || (config?.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')
+  const selectedPreset = aiServices[selectedService] || aiServices.custom
+  const selectedProvider = config?.ai?.provider || selectedPreset.provider
+  const noAuth = (config?.ai?.auth_mode || selectedPreset.authMode || 'api_key') === 'none'
+
+  const handleLocalAi = async (action: 'authorize' | 'revoke') => {
+    if (dirty) {
+      setAiTest({ testing: false, ok: false, message: '请先保存当前配置，再验证或撤销授权。' })
+      return
+    }
+    setLocalAiBusy(true)
+    setAiTest({ testing: false })
+    try {
+      const res = await fetch(`/api/config/local-ai/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) throw new Error(data.error || '本机 AI 操作失败')
+      updateConfig('ai.local_cli_authorized', action === 'authorize', { markDirty: false })
+      setAiTest({ testing: false, ok: true, message: data.message })
+    } catch (error) {
+      setAiTest({ testing: false, ok: false, message: error instanceof Error ? error.message : '本机 AI 操作失败' })
+    } finally {
+      setLocalAiBusy(false)
+    }
+  }
   const [modelList, setModelList] = useState<{ loading: boolean; models: string[]; message?: string; error?: boolean }>({ loading: false, models: [] })
   const modelRequest = useRef<AbortController | null>(null)
   const [cityOptions, setCityOptions] = useState<CityOption[]>([])
@@ -77,7 +121,7 @@ export default function ConfigPage() {
   useEffect(() => {
     setModelList({ loading: false, models: [] })
     return () => modelRequest.current?.abort()
-  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials])
+  }, [config?.ai?.service, config?.ai?.provider, config?.ai?.auth_mode, config?.ai?.base_url, config?.ai?.api_key, config?.ai?.api_key_masked, config?.ai?.auth_token_masked, config?.ai?.clear_credentials])
 
   const handleFetchModels = async () => {
     modelRequest.current?.abort()
@@ -167,15 +211,19 @@ export default function ConfigPage() {
     ) {
       return
     }
-    const preset = AI_SERVICES[service]
+    const preset = aiServices[service]
     updateConfig('ai.service', service)
     updateConfig('ai.provider', preset.provider)
     updateConfig('ai.base_url', preset.baseUrl)
     updateConfig('ai.model', preset.defaultModel)
+    updateConfig('ai.auth_mode', preset.authMode || 'api_key')
+    updateConfig('ai.token_limit_field', preset.tokenLimitField || 'max_tokens')
+    updateConfig('ai.thinking', 'off')
     updateConfig('ai.api_key', '')
     updateConfig('ai.api_key_masked', '')
     updateConfig('ai.auth_token_masked', '')
     updateConfig('ai.clear_credentials', true)
+    updateConfig('ai.local_cli_authorized', false)
     setAiTest({ testing: false })
   }
 
@@ -288,7 +336,7 @@ export default function ConfigPage() {
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
 
   return (
-    <div className="h-full overflow-y-auto space-y-4 pr-4">
+    <fieldset disabled={localAiBusy} className="h-full min-w-0 overflow-y-auto space-y-4 pr-4">
         {/* Actions bar */}
         <div className="flex items-center justify-between sticky top-0 bg-background z-10 py-2">
           <div className="flex items-center gap-2">
@@ -570,30 +618,60 @@ export default function ConfigPage() {
         <SectionCard title="AI 设置" sectionKey="ai" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
             <Field label="提供商" dataTour="ai-fields">
-              <Select
-                value={config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')}
+              <Select aria-label="AI 服务商" disabled={localAiBusy}
+                value={selectedService}
                 onChange={e => handleAiServiceChange(e.target.value as AiService)}
               >
-                {Object.entries(AI_SERVICES).map(([value, preset]) => (
-                  <option key={value} value={value}>{preset.label}</option>
-                ))}
+                <optgroup label="模型服务">
+                  {Object.entries(aiServices).filter(([, preset]) => preset.provider !== 'local_cli').map(([value, preset]) => (
+                    <option key={value} value={value}>{preset.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="本机 AI 工具（可选）">
+                  {Object.entries(aiServices).filter(([, preset]) => preset.provider === 'local_cli').map(([value, preset]) => (
+                    <option key={value} value={value}>{preset.label}</option>
+                  ))}
+                </optgroup>
               </Select>
-              <p className="mt-1 text-xs text-muted">
-                BossHunter 会自动配置协议和服务地址；也可安全复用环境变量 {
-                  AI_SERVICES[(config.ai?.service || (config.ai?.provider === 'openai_compatible' ? 'custom' : 'anthropic')) as AiService].keyEnv
-                }，不会在前端显示其内容。
-              </p>
+              {!localAi && <p className="mt-1 text-xs text-muted">
+                {noAuth ? '当前接口无需认证，不会读取或发送保存的 Key 和环境变量凭据。' : `自动填写服务地址，也可使用环境变量 ${selectedProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : selectedPreset.keyEnv}。地址和模型均可修改。`}
+              </p>}
+              <p className="mt-1 text-xs text-muted">其他服务商可选择“自定义服务”，通过兼容协议接入，不限制模型 ID 或部署设备。</p>
             </Field>
+            {selectedService === 'custom' && <Field label="接口协议">
+              <Select aria-label="接口协议" value={selectedProvider} onChange={e => {
+                updateConfig('ai.provider', e.target.value)
+                if (e.target.value === 'anthropic') updateConfig('ai.auth_mode', 'api_key')
+                setAiTest({ testing: false })
+              }}>
+                <option value="openai_compatible">OpenAI 兼容（Chat Completions）</option>
+                <option value="anthropic">Anthropic 兼容（Messages）</option>
+              </Select>
+            </Field>}
+            {localAi && <div className="rounded-xl border border-primary/20 p-4 space-y-3">
+              <p className="text-sm">先在终端安装并登录对应工具，再保存本页配置，点击“验证并授权”。</p>
+              <p className="text-xs text-muted">Codex 的模型名称留空时，使用其配置文件中已选择的模型；若尚未配置模型，请填写账号可用的模型 ID。</p>
+              <p className="text-xs text-muted">验证会发送一条简短测试请求，消耗少量额度。授权后，该工具会接收任务所需的简历和岗位文本，并可能发送至其模型服务。登录凭据由工具自身管理。</p>
+              <p role="status" className="text-xs text-muted">{config.ai?.local_cli_authorized ? '已验证并授权' : '尚未验证授权'}；工具升级或更换模型后需要重新授权。</p>
+              <div className="flex gap-2">
+                <Button type="button" disabled={localAiBusy || dirty} onClick={() => handleLocalAi('authorize')}>
+                  {localAiBusy ? '处理中…' : '验证并授权'}
+                </Button>
+                <Button type="button" variant="secondary" disabled={localAiBusy || dirty || !config.ai?.local_cli_authorized} onClick={() => handleLocalAi('revoke')}>撤销授权</Button>
+              </div>
+              {dirty && <p className="text-xs text-muted">请先保存配置，再验证授权。</p>}
+            </div>}
             <Field label="模型名称">
               <div className="flex flex-wrap gap-2">
-                <Input aria-label="模型名称" className="min-w-0 flex-1 basis-40" value={config.ai?.model || ''} onChange={e => {
+                <Input aria-label="模型名称" disabled={localAiBusy} className="min-w-0 flex-1 basis-40" value={config.ai?.model || ''} onChange={e => {
                   updateConfig('ai.model', e.target.value)
+                  if (localAi) updateConfig('ai.local_cli_authorized', false)
                   setAiTest({ testing: false })
-                }} placeholder="填写服务商当前支持的模型 ID" />
-                <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
+                }} placeholder={localAi ? '留空使用工具默认模型' : '填写服务商当前支持的模型 ID'} />
+                {!localAi && <Button type="button" variant="secondary" disabled={modelList.loading} onClick={handleFetchModels}>
                   {modelList.loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                   {modelList.loading ? '获取中…' : '获取模型列表'}
-                </Button>
+                </Button>}
               </div>
               {modelList.models.length > 0 && (
                 <Select aria-label="可用模型" className="mt-2 pr-8 appearance-auto" value={modelList.models.includes(config.ai?.model) ? config.ai.model : ''} onChange={e => {
@@ -604,24 +682,40 @@ export default function ConfigPage() {
                   {modelList.models.map(model => <option key={model} value={model}>{model}</option>)}
                 </Select>
               )}
-              <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
+              {!localAi && <p role="status" className={`mt-1 text-xs ${modelList.error ? 'text-danger' : 'text-muted'}`}>
                 {modelList.message || '按当前 Base URL 和 API Key 获取，无需先保存配置。'}
-              </p>
+              </p>}
             </Field>
-            <Field label="API Key">
+            {!localAi && <>
+            <Field label="认证方式">
+              <Select aria-label="认证方式" value={noAuth ? 'none' : 'api_key'} onChange={e => {
+                updateConfig('ai.auth_mode', e.target.value)
+                setAiTest({ testing: false })
+              }}>
+                <option value="api_key">API Key / Bearer Token</option>
+                {selectedProvider === 'openai_compatible' && <option value="none">无需认证（服务端允许时）</option>}
+              </Select>
+            </Field>
+            {!noAuth && <Field label="API Key">
               <Input type="password" value={config.ai?.api_key || ''} onChange={e => {
                 updateConfig('ai.api_key', e.target.value)
                 setAiTest({ testing: false })
               }} placeholder={config.ai?.api_key_masked || '也可通过环境变量设置'} />
               <p className="mt-1 text-xs text-muted">填写后优先生效；留空时才读取环境变量。</p>
-            </Field>
+            </Field>}
             <Field label="Base URL">
-              <Input value={config.ai?.base_url || ''} onChange={e => {
+              <Input aria-label="Base URL" value={config.ai?.base_url || ''} onChange={e => {
                 updateConfig('ai.base_url', e.target.value)
                 setAiTest({ testing: false })
               }} placeholder="留空使用默认" />
               <p className="mt-1 text-xs text-muted">填写后优先生效；留空时使用环境变量或服务商默认地址。</p>
             </Field>
+            {selectedProvider === 'openai_compatible' && <Field label="输出 Token 参数">
+              <Select aria-label="输出 Token 参数" value={config.ai?.token_limit_field || selectedPreset.tokenLimitField || 'max_tokens'} onChange={e => updateConfig('ai.token_limit_field', e.target.value)}>
+                <option value="max_tokens">max_tokens（通用兼容接口）</option>
+                <option value="max_completion_tokens">max_completion_tokens（部分推理模型）</option>
+              </Select>
+            </Field>}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Thinking 模式">
                 <Select
@@ -646,6 +740,7 @@ export default function ConfigPage() {
                 />
               </Field>
             </div>
+            </>}
             <Field label="AI 请求超时 (秒)">
               <Input
                 type="number"
@@ -688,9 +783,9 @@ export default function ConfigPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-black text-foreground">AI 连接检测</div>
-                  <p className="mt-1 text-xs text-muted">不会消耗对话 Token；检测已保存的 Key、Base URL 和服务可用性。</p>
+                  <p className="mt-1 text-xs text-muted">{localAi ? '检查本地授权记录和工具是否变更；实际登录及额度在执行时检查。' : '不会消耗对话 Token；检测已保存的 Key、Base URL 和服务可用性。'}</p>
                 </div>
-                <Button variant="secondary" size="sm" onClick={handleAiTest} disabled={aiTest.testing}>
+                <Button variant="secondary" size="sm" onClick={handleAiTest} disabled={aiTest.testing || localAiBusy}>
                   {aiTest.testing ? '检测中...' : '测试连接'}
                 </Button>
               </div>
@@ -852,7 +947,7 @@ export default function ConfigPage() {
             </Field>
           </div>
         </SectionCard>
-    </div>
+    </fieldset>
   )
 }
 
