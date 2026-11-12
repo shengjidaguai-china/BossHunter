@@ -439,6 +439,27 @@ def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 	collect_config["_workbench_collect_progress"] = lambda state: _record_collect_progress(task, state)
 	collect_config["_workbench_log"] = lambda message: _log(task, message)
 	collect_config["_workbench_score_progress"] = lambda state: _record_score_progress(task, state)
+	options = config.get("_collection_options", {})
+	if config.get("_continuous_session_id") or options.get("continuous_collection", {}).get("enabled"):
+		if task.mode != "collect":
+			raise ValueError("持续采集仅支持单独采集，不能用于全流程")
+		from bosshunter.collection.session import CollectionSession
+		from bosshunter.collection_session_store import get_session, request_session_action
+		session = CollectionSession(collect_config, db_path=DATA_DIR / "bosshunter.db", task_id=task.id,
+		                            session_id=config.get("_continuous_session_id"))
+		def persist_stop():
+			saved = get_session(DATA_DIR / "bosshunter.db", session.id)
+			if saved and saved["status"] == "running":
+				request_session_action(DATA_DIR / "bosshunter.db", session.id, "stop")
+		task.context["persist_stop"] = persist_stop
+		result = session.run(options)
+		task.progress.update(session_id=result["id"], session=result["state"], collected_job_ids=result["collected_job_ids"])
+		_log(task, f"持续采集结束：累计新增 {len(result['collected_job_ids'])}，原因 {result['state'].get('reason_code', '')}")
+		if result["status"] == "stopped":
+			task.stop_requested.set()
+		elif result["status"] == "failed":
+			raise RuntimeError(f"持续采集失败：{result['state'].get('reason_code', 'session_error')}")
+		return
 	if "_collection_options" not in config:
 		# Preserve the old private executor seam used by legacy callers. New Web
 		# collection tasks always inject normalized options before starting.
@@ -494,8 +515,12 @@ def _stop_or_log_boss_collection_reason(task: WorkbenchTask, stop_reason: str) -
 		"blocked": "BOSS 账号或请求拦截",
 		"rate_limit": "BOSS 频率限制",
 		"login_required": "BOSS 登录状态失效",
-		"consecutive_page_failures": "BOSS 连续页面失败",
 	}
+	if stop_reason in {"consecutive_page_failures", "timing_gap", "persistence_error"}:
+		task.stop_reason = f"BOSS 采集技术中断：{stop_reason}，请检查后继续；未写入账号风险锁"
+		task.stop_requested.set()
+		_log(task, task.stop_reason)
+		return
 	if stop_reason in limit_labels:
 		_log(task, f"为了账户安全，已达到{limit_labels[stop_reason]}，仅停止 BOSS 访问；智联和 51job 不占用该额度")
 	elif stop_reason in risk_labels:
@@ -1748,6 +1773,8 @@ def api_workbench_task_start():
 		elif mode == "full":
 			try:
 				collection_options = normalize_collection_options(base_config, options)
+				if collection_options.get("continuous_collection", {}).get("enabled"):
+					raise ValueError("持续采集不能用于完整流程")
 			except ValueError as exc:
 				return _json_response({"error": str(exc)}, 400)
 			collection_only = [
@@ -1801,6 +1828,22 @@ def api_collection_runs():
 		limit = int(request.params.get("limit", 20))
 		return _json_response(list_collection_runs(DATA_DIR / "bosshunter.db", limit=limit))
 	except (TypeError, ValueError) as exc:
+		return _json_response({"error": str(exc)}, 400)
+
+
+@app.route("/api/collection/sessions")
+def api_collection_sessions():
+	from bosshunter.collection_session_store import list_sessions
+	return _json_response(list_sessions(DATA_DIR / "bosshunter.db"))
+
+
+@app.route("/api/collection/sessions/<session_id>/<action>", method="POST")
+def api_collection_session_action(session_id, action):
+	from bosshunter.collection_session_store import request_session_action
+	try:
+		request_session_action(DATA_DIR / "bosshunter.db", session_id, action)
+		return _json_response({"ok": True})
+	except ValueError as exc:
 		return _json_response({"error": str(exc)}, 400)
 
 
@@ -3470,6 +3513,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			"前端资源未构建：请在 src/bosshunter/web/frontend 下执行 "
 			"`npm ci && npm run build`（或安装官方发布的 wheel）后重试。"
 		)
+	from bosshunter.collection_session_store import list_sessions
+	for session in list_sessions(DATA_DIR / "bosshunter.db", active_only=True):
+		if task_runner.status()["active"]:
+			break
+		if session["options"].get("continuous_collection", {}).get("enabled") and session["options"].get("platform_order") == ["boss"]:
+			task_runner.start("collect", {**load_config(CONFIG_PATH), "_collection_options": session["options"], "_continuous_session_id": session["id"]})
 
 	if open_browser:
 		import webbrowser
