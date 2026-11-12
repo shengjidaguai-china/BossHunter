@@ -871,7 +871,7 @@ class BossCollector:
                                 continue
                             type_reason = internship_rejection(merged.as_job_record(), type_config)
                             if type_reason:
-                                hooks.on_event(message=type_reason, increment_filtered=True)
+                                hooks.on_event(message=type_reason, increment_filtered=True, filtered_candidate=merged)
                                 continue
                             should_continue = hooks.on_candidate(merged)
                             if hooks.last_save_receipt is not None:
