@@ -182,5 +182,89 @@ class ProviderRegistryTests(unittest.TestCase):
             credentials.call_anthropic_text("prompt", config, 1024)
 
 
+    def test_opencode_go_is_a_plain_registry_entry(self):
+        preset = AI_SERVICE_PRESETS["opencode_go"]
+        self.assertEqual(preset["provider"], "openai_compatible")
+        self.assertEqual(preset["base_url"], "https://opencode.ai/zen/go/v1")
+        self.assertEqual(preset["key_env"], "OPENCODE_API_KEY")
+        self.assertEqual(preset["required_headers"], {"x-opencode-session": "bosshunter"})
+        # Registry-derived metadata must be filled in like every other preset.
+        self.assertEqual(preset["auth_mode"], "api_key")
+        self.assertEqual(preset["token_limit_field"], "max_tokens")
+
+    def test_opencode_go_resolves_credentials_and_endpoint_from_its_own_env(self):
+        with patch.dict("os.environ", {"OPENCODE_API_KEY": "opencode-key",
+                                       "OPENAI_API_KEY": "unrelated"}, clear=True):
+            config = {"ai": {"service": "opencode_go", "model": "deepseek-v4.1-flash"}}
+            self.assertEqual(credentials.get_ai_api_key(config), "opencode-key")
+            self.assertEqual(credentials.get_ai_key_source(config), "OPENCODE_API_KEY")
+            self.assertEqual(credentials.get_ai_base_url(config), "https://opencode.ai/zen/go/v1")
+
+    def test_opencode_go_chat_requests_carry_the_session_header(self):
+        """The gateway 400s with MissingSessionID without this header."""
+        config = {"ai": {"service": "opencode_go", "model": "deepseek-v4.1-flash", "thinking": "off"}}
+        with (
+            patch.dict("os.environ", {"OPENCODE_API_KEY": "opencode-key"}, clear=True),
+            patch.object(credentials.httpx, "post", return_value=text_response()) as post,
+        ):
+            self.assertEqual(scorer._call_claude("岗位与简历", config, 256), "模型回复")
+        self.assertEqual(post.call_args.args[0], "https://opencode.ai/zen/go/v1/chat/completions")
+        headers = post.call_args.kwargs["headers"]
+        self.assertEqual(headers["x-opencode-session"], "bosshunter")
+        self.assertEqual(headers["Authorization"], "Bearer opencode-key")
+
+    def test_configured_headers_cannot_shadow_credentials(self):
+        """list_ai_models puts the real key in x-api-key for Anthropic; a same-named
+        configured header used to overwrite it and silently break authentication."""
+        config = {
+            "ai": {
+                "service": "custom", "provider": "anthropic", "api_key": "real-key",
+                "base_url": "https://gateway.example/v1",
+                "extra_headers": {"x-api-key": "attacker", "Authorization": "Bearer attacker",
+                                  "anthropic-version": "1999-01-01"},
+            }
+        }
+        with patch.object(credentials.httpx, "get", return_value=model_response()) as get:
+            credentials.list_ai_models(config)
+        headers = get.call_args.kwargs["headers"]
+        self.assertEqual(headers["x-api-key"], "real-key")
+        self.assertNotIn("Authorization", headers)
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+
+    def test_configured_headers_cannot_shadow_bearer_authorization(self):
+        config = {
+            "ai": {
+                "service": "deepseek", "model": "vendor-model", "api_key": "real-key",
+                "thinking": "off",
+                "extra_headers": {"Authorization": "Bearer attacker", "x-trace": "keep-me"},
+            }
+        }
+        with patch.object(credentials.httpx, "post", return_value=text_response()) as post:
+            credentials.call_openai_compatible_text("prompt", config, 256)
+        headers = post.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer real-key")
+        self.assertEqual(headers["x-trace"], "keep-me")
+
+    def test_malformed_extra_headers_are_skipped_without_raising(self):
+        config = {
+            "ai": {
+                "service": "opencode_go",
+                "extra_headers": {
+                    "Host": "evil.example", "x-empty": "   ", "x-inject": "v\r\nX-Evil: 1",
+                    "x-blank-name": None, "": "no-name", "x-good": "ok",
+                },
+            }
+        }
+        self.assertEqual(
+            credentials.get_ai_extra_headers(config),
+            {"x-opencode-session": "bosshunter", "x-good": "ok"},
+        )
+
+    def test_services_without_required_headers_add_none(self):
+        for service in ("deepseek", "doubao", "anthropic", "custom", "gemini"):
+            with self.subTest(service=service):
+                self.assertEqual(credentials.get_ai_extra_headers({"ai": {"service": service}}), {})
+
+
 if __name__ == "__main__":
     unittest.main()

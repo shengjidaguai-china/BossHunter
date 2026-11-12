@@ -34,7 +34,7 @@ CITY_CODES: dict[str, str] = {
 
 
 SUPPORTED_AI_PROVIDERS = {"anthropic", "openai_compatible", "local_cli"}
-AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
+AI_SERVICE_PRESETS: dict[str, dict[str, object]] = {
     "codex_cli": {"provider": "local_cli", "label": "本机 Codex", "base_url": "", "key_env": ""},
     "claude_cli": {"provider": "local_cli", "label": "本机 Claude Code", "base_url": "", "key_env": ""},
     "anthropic": {
@@ -54,6 +54,15 @@ AI_SERVICE_PRESETS: dict[str, dict[str, str]] = {
         "label": "豆包 / 火山方舟",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "key_env": "ARK_API_KEY",
+    },
+    "opencode_go": {
+        "provider": "openai_compatible",
+        "label": "OpenCode Go / Zen",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "key_env": "OPENCODE_API_KEY",
+        # 该网关的生成接口要求非空的 x-opencode-session 才会路由，
+        # 否则一律返回 400 MissingSessionID；/models 列表接口不要求。
+        "required_headers": {"x-opencode-session": "bosshunter"},
     },
     "custom": {
         "provider": "openai_compatible",
@@ -82,8 +91,10 @@ for _service, _label, _base_url, _key_env in (
         "base_url": _base_url, "key_env": _key_env,
     }
 
+_DEFAULT_MODELS = {"anthropic": "claude-sonnet-4-6", "opencode_go": "deepseek-v4.1-flash"}
+
 for _service, _preset in AI_SERVICE_PRESETS.items():
-    _preset["default_model"] = "claude-sonnet-4-6" if _service == "anthropic" else ""
+    _preset["default_model"] = _DEFAULT_MODELS.get(_service, "")
     _preset["auth_mode"] = "none" if _service in {"ollama", "lmstudio"} else "api_key"
     _preset["token_limit_field"] = "max_completion_tokens" if _service == "openai" else "max_tokens"
 

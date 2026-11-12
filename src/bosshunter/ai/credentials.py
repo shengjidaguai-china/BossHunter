@@ -401,6 +401,47 @@ def get_ai_base_url(config: dict) -> str | None:
             or AI_SERVICE_PRESETS[service]["base_url"] or None)
 
 
+# 请求构造方自己负责的头，配置里的同名项不得覆盖。x-api-key 必须在内：
+# list_ai_models 的 Anthropic 分支用它承载真实 Key，被同名配置头盖住会认证失败。
+_RESERVED_HEADERS = frozenset(
+    {"authorization", "content-type", "content-length", "host", "x-api-key", "anthropic-version"}
+)
+
+
+def get_ai_extra_headers(config: dict) -> dict[str, str]:
+    """Return extra HTTP headers required by the configured AI service/gateway.
+
+    两个来源，优先级由低到高：服务商预设的 required_headers（网关路由等
+    「怎么调用这个端点」的必需知识，例如 opencode.ai 的 x-opencode-session），
+    以及 ai.extra_headers 供用户覆盖。无法安全发送的条目直接跳过而不抛错，
+    避免一条坏配置让所有 AI 任务全部失败。
+    """
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    merged: dict[str, object] = {}
+    required = AI_SERVICE_PRESETS[get_ai_service(config)].get("required_headers")
+    if isinstance(required, dict):
+        merged.update(required)
+    configured = ai_cfg.get("extra_headers")
+    if isinstance(configured, dict):
+        merged.update(configured)
+
+    headers: dict[str, str] = {}
+    for name, value in merged.items():
+        header = str(name or "").strip()
+        # 头名会直接交给 httpx，拒绝可能注入第二个头或破坏请求行的写法。
+        if (
+            not header
+            or any(ch in header for ch in "\r\n: ")
+            or header.lower() in _RESERVED_HEADERS
+        ):
+            continue
+        text = "" if value is None else str(value)
+        if not text.strip() or any(ch in text for ch in "\r\n"):
+            continue
+        headers[header] = text
+    return headers
+
+
 def get_ai_base_url_source(config: dict) -> str | None:
     """Return only the base URL source name, consistent with get_ai_base_url resolution."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
@@ -433,14 +474,19 @@ def list_ai_models(config: dict) -> list[str]:
     if not key and not ai_uses_no_auth(config):
         raise AIRequestError("auth", "请先填写 API Key，再获取模型列表")
 
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    # 认证头最后写入：即便 _RESERVED_HEADERS 过滤被绕过，配置也无法遮蔽真实凭证。
+    extra_headers = get_ai_extra_headers(config)
     if anthropic:
         kwargs = build_anthropic_client_kwargs(config)
-        headers = {"anthropic-version": "2023-06-01"}
+        headers = {**extra_headers, "anthropic-version": "2023-06-01"}
         if kwargs.get("auth_token"):
             headers["Authorization"] = f"Bearer {kwargs['auth_token']}"
         else:
             headers["x-api-key"] = key
+    else:
+        headers = dict(extra_headers)
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
     endpoint = f"{base}/models"
     if anthropic and not base.endswith("/v1"):
         endpoint = f"{base}/v1/models"
@@ -496,6 +542,10 @@ def build_anthropic_client_kwargs(config: dict) -> dict:
     base_url = get_ai_base_url(config)
     if base_url:
         kwargs["base_url"] = base_url
+
+    extra_headers = get_ai_extra_headers(config)
+    if extra_headers:
+        kwargs["default_headers"] = extra_headers
 
     if _ambient_proxy_vars():
         kwargs["http_client"] = httpx.Client(trust_env=False)
@@ -657,7 +707,11 @@ def call_openai_compatible_text(
         try:
             response = httpx.post(
                 f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {api_key}"} if api_key else {})},
+                headers={
+                    "Content-Type": "application/json",
+                    **get_ai_extra_headers(config),
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
                 json=payload,
                 timeout=request_timeout,
                 trust_env=False,
