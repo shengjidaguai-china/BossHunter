@@ -586,6 +586,14 @@ def _execute_score(task: WorkbenchTask, config: dict) -> None:
 	except Exception as exc:
 		update_scoring_run(db_path, run_id, status="failed", error=str(exc)[:1000])
 		raise
+	finally:
+		latest = get_scoring_run(db_path, run_id)
+		if latest and latest.get("status") == "stopping":
+			# Release references only after the scorer has finished writing.
+			update_scoring_run(db_path, run_id, status="stopped", pause_reason="用户结束独立评分，已完成结果和剩余清单保留")
+		elif latest and latest.get("status") in {"pending", "running"}:
+			# Early returns (e.g. no eligible jobs) must also settle the record.
+			update_scoring_run(db_path, run_id, status="paused", pause_reason="评分已退出，可继续或结束剩余任务")
 
 
 def _queue_monitor_delivery(
@@ -1591,6 +1599,12 @@ def api_scoring_preview():
 
 @app.route("/api/scoring/start", method="POST")
 def api_scoring_start():
+	with job_mutation_lock:
+		return _api_scoring_start()
+
+
+def _api_scoring_start():
+	_settle_ended_scoring_runs()
 	run_id = str(uuid4())
 	db_path = DATA_DIR / "bosshunter.db"
 	try:
@@ -1605,8 +1619,8 @@ def api_scoring_start():
 		messages = _preflight_messages("rescore", config)
 		if messages:
 			return _json_response({"error": "请先处理评分启动检查", "messages": messages}, 400)
-		active_runs = [run for run in list_scoring_runs(db_path, limit=100) if run.get("status") in {"running", "paused"}]
-		running_runs = [run for run in active_runs if run.get("status") == "running"]
+		active_runs = [run for run in list_scoring_runs(db_path, limit=None) if run.get("status") in {"pending", "running", "stopping", "paused"}]
+		running_runs = [run for run in active_runs if run.get("status") != "paused"]
 		paused_runs = [run for run in active_runs if run.get("status") == "paused"]
 		if running_runs:
 			return _json_response({"error": "已有独立评分任务正在运行，请等待其结束或先停止该任务"}, 409)
@@ -1638,12 +1652,11 @@ def api_scoring_start():
 		}
 		create_scoring_run(db_path, run_id=run_id, options=stored_options, job_ids=job_ids)
 		runtime_options = {"job_ids": job_ids, "force_rescore": options["force_rescore"]}
-		with job_mutation_lock:
-			update_scoring_run(db_path, run_id, status="running")
-			task = task_runner.start("score", _task_config({
-				"_score_run_id": run_id,
-				"_score_options": runtime_options,
-			}))
+		update_scoring_run(db_path, run_id, status="running")
+		task = task_runner.start("score", _task_config({
+			"_score_run_id": run_id,
+			"_score_options": runtime_options,
+		}))
 		update_scoring_run(db_path, run_id, task_id=str(task["id"]))
 		return _json_response({"run": get_scoring_run(db_path, run_id), "task": task})
 	except TaskAlreadyRunningError as exc:
@@ -1656,13 +1669,30 @@ def api_scoring_start():
 		return _json_response({"error": "启动评分失败"}, 500)
 
 
+def _settle_ended_scoring_runs():
+	"""Close an end request that raced with the worker's final callback."""
+	db_path = DATA_DIR / "bosshunter.db"
+	active = task_runner.status().get("active")
+	for run in list_scoring_runs(db_path, limit=None, status="stopping"):
+		if active and (active.get("id") == run.get("task_id") or active.get("mode") == "score"):
+			continue
+		update_scoring_run(db_path, run["id"], status="stopped", pause_reason="评分处理已退出，历史结果和剩余清单保留")
+
+
 @app.route("/api/scoring/runs")
 def api_scoring_runs():
-	return _json_response(list_scoring_runs(DATA_DIR / "bosshunter.db"))
+	with job_mutation_lock:
+		_settle_ended_scoring_runs()
+		return _json_response(list_scoring_runs(DATA_DIR / "bosshunter.db"))
 
 
 @app.route("/api/scoring/runs/<run_id>/pause", method="POST")
 def api_scoring_pause(run_id):
+	with job_mutation_lock:
+		return _api_scoring_pause(run_id)
+
+
+def _api_scoring_pause(run_id):
 	db_path = DATA_DIR / "bosshunter.db"
 	run = get_scoring_run(db_path, run_id)
 	if not run:
@@ -1681,6 +1711,11 @@ def api_scoring_pause(run_id):
 
 @app.route("/api/scoring/runs/<run_id>/resume", method="POST")
 def api_scoring_resume(run_id):
+	with job_mutation_lock:
+		return _api_scoring_resume(run_id)
+
+
+def _api_scoring_resume(run_id):
 	db_path = DATA_DIR / "bosshunter.db"
 	run = get_scoring_run(db_path, run_id)
 	if not run:
@@ -1711,12 +1746,11 @@ def api_scoring_resume(run_id):
 		completed = update_scoring_run(db_path, run_id, status="completed", remaining_job_ids=[])
 		return _json_response(completed)
 	try:
-		with job_mutation_lock:
-			update_scoring_run(db_path, run_id, status="running", remaining_job_ids=remaining)
-			task = task_runner.start("score", _task_config({
-				"_score_run_id": run_id,
-				"_score_options": {"job_ids": remaining, "force_rescore": force_rescore},
-			}))
+		update_scoring_run(db_path, run_id, status="running", remaining_job_ids=remaining)
+		task = task_runner.start("score", _task_config({
+			"_score_run_id": run_id,
+			"_score_options": {"job_ids": remaining, "force_rescore": force_rescore},
+		}))
 		update_scoring_run(db_path, run_id, task_id=str(task["id"]))
 		return _json_response({"run": get_scoring_run(db_path, run_id), "task": task})
 	except TaskAlreadyRunningError as exc:
@@ -1726,16 +1760,32 @@ def api_scoring_resume(run_id):
 
 @app.route("/api/scoring/runs/<run_id>/end", method="POST")
 def api_scoring_end(run_id):
+	with job_mutation_lock:
+		return _end_scoring_run(run_id)
+
+
+def _end_scoring_run(run_id):
 	db_path = DATA_DIR / "bosshunter.db"
 	run = get_scoring_run(db_path, run_id)
 	if not run:
 		return _json_response({"error": "评分任务不存在"}, 404)
-	if run.get("status") == "running" and run.get("task_id"):
+	if run.get("status") in {"completed", "completed_with_errors", "failed", "stopped"}:
+		return _json_response(run)
+	# Paused checkpoints may be emitted while the worker is still unwinding.
+	active = task_runner.status().get("active")
+	if active and active.get("id") == run.get("task_id"):
+		update_scoring_run(db_path, run_id, status="stopping")
 		try:
-			task_runner.stop(str(run["task_id"]), "用户结束独立评分")
+			task_runner.stop(str(active["id"]), "用户结束独立评分")
 		except KeyError:
 			pass
-	ended = update_scoring_run(db_path, run_id, status="stopped", remaining_job_ids=[])
+		latest = get_scoring_run(db_path, run_id)
+		if latest and latest.get("status") == "stopping":
+			# _execute_score finalizes this after it has stopped writing.
+			return _json_response(latest, 202)
+		return _json_response(latest)
+	# Keep the checkpoint as an audit trail; status alone releases references.
+	ended = update_scoring_run(db_path, run_id, status="stopped", pause_reason="用户结束失效或暂停的独立评分，历史结果保留")
 	return _json_response(ended)
 
 
@@ -3213,6 +3263,7 @@ def api_jobs_soft_delete():
 			conflict = _active_task_mutation_error()
 			if conflict is not None:
 				return conflict
+			_settle_ended_scoring_runs()
 			result = soft_delete_jobs(
 				db,
 				job_ids,

@@ -1298,6 +1298,46 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), body)
         self.assertIsInstance(json.loads(body), list)
 
+    def test_workbench_greeting_generation_moves_jobs_between_disjoint_queues(self):
+        from bosshunter.ai.greeter import generate_greetings
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            path = base_dir / "data" / "bosshunter.db"
+            resume = base_dir / "resume.md"
+            resume.write_text("具备相关产品设计经验", encoding="utf-8")
+            db = get_db(path)
+            try:
+                for job_id in ("new", "blank", "generated", "pending-review", "failed", "deleted"):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, 82, "匹配")
+                    update_job_status(db, job_id, "ready")
+                db.execute("UPDATE jobs SET greeting='现有招呼语' WHERE id IN ('generated','pending-review','failed','deleted')")
+                db.execute("UPDATE jobs SET greeting='   ' WHERE id='blank'")
+                db.execute("UPDATE jobs SET greeting_selection='pending' WHERE id='pending-review'")
+                db.execute("UPDATE jobs SET status='error' WHERE id='failed'")
+                db.execute("UPDATE jobs SET deleted_at=CURRENT_TIMESTAMP WHERE id='deleted'")
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            before = json.loads(body)
+            self.assertEqual({j["id"] for j in before["pending_confirmation"]}, {"new", "blank"})
+            self.assertEqual({j["id"] for j in before["pending_greetings"]}, {"generated", "pending-review"})
+            self.assertEqual({j["id"] for j in before["send_errors"]}, {"failed"})
+            with patch("bosshunter.ai.greeter._call_claude", return_value="你好，我做过相关产品设计，希望进一步了解岗位。"):
+                self.assertEqual(generate_greetings({"profile": {"resume_path": str(resume)}, "ai": {"greeting_style_suggestions": False}}, job_ids=["new"], db_path=path), 1)
+            status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            after = json.loads(body)
+            confirmation = {j["id"] for j in after["pending_confirmation"]}
+            greetings = {j["id"] for j in after["pending_greetings"]}
+            self.assertEqual(confirmation, {"blank"})
+            self.assertEqual(greetings, {"new", "generated", "pending-review"})
+            self.assertTrue(confirmation.isdisjoint(greetings))
+            self.assertEqual({j["id"] for j in after["send_errors"]}, {"failed"})
+
     def test_web_api_workbench_pending_confirmation_returns_ready_jobs(self):
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:

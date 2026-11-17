@@ -78,7 +78,11 @@ def update_scoring_run(
 	params: list[Any] = []
 	for column, value in (("status", status), ("task_id", task_id), ("pause_reason", pause_reason), ("error", error)):
 		if value is not None:
-			sets.append(f"{column} = ?")
+			# A late checkpoint must not undo an explicit request to end the run.
+			if column == "status" and value != "stopped":
+				sets.append("status = CASE WHEN status = 'stopping' THEN status ELSE ? END")
+			else:
+				sets.append(f"{column} = ?")
 			params.append(str(value)[:1000])
 	if remaining_job_ids is not None:
 		sets.append("remaining_job_ids_json = ?")
@@ -92,7 +96,8 @@ def update_scoring_run(
 		sets.extend(["finished_at = NULL", "pause_reason = NULL", "error = NULL"])
 	params.append(run_id)
 	where = "id = ?"
-	if status in {"running", "paused"}:
+	if status is not None:
+		# Terminal records are immutable to late worker callbacks; retain history.
 		where += " AND status NOT IN ('completed', 'completed_with_errors', 'failed', 'stopped')"
 	db = get_db(db_path)
 	try:
@@ -112,12 +117,17 @@ def get_scoring_run(db_path: Path, run_id: str) -> dict[str, Any] | None:
 		db.close()
 
 
-def list_scoring_runs(db_path: Path, *, limit: int = 20) -> list[dict[str, Any]]:
+def list_scoring_runs(db_path: Path, *, limit: int | None = 20, status: str | None = None) -> list[dict[str, Any]]:
 	db = get_db(db_path)
 	try:
+		params = [status] if status else []
+		if limit is not None:
+			params.append(max(1, min(int(limit), 100)))
 		rows = db.execute(
-			"SELECT * FROM scoring_runs ORDER BY created_at DESC LIMIT ?",
-			(max(1, min(int(limit), 100)),),
+			"SELECT * FROM scoring_runs " + ("WHERE status = ? " if status else "")
+			+ "ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'stopping' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, created_at DESC"
+			+ (" LIMIT ?" if limit is not None else ""),
+			params,
 		).fetchall()
 		return [_public_row(dict(row)) or {} for row in rows]
 	finally:
@@ -130,7 +140,7 @@ def mark_orphaned_scoring_runs_paused(db_path: Path) -> int:
 		cursor = db.execute(
 			"""UPDATE scoring_runs
                SET status = 'paused', pause_reason = '应用已重启，可从剩余岗位继续', updated_at = CURRENT_TIMESTAMP
-               WHERE status IN ('pending', 'running')"""
+               WHERE status IN ('pending', 'running', 'stopping')"""
 		)
 		db.commit()
 		return cursor.rowcount
