@@ -52,6 +52,10 @@ class PrefilterSalaryTests(unittest.TestCase):
         self.assertIsNone(_parse_salary_range_k("50-80元/小时"))
         self.assertIsNone(_parse_salary_range_k("1000-1500元/周"))
         self.assertIsNone(_parse_salary_range_k("日结200元"))
+        # 等价写法：每小时 / 时薪前置 / 全角斜杠。
+        self.assertIsNone(_parse_salary_range_k("30元每小时"))
+        self.assertIsNone(_parse_salary_range_k("时薪30元"))
+        self.assertIsNone(_parse_salary_range_k("200-300元／天"))
         # 年薪仍按 /12 折算为月薪，不受本条规则影响。
         self.assertEqual(_parse_salary_range_k("24-30万/年"), (20.0, 25.0))
 
@@ -142,3 +146,20 @@ class SalaryFilterResultTests(unittest.TestCase):
         self.assertEqual(score, 0)
         self.assertIn("无法解析", reason)
         self.assertNotIn("薪资低于硬性要求", reason)
+
+    def test_hourly_variants_treated_as_unparsed(self):
+        from bosshunter.ai.prefilter import salary_filter_result
+
+        variants = ("30元每小时", "时薪30元", "200-300元／天")
+        accepted = {"salary_min": 10, "salary_max": 20, "filter_unparsed_salary": False}
+        for salary in variants:
+            score, reason = salary_filter_result(salary, accepted)
+            self.assertEqual(score, 100, f"{salary}: {reason}")
+            self.assertIn("交由 AI 判断", reason)
+
+        strict = {"salary_min": 10, "salary_max": 20, "filter_unparsed_salary": True}
+        for salary in variants:
+            score, reason = salary_filter_result(salary, strict)
+            self.assertEqual(score, 0, f"{salary}: {reason}")
+            self.assertIn("无法解析", reason)
+            self.assertNotIn("薪资低于硬性要求", reason)
