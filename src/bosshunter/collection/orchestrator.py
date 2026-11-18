@@ -8,6 +8,7 @@ from threading import Event
 from typing import Any, Callable
 from uuid import uuid4
 
+from bosshunter.browser.ego import EgoTaskSpace, EgoTaskSpaceError
 from bosshunter.cities import get_city_map
 from bosshunter.collection.base import CollectionError, CollectorHooks
 from bosshunter.collection.city_yield import normalize_city_policy
@@ -419,6 +420,9 @@ class CollectionOrchestrator:
             raw_options = boss_resume_options(self.db_path, str(resume_id), session_id=self.config.get("_collection_session_id"))
         options = normalize_collection_options(self.config, raw_options)
         order = options["platform_order"]
+        browser = EgoTaskSpace.from_config(self.config) if self._uses_default_registry else None
+        if browser is not None:
+            browser.check()
         states: dict[str, dict[str, Any]] = {
             platform: {"status": "queued", "new": 0, "target": None, "percent": None}
             for platform in order
@@ -501,18 +505,18 @@ class CollectionOrchestrator:
                     on_city_state=city_checkpoint,
                 )
                 try:
-                    collector = (
-                        BossCollector(config=self.config, safety_conn=conn)
-                        if platform == "boss" and self._uses_default_registry
-                        else Job51Collector(config=self.config, safety_conn=conn)
-                        if platform == "51job" and self._uses_default_registry
-                        else ZhilianCollector(config=self.config, safety_conn=conn)
-                        if platform == "zhilian" and self._uses_default_registry
-                        else LiepinCollector(config=self.config, safety_conn=conn)
-                        if platform == "liepin" and self._uses_default_registry
-                        else self.registry.get(platform)
-                    )
+                    if self._uses_default_registry:
+                        collector_type = {
+                            "boss": BossCollector, "51job": Job51Collector,
+                            "zhilian": ZhilianCollector, "liepin": LiepinCollector,
+                        }[platform]
+                        kwargs = {"browser": browser} if browser is not None else {}
+                        collector = collector_type(config=self.config, safety_conn=conn, **kwargs)
+                    else:
+                        collector = self.registry.get(platform)
                     result = collector.collect(request, hooks)
+                except EgoTaskSpaceError as exc:
+                    result = PlatformCollectionResult(platform, "failed", "browser_disconnected", str(exc))
                 except CollectionError as exc:
                     result = PlatformCollectionResult(platform, "blocked", exc.code, exc.message, error=str(exc))
                 except Exception as exc:

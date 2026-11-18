@@ -116,6 +116,32 @@ Saved settings, time windows, quotas, and platform safety limits are preserved.
 The Agent must never treat a successful task start as permission to send; the
 existing confirmation step remains mandatory.
 
+## Optional Ego Lite task space for collection
+
+To collect in a running Ego Lite session, create an Agent-controlled task space
+with `ego-browser nodejs` and note its numeric ID.
+
+```bash
+ego-browser nodejs -e 'console.log((await taskSpace("BossHunter collection")).spaceId)'
+```
+
+Set that ID in BossHunter's local `config.yaml` before starting a standalone
+`collect` task.
+
+```yaml
+collection:
+  ego_task_space_id: 7
+```
+
+BossHunter calls the installed `ego-browser` CLI for operations in this space.
+It uses the space's existing browser profile and manages only collection tabs.
+Give any login or verification prompts to the user in Ego Lite. The configured
+space must be under Agent control to start or resume collection. If the space
+closes or becomes unavailable, collection reports a browser error.
+
+Omit the setting or use `null` to use the existing Browser Runtime. Other
+workflows continue to use the existing Browser Runtime.
+
 ## Local-Agent Evaluation
 
 For the no-Key path, the Agent starts `collect`, waits until the task has

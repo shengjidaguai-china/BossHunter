@@ -34,6 +34,7 @@ search:
   sort: newest
 
 collection:
+  ego_task_space_id: null  # 单独采集可填已有 Ego Lite 任务空间 ID，null 使用原有 Runtime
   # Continuous collection is opt-in per Web task; limits and risk checks still apply.
   default_order: [boss]
   auto_score_default: false

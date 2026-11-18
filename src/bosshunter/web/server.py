@@ -435,6 +435,8 @@ def _record_score_progress(task: WorkbenchTask, state: dict) -> None:
 def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 	_log(task, "开始采集岗位")
 	collect_config = dict(config)
+	if task.mode != "collect" and "ego_task_space_id" in (config.get("collection") or {}):
+		collect_config["collection"] = {**config["collection"], "ego_task_space_id": None}
 	collect_config["_workbench_stop_event"] = task.stop_requested
 	collect_config["_workbench_collect_progress"] = lambda state: _record_collect_progress(task, state)
 	collect_config["_workbench_log"] = lambda message: _log(task, message)
