@@ -7,6 +7,11 @@ from typing import Any, Literal
 EmploymentType = Literal["internship", "full_time", "part_time", "unknown"]
 _EXPLICIT_TYPE = re.compile(r"(?:职位|岗位|工作|招聘|用工)(?:类型|性质)\s*[:：]\s*(实习|全职|兼职)")
 _TYPE_NAMES: dict[str, EmploymentType] = {"实习": "internship", "全职": "full_time", "兼职": "part_time"}
+# Job-type denial. Kept contiguous so "不接受没有实习经历" stays a candidate
+# requirement and does not match "不接受实习".
+_JOB_TYPE_DENIAL = re.compile(r"非实习|不招实习|不接受实习")
+# A full-time job statement, not a candidate's past full-time experience.
+_JD_FULL_TIME_JOB = re.compile(r"全职岗位|正式岗位|只招正式")
 
 # BOSS search-card tag such as 「5天/周」 or 「3个月」; the collector stamps
 # BOSS_INTERNSHIP_CARD into employment_source only when the internship-only
@@ -29,17 +34,18 @@ def classify_employment(job: Mapping[str, Any]) -> EmploymentType:
     title = str(job.get("title") or "")
     jd = str(job.get("jd") or "")
     # A negative internship statement must not become positive internship evidence.
-    non_intern = bool(re.search(r"非实习|不招实习|不接受实习", title))
+    # The same denial in the JD outranks a search-card tag.
+    denies_internship = bool(_JOB_TYPE_DENIAL.search(title) or _JOB_TYPE_DENIAL.search(jd))
     signals: set[EmploymentType] = set()
-    if non_intern or re.search(r"全职|正式岗", title):
+    if denies_internship or re.search(r"全职|正式岗", title) or _JD_FULL_TIME_JOB.search(jd):
         signals.add("full_time")
-    if not non_intern and re.search(r"实习|\bintern(?:ship)?\b", title, re.I):
+    if not denies_internship and re.search(r"实习|\bintern(?:ship)?\b", title, re.I):
         signals.add("internship")
     if re.search(r"兼职", title):
         signals.add("part_time")
     if (str(job.get("source_platform") or "boss") == "boss"
             and job.get("employment_source") == BOSS_INTERNSHIP_CARD
-            and not non_intern):
+            and not denies_internship):
         signals.add("internship")
     signals.update(_TYPE_NAMES[match] for match in _EXPLICIT_TYPE.findall(jd))
     # Daily pay, campus recruitment and past internship experience are not proof.

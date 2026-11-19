@@ -1287,9 +1287,18 @@ def _migrate_platform_access_events(conn: sqlite3.Connection) -> None:
 
 def _migrate_employment_source(conn: sqlite3.Connection) -> None:
     """Persist collector-only employment evidence (#308)."""
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-    if "employment_source" not in cols:
-        conn.execute("ALTER TABLE jobs ADD COLUMN employment_source TEXT NULL")
+    def column_names() -> set[str]:
+        return {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+
+    if "employment_source" not in column_names():
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN employment_source TEXT NULL")
+        except sqlite3.OperationalError as exc:
+            # Two connections can both observe the missing column and then add it.
+            # Keep going only when this column is now present. Any other migration
+            # error, including a duplicate of a different column, still propagates.
+            if "duplicate column name" not in str(exc).lower() or "employment_source" not in column_names():
+                raise
     conn.commit()
 
 

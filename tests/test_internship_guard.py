@@ -4,6 +4,8 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import threading
+import traceback
 from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
@@ -405,6 +407,23 @@ def test_persisted_card_evidence_is_one_internship_signal():
         }
         assert classify_employment(job) == "full_time"
         assert internship_rejection(job, CONFIG) == "仅实习：非实习岗位"
+    # A JD that states the job itself is not an internship outranks the card.
+    for jd in ("本岗位为全职岗位，不招实习。", "不接受实习，只招正式员工。"):
+        job = {
+            "title": "数据分析", "jd": jd, "salary": "10-20K",
+            "source_platform": "boss", "employment_source": BOSS_INTERNSHIP_CARD,
+        }
+        assert classify_employment(job) == "full_time"
+        assert internship_rejection(job, CONFIG) == "仅实习：非实习岗位"
+        assert quick_score(job, CONFIG)[0] == 0
+    # Candidate experience requirements are not a job-type denial.
+    for jd in ("有实习经历优先", "不接受没有实习经历的候选人。"):
+        job = {
+            "title": "数据分析", "jd": jd, "salary": "10-20K",
+            "source_platform": "boss", "employment_source": BOSS_INTERNSHIP_CARD,
+        }
+        assert classify_employment(job) == "internship"
+        assert internship_rejection(job, CONFIG) == ""
     # Evidence is BOSS-only and value-exact.
     assert classify_employment({
         "title": "软件测试", "jd": "", "source_platform": "zhilian",
@@ -634,6 +653,118 @@ def test_employment_source_migration_adds_null_column_and_is_idempotent(tmp_path
     assert legacy_row["title"] == "Legacy Job"
     assert legacy_row["recruitment_type"] == "unknown"
     assert evidence_row["employment_source"] == BOSS_INTERNSHIP_CARD
+
+
+def _database_missing_only_employment_source(tmp_path):
+    """Fully migrated database with one preserved row and the new column removed."""
+    path = tmp_path / "partial.db"
+    conn = get_db(path)
+    conn.execute(
+        """
+        INSERT INTO jobs (id, title, company, city, url, score, greeting, status)
+        VALUES ('keep-me', 'Legacy Job', 'Legacy Co', '北京', 'https://example.com/keep', 77, 'hello', 'ready')
+        """
+    )
+    conn.commit()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(jobs)")]
+    kept = [name for name in columns if name != "employment_source"]
+    conn.execute("ALTER TABLE jobs RENAME TO jobs_with_column")
+    conn.execute(f"CREATE TABLE jobs AS SELECT {', '.join(kept)} FROM jobs_with_column")
+    conn.execute("DROP TABLE jobs_with_column")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_concurrent_employment_source_migration_keeps_both_connections(tmp_path):
+    import bosshunter.db as dbmod
+
+    path = _database_missing_only_employment_source(tmp_path)
+    barrier = threading.Barrier(2)
+    real_connect = dbmod.sqlite3.connect
+    # Only the two first looks wait. The loser's follow-up look must not wait again,
+    # or it would sit at the barrier alone after the winner has already finished.
+    waits = {"count": 0}
+    wait_lock = threading.Lock()
+
+    class PausingConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args, **kwargs):
+            cursor = self._conn.execute(sql, *args, **kwargs)
+            text = sql if isinstance(sql, str) else ""
+            stack = "".join(traceback.format_stack())
+            if "PRAGMA table_info(jobs)" in text and "_migrate_employment_source" in stack:
+                with wait_lock:
+                    waits["count"] += 1
+                    should_wait = waits["count"] <= 2
+                if should_wait:
+                    barrier.wait(timeout=5)
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def connect(*args, **kwargs):
+        return PausingConnection(real_connect(*args, **kwargs))
+
+    outcomes = []
+
+    def open_database():
+        try:
+            conn = get_db(path)
+        except Exception as exc:
+            outcomes.append(exc)
+            return
+        try:
+            present = any(row[1] == "employment_source" for row in conn.execute("PRAGMA table_info(jobs)"))
+            outcomes.append(present)
+        finally:
+            conn.close()
+
+    dbmod.sqlite3.connect = connect
+    try:
+        threads = [threading.Thread(target=open_database) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        dbmod.sqlite3.connect = real_connect
+
+    assert outcomes == [True, True]
+    conn = get_db(path)
+    try:
+        row = dict(conn.execute("SELECT * FROM jobs WHERE id = 'keep-me'").fetchone())
+    finally:
+        conn.close()
+    assert row["title"] == "Legacy Job"
+    assert row["greeting"] == "hello"
+    assert row["score"] == 77
+    assert row["employment_source"] is None
+
+
+def test_employment_source_migration_reraises_unrelated_sqlite_error(tmp_path):
+    from bosshunter.db import _migrate_employment_source
+
+    path = _database_missing_only_employment_source(tmp_path)
+    inner = sqlite3.connect(path)
+
+    class FailAlter:
+        def execute(self, sql, *args, **kwargs):
+            if isinstance(sql, str) and sql.startswith("ALTER TABLE jobs ADD COLUMN employment_source"):
+                raise sqlite3.OperationalError("database is locked")
+            return inner.execute(sql, *args, **kwargs)
+
+        def commit(self):
+            return inner.commit()
+
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            _migrate_employment_source(FailAlter())
+    finally:
+        inner.close()
 
 
 def test_list_extractor_returns_full_card_tags_for_evidence():
