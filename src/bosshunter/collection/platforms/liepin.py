@@ -156,7 +156,11 @@ JS_EXTRACT_LIST = r"""
             url: href
         });
     }
-    return JSON.stringify({status: jobs.length ? 'ready' : 'selector_changed', jobs: jobs});
+    var next = document.querySelector('.list-pagination-box .ant-pagination-next');
+    var hasNextPage = next ? !next.classList.contains('ant-pagination-disabled') : null;
+    return JSON.stringify({
+        status: jobs.length ? 'ready' : 'selector_changed', jobs: jobs, has_next_page: hasNextPage
+    });
 })()
 """
 
@@ -486,6 +490,8 @@ class LiepinCollector:
                             )
                         if self.safety_conn is not None:
                             upsert_page_progress(self.safety_conn, "liepin", city, keyword, page)
+                        if payload.get("has_next_page") is False:
+                            break
                 finally:
                     self.browser.close_tab(target_id)
                 if self.safety_conn is not None:
