@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -316,7 +317,10 @@ def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     with open(path, encoding="utf-8") as f:
-        content = yaml.safe_load(f) or {}
+        text = f.read()
+    # Release the Windows read handle before parsing so concurrent saves can
+    # atomically replace the file while YAML processing is in progress.
+    content = yaml.safe_load(text) or {}
     return content if isinstance(content, dict) else {}
 
 
@@ -338,7 +342,17 @@ def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
             temporary.flush()
             os.fsync(temporary.fileno())
         os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, path)
+        for attempt in range(6):
+            try:
+                os.replace(temporary_path, path)
+                break
+            except OSError as exc:
+                # Windows readers (including antivirus/indexers) can briefly
+                # prevent replacement. Keep the original intact and retry only
+                # access/sharing/lock errors, with a bounded total wait of 1.15s.
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 5:
+                    raise
+                time.sleep(min(0.05 * 2**attempt, 0.4))
         temporary_path = None
     finally:
         if temporary_path is not None:
