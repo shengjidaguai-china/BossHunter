@@ -10,7 +10,7 @@ import pytest
 
 from bosshunter.ai.prefilter import quick_score
 from bosshunter.collection.base import CollectorHooks
-from bosshunter.collection.models import PlatformCollectionRequest, classify_recruitment_type
+from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest, classify_recruitment_type
 from bosshunter.collection.platforms.boss import (
     JS_DETECT_COLLECTION_RISK, JS_EXTRACT_DETAIL, JS_EXTRACT_LIST,
     JS_VERIFY_INTERNSHIP_FILTER, BossBrowser, BossCollector, build_boss_filter_query,
@@ -127,7 +127,9 @@ def test_collector_waits_for_detail_then_guards(title, jd, count):
     _, items, events, scripts = collect_fixture(title, jd)
     assert JS_EXTRACT_DETAIL in scripts  # type missing on card must reach JD
     assert len(items) == count
-    assert sum(bool(e.get("increment_filtered")) for e in events) == 1 - count
+    filtered = [e for e in events if e.get("increment_filtered")]
+    assert len(filtered) == 1 - count
+    assert all(isinstance(e.get("filtered_candidate"), JobCandidate) for e in filtered)
 
 
 @pytest.mark.parametrize("applied", [False, None, "true", {}])
