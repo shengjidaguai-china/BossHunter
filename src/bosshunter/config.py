@@ -95,6 +95,7 @@ DEFAULTS: dict[str, Any] = {
     "collection": {
         "default_order": ["boss"],
         "auto_score_default": False,
+        "ego_task_space_id": None,
         "daily_search_page_limit": 60,
         "daily_detail_page_limit": 900,
         "max_consecutive_page_failures": 3,
