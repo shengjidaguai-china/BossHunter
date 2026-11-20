@@ -111,6 +111,36 @@ def test_export_scopes_use_exact_database_sets(tmp_path):
 	assert _csv_ids(selected_content) == {"range-1", "range-7"}
 
 
+@pytest.mark.parametrize("format", ["csv", "xlsx"])
+@pytest.mark.parametrize("filter_key", ["q", "query"])
+@pytest.mark.parametrize("keyword,decoy", [
+	("100%", "1000"),
+	("data_engineer", "dataXengineer"),
+	(r"path\%_", r"path\XY"),
+])
+def test_filtered_export_treats_keyword_as_literal(tmp_path, format, filter_key, keyword, decoy):
+	db = get_db(tmp_path / "literal-export.db")
+	try:
+		insert_job(db, {**_job("match"), "title": f"prefix {keyword} suffix"})
+		insert_job(db, {**_job("decoy"), "title": f"prefix {decoy} suffix"})
+		content, _, _ = export_jobs(
+			db, format=format, scope="filtered", filters={filter_key: keyword},
+		)
+	finally:
+		db.close()
+
+	if format == "csv":
+		assert _csv_ids(content) == {"match"}
+	else:
+		workbook = load_workbook(io.BytesIO(content), read_only=True)
+		try:
+			rows = list(workbook.active.values)
+			id_column = rows[0].index("岗位 ID")
+			assert {row[id_column] for row in rows[1:]} == {"match"}
+		finally:
+			workbook.close()
+
+
 def test_export_supports_51job_source_filter_and_label(tmp_path):
 	db = get_db(tmp_path / "job51-export.db")
 	try:

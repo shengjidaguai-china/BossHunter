@@ -5,6 +5,16 @@ import re
 CITY_SEPARATOR = "·"
 
 
+def job_keyword_match_clause(keyword: str) -> tuple[str, list[str]]:
+    """Build a literal substring match across the searchable job fields."""
+    # Escape backslashes first so user input cannot become LIKE syntax.
+    escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    columns = ("title", "company", "jd", "score_reason")
+    clause = " OR ".join(f"{column} LIKE ? ESCAPE '\\'" for column in columns)
+    return f"({clause})", [pattern] * len(columns)
+
+
 def city_base_name(city: str) -> str:
 	"""Return the city part of a platform label such as 上海·浦东新区."""
 	return str(city or "").strip().split(CITY_SEPARATOR)[0].strip()

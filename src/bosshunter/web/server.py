@@ -90,7 +90,13 @@ from bosshunter.collection_run_store import (
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
 )
-from bosshunter.job_filters import city_base_name, city_match_clause, matching_blocked_company, parse_monthly_salary_k
+from bosshunter.job_filters import (
+	city_base_name,
+	city_match_clause,
+	job_keyword_match_clause,
+	matching_blocked_company,
+	parse_monthly_salary_k,
+)
 from bosshunter.job_export import InvalidJobSelectionError, export_jobs, export_row_count
 from bosshunter.scoring_run_store import (
 	create_scoring_run,
@@ -1235,9 +1241,9 @@ def api_job_search():
 	keyword = (request.query.getunicode("q") or "").strip()
 	status_filters = _query_values("status")
 	if keyword:
-		conditions.append("(title LIKE ? OR company LIKE ? OR jd LIKE ? OR score_reason LIKE ?)")
-		keyword_param = f"%{keyword}%"
-		params.extend([keyword_param] * 4)
+		keyword_clause, keyword_params = job_keyword_match_clause(keyword)
+		conditions.append(keyword_clause)
+		params.extend(keyword_params)
 	if minimum_score is not None:
 		conditions.append("score >= ?")
 		params.append(minimum_score)
