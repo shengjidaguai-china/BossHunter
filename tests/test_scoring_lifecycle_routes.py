@@ -72,7 +72,7 @@ def runtime(tmp_path, monkeypatch):
 		monkeypatch.setattr(server, name, value)
 	path = tmp_path / "data/bosshunter.db"
 	monkeypatch.setattr(db_module, "DB_PATH", path)
-	(tmp_path / "resume.md").write_text("测试简历：产品经理，负责人工智能产品设计。")
+	(tmp_path / "resume.md").write_text("测试简历：产品经理，负责人工智能产品设计。", encoding="utf-8")
 	server.CONFIG_PATH.write_text(
 		yaml.safe_dump(
 			{
@@ -81,7 +81,8 @@ def runtime(tmp_path, monkeypatch):
 				"search": {"keywords": ["原关键词"], "cities": ["北京"]},
 			},
 			allow_unicode=True,
-		)
+		),
+		encoding="utf-8",
 	)
 	monkeypatch.setattr(server, "get_ai_api_key", lambda _: "offline-placeholder")
 	ai = Mock(return_value=SCORE_RESPONSE)
