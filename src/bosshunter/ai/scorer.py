@@ -8,7 +8,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from bosshunter.ai.credentials import AIRequestError, call_anthropic_text, get_ai_api_key
+from bosshunter.ai.credentials import AIRequestError, ai_uses_no_auth, call_anthropic_text, get_ai_api_key
+from bosshunter.ai.local_cli import local_ai_authorized
 from bosshunter.ai.prefilter import _parse_salary_range_k, quick_score
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
@@ -168,8 +169,8 @@ def _load_resume(config: dict) -> str:
 
 def _call_claude(prompt: str, config: dict, max_tokens: int | None = None) -> str | None:
     """Call Claude API and return response text."""
-    if not get_ai_api_key(config):
-        console.print("[red]未设置当前 AI 服务所需的 API Key 环境变量或本地凭据[/red]")
+    if not (get_ai_api_key(config) or ai_uses_no_auth(config) or local_ai_authorized(config)):
+        console.print("[red]请配置当前 AI 服务的 API Key，或验证授权本机 AI 工具[/red]")
         return None
     ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
     token_limit = max_tokens if max_tokens is not None else ai_cfg.get("scoring_max_tokens", 8192)
