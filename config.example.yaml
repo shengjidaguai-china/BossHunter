@@ -107,7 +107,15 @@ throttle:
 
 ai:
   provider: "anthropic"
-  service: "anthropic"           # anthropic / deepseek / doubao / custom
+  service: "anthropic"           # 面板可选所有服务商预设；其他服务用 custom
+  # 预设还包括 openai / gemini / qwen / moonshot / zhipu / minimax / siliconflow / openrouter
+  # ollama / lmstudio 支持本机或远程部署；原有 deepseek / doubao 和本机 CLI 仍可使用。
+  # opencode_go 用于 OpenCode Zen 网关，该网关要求额外的 x-opencode-session 请求头（已在预设内置）。
+  # extra_headers:               # 其他需要额外请求头的网关；不能覆盖 Authorization / x-api-key 等认证头
+  #   x-tenant-id: "team-a"
+  # 自定义接口：service=custom，provider=openai_compatible 或 anthropic，填写 base_url 与 model。
+  # auth_mode: "api_key"         # none 表示服务无需认证，不会读取保存的 Key 或环境变量凭据
+  # token_limit_field: "max_tokens"  # 部分推理模型使用 max_completion_tokens
   model: "claude-sonnet-4-6"
   thinking: "auto"               # auto / disabled / enabled / off
   thinking_budget: 2048           # thinking=enabled 时使用，至少 1024
@@ -130,6 +138,8 @@ ai:
   # 建议在本地面板填写 api_key；它会单独保存在忽略提交的本地凭据文件中，不写入 config.yaml
   # base_url 填写后优先生效；留空时才读取对应环境变量或使用服务商默认地址
   # （ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / ARK_API_KEY / OPENAI_API_KEY）
+  # 本机 AI：service 选 codex_cli 或 claude_cli，provider 设 local_cli，model 可留空。
+  # 先在终端登录工具，再在面板保存并点击“验证并授权”；不需要复制工具的登录凭据。
   # api_key: "your-api-key"
   # base_url: "https://api.anthropic.com"
 
