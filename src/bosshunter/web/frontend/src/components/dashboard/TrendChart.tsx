@@ -9,25 +9,26 @@ interface TrendChartProps {
 
 export function TrendChart({ data }: TrendChartProps) {
   const chartData = useMemo(() => {
-    const dayMap: Record<string, { day: string; send: number; reply: number }> = {}
+    const dayMap = new Map<string, { day: string; send: number; reply: number }>()
+    const today = new Date()
 
-    // Generate last 7 days
+    // Activity is grouped by UTC day in the database.
     for (let i = 6; i >= 0; i--) {
-      const d = new Date()
-      d.setDate(d.getDate() - i)
+      const d = new Date(today)
+      d.setUTCDate(d.getUTCDate() - i)
       const key = d.toISOString().split('T')[0]
-      dayMap[key] = { day: key.slice(5), send: 0, reply: 0 }
+      dayMap.set(key, { day: key.slice(5), send: 0, reply: 0 })
     }
 
     // Fill in actual data
     data.forEach(item => {
-      const key = item.day
-      if (!dayMap[key]) dayMap[key] = { day: key.slice(5), send: 0, reply: 0 }
-      if (item.action === 'sent') dayMap[key].send += item.cnt
-      else if (item.action === 'replied' || item.action === 'auto_replied') dayMap[key].reply += item.cnt
+      const point = dayMap.get(item.day)
+      if (!point) return
+      if (item.action === 'sent') point.send += item.cnt
+      else if (item.action === 'replied' || item.action === 'auto_replied') point.reply += item.cnt
     })
 
-    return Object.values(dayMap).sort((a, b) => a.day.localeCompare(b.day))
+    return Array.from(dayMap.values())
   }, [data])
 
   return (
