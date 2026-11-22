@@ -54,16 +54,18 @@ GREETING_PROMPT = """以求职者身份，写一条在{platform}发给HR的简�
 4. 不得捏造我没有的经历、头衔或身份，不把JD当成我的经历；只概括背景中的事实，不夸大成果或职级，保留所用数据的真实周期。毕业年份、届别和在读状态只用明确事实，不推断。
 5. 不得提及我的缺点、短板或经验缺口，只讲已具备的相关优势。
 6. 建议技术名词不超过2个，避免反复使用“项目”；项目名称仅在有助于说明相关经历时使用，不堆砌名称。
-7. 不得生成背景或亮点中未明确提供的网址。作品集仅在岗位关注案例、作品、设计或原型时可提一次，不作固定落款。
+7. 不得生成简历、用户招呼语偏好或可用亮点中未明确提供的网址。作品集仅在岗位关注案例、作品、设计或原型时可提一次，不作固定落款。
+用户明确提供的网址如下；需要引用时保持域名和路径原样，不改拼写，不增加 www、子域名或路径：
+{provided_urls}
 {critique_section}
 输出前核对用户偏好和事实，删去套话与多余收尾。只输出招呼语正文。
 """
 
 URL_PATTERN = re.compile(
     r"(?i)(?<![\w@.])(?:"
-    r"(?:https?://|www\.)[^\s<>()\[\]{}\"'，。！？；]+|"
+    r"(?:https?://|www\.)[^\s<>()\[\]{}\"'，。！？；、：（）【】《》“”‘’「」『』`]+|"
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z]{2,63}(?:[/:?#][^\s<>()\[\]{}\"'，。！？；]+)?"
+    r"[a-z]{2,63}(?:[/:?#][^\s<>()\[\]{}\"'，。！？；、：（）【】《》“”‘’「」『』`]+)?"
     r")"
 )
 
@@ -201,16 +203,28 @@ def _extract_urls(text: str) -> set[str]:
     }
 
 
-def _has_untrusted_greeting_url(greeting: str, resume_text: str, config: dict) -> bool:
-    generated_urls = _extract_urls(greeting)
-    if not generated_urls:
-        return False
+def _trusted_greeting_urls(resume_text: str, config: dict) -> set[str]:
     trusted_urls = _extract_urls(resume_text)
     trusted_urls.update(_extract_urls(_get_resume_text(config)))
-    portfolio_url = str(config.get("profile", {}).get("portfolio_url", "") or "").strip()
+    profile = config.get("profile", {})
+    portfolio_url = str(profile.get("portfolio_url", "") or "").strip()
     if portfolio_url:
         trusted_urls.add(_normalize_url(portfolio_url))
-    return not generated_urls.issubset(trusted_urls)
+    # These are also user-supplied factual sources included in GREETING_PROMPT.
+    # A portfolio link in preferences/highlights is no less trusted than the
+    # same link in the separate portfolio field. Never trust URLs from the JD.
+    trusted_urls.update(_extract_urls(str(profile.get("greeting_preference") or "")))
+    highlights = profile.get("extra_highlights") or []
+    if not isinstance(highlights, list):
+        highlights = [highlights]
+    for highlight in highlights:
+        trusted_urls.update(_extract_urls(str(highlight)))
+    return trusted_urls
+
+
+def _has_untrusted_greeting_url(greeting: str, resume_text: str, config: dict) -> bool:
+    generated_urls = _extract_urls(greeting)
+    return bool(generated_urls and not generated_urls.issubset(_trusted_greeting_urls(resume_text, config)))
 
 
 def _notify(config: dict, message: str, *, error: bool = False) -> None:
@@ -470,6 +484,7 @@ def _generate_greeting_once(
         match_reason=_truncate_prompt_text(_positive_match_reason(job.get("score_reason", "")), 240),
         critique_section=critique_section,
         extra_highlights=_truncate_prompt_text(extra_highlights, 500),
+        provided_urls="\n".join(f"- {url}" for url in sorted(_trusted_greeting_urls(resume_summary, config))) or "（无，不得添加任何网址）",
         recent_openings=(
             "\n".join(f"- {opening}" for opening in (recent_openings or [])[-8:])
             or "（暂无）"

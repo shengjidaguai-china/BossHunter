@@ -8,6 +8,7 @@ from bosshunter.db import (
 	JobDeletionConflictError,
 	get_db,
 	insert_job,
+	permanent_delete_jobs,
 	soft_delete_jobs,
 	update_job_score,
 	update_job_status,
@@ -176,7 +177,7 @@ def test_restart_preserves_remaining_jobs_and_marks_run_recoverable(tmp_path):
 	assert run["recoverable"] is True
 
 
-def test_recycle_bin_cannot_remove_jobs_referenced_by_recoverable_scoring_run(tmp_path):
+def test_paused_checkpoint_allows_recycle_bin_and_recovery_skips_deleted_jobs(tmp_path):
 	db_path = tmp_path / "conflict.db"
 	db = get_db(db_path)
 	try:
@@ -193,8 +194,10 @@ def test_recycle_bin_cannot_remove_jobs_referenced_by_recoverable_scoring_run(tm
 
 	db = get_db(db_path)
 	try:
-		with pytest.raises(JobDeletionConflictError):
-			soft_delete_jobs(db, ["in-flight"], confirmed=True)
+		result = soft_delete_jobs(db, ["in-flight"], confirmed=True)
+		assert result["affected_count"] == 1
+		assert select_scoring_jobs(db, scope="selected", job_ids=["in-flight"]) == []
+		assert get_scoring_run(db_path, "run-conflict")["remaining_job_ids"] == ["in-flight"]
 	finally:
 		db.close()
 
@@ -204,4 +207,58 @@ def test_recycle_bin_cannot_remove_jobs_referenced_by_recoverable_scoring_run(tm
 		result = soft_delete_jobs(db, ["in-flight"], confirmed=True)
 	finally:
 		db.close()
-	assert result["affected_count"] == 1
+	assert result["affected_count"] == 0
+
+
+@pytest.mark.parametrize("status", ["pending", "running", "stopping"])
+def test_live_scoring_states_keep_jobs_protected(tmp_path, status):
+    path = tmp_path / "live.db"
+    db = get_db(path)
+    insert_job(db, _job("protected"))
+    create_scoring_run(path, run_id="live", options={}, job_ids=["protected"])
+    update_scoring_run(path, "live", status=status)
+    try:
+        with pytest.raises(JobDeletionConflictError):
+            soft_delete_jobs(db, ["protected"], confirmed=True)
+        assert db.execute("SELECT deleted_at FROM jobs WHERE id='protected'").fetchone()[0] is None
+    finally:
+        db.close()
+
+
+def test_stopped_run_rejects_late_checkpoint_and_retains_audit(tmp_path):
+    path = tmp_path / "late.db"
+    get_db(path).close()
+    create_scoring_run(path, run_id="late", options={}, job_ids=["one"])
+    update_scoring_run(path, "late", status="stopping")
+    update_scoring_run(path, "late", status="paused", remaining_job_ids=["one"])
+    assert get_scoring_run(path, "late")["status"] == "stopping"
+    update_scoring_run(path, "late", status="stopped")
+    update_scoring_run(path, "late", status="completed", remaining_job_ids=[])
+    run = get_scoring_run(path, "late")
+    assert run["status"] == "stopped"
+    assert run["remaining_job_ids"] == ["one"]
+    assert run["finished_at"]
+
+
+def test_restart_recovers_interrupted_end(tmp_path):
+    path = tmp_path / "end-restart.db"
+    get_db(path).close()
+    create_scoring_run(path, run_id="interrupted", options={}, job_ids=["one"])
+    update_scoring_run(path, "interrupted", status="stopping")
+    assert mark_orphaned_scoring_runs_paused(path) == 1
+    assert get_scoring_run(path, "interrupted")["recoverable"] is True
+
+
+def test_paused_run_still_protects_permanent_deletion(tmp_path):
+    path = tmp_path / "permanent.db"
+    db = get_db(path)
+    try:
+        insert_job(db, _job("keep"))
+        create_scoring_run(path, run_id="paused", options={}, job_ids=["keep"])
+        update_scoring_run(path, "paused", status="paused")
+        soft_delete_jobs(db, ["keep"], confirmed=True)
+        with pytest.raises(JobDeletionConflictError):
+            permanent_delete_jobs(db, ["keep"], confirmed=True, confirmation="PERMANENT_DELETE")
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE id='keep'").fetchone()[0] == 1
+    finally:
+        db.close()
