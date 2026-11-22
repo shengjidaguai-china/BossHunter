@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import tempfile
@@ -958,6 +959,63 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["all_total"], 4)
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
+
+    def test_job_search_and_filtered_export_match_literal_keywords(self):
+        cases = [
+            ("%", "100% remote", "1000 remote"),
+            ("_", "data_engineer", "dataXengineer"),
+            ("data_engineer", "DATA_engineer", "dataXengineer"),
+            ("100%", "100% remote", "1000 remote"),
+            ("\\", "path\\segment", "pathsegment"),
+            ("path\\", "path\\", "path"),
+            (r"\%", r"path\%done", r"path\Xdone"),
+            (r"\_", r"path\_done", r"path\Xdone"),
+            ("pYtHoN", "Python developer", "Java developer"),
+            ("数据", "数据工程师", "软件工程师"),
+            ("O'Reilly", "O'Reilly", "OReilly"),
+        ]
+        fields = ("title", "company", "jd", "score_reason")
+        expected_ids = {f"match-{field}" for field in fields}
+        for keyword, matching_text, nonmatching_text in cases:
+            with self.subTest(keyword=keyword), tempfile.TemporaryDirectory() as tmp:
+                server.set_base_dir(Path(tmp))
+                db = get_db(server.DATA_DIR / "bosshunter.db")
+                try:
+                    for field in fields:
+                        job_id = f"match-{field}"
+                        job = _job(job_id)
+                        if field != "score_reason":
+                            job[field] = f"prefix {matching_text} suffix"
+                        insert_job(db, job)
+                        reason = f"prefix {matching_text} suffix" if field == "score_reason" else "matched skills"
+                        update_job_score(db, job_id, 80, reason)
+                    insert_job(db, {**_job("nonmatching"), "title": nonmatching_text})
+                finally:
+                    db.close()
+
+                query = quote(keyword, safe="")
+                status, _, body = self._request(f"/api/jobs/search?q={query}")
+                self.assertTrue(status.startswith("200"), body)
+                payload = json.loads(body)
+                self.assertEqual({job["id"] for job in payload["items"]}, expected_ids)
+                self.assertEqual(payload["total"], 4)
+                self.assertEqual(payload["all_total"], 5)
+
+                page_status, _, page_body = self._request(f"/api/jobs/search?q={query}&limit=2&offset=1")
+                self.assertTrue(page_status.startswith("200"), page_body)
+                page = json.loads(page_body)
+                self.assertEqual(page["total"], 4)
+                self.assertEqual(len(page["items"]), 2)
+                self.assertTrue({job["id"] for job in page["items"]} <= expected_ids)
+
+                export_status, headers, export_body = self._request(
+                    "/api/jobs/export", "POST",
+                    {"format": "csv", "scope": "filtered", "filters": {"q": keyword}},
+                )
+                self.assertTrue(export_status.startswith("200"), export_body)
+                rows = list(csv.DictReader(io.StringIO(export_body.lstrip("\ufeff"))))
+                self.assertEqual({row["岗位 ID"] for row in rows}, expected_ids)
+                self.assertEqual(headers["X-Exported-Count"], "4")
 
     def test_job_search_hides_blocked_companies_before_pagination_without_deleting_records(self):
         with tempfile.TemporaryDirectory() as tmp:
