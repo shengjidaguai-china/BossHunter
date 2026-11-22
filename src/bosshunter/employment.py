@@ -7,11 +7,28 @@ from typing import Any, Literal
 EmploymentType = Literal["internship", "full_time", "part_time", "unknown"]
 _EXPLICIT_TYPE = re.compile(r"(?:职位|岗位|工作|招聘|用工)(?:类型|性质)\s*[:：]\s*(实习|全职|兼职)")
 _TYPE_NAMES: dict[str, EmploymentType] = {"实习": "internship", "全职": "full_time", "兼职": "part_time"}
-# Job-type denial. Kept contiguous so "不接受没有实习经历" stays a candidate
-# requirement and does not match "不接受实习".
-_JOB_TYPE_DENIAL = re.compile(r"非实习|不招实习|不接受实习")
-# A full-time job statement, not a candidate's past full-time experience.
-_JD_FULL_TIME_JOB = re.compile(r"全职岗位|正式岗位|只招正式")
+# Words that describe a candidate's past internship, not the role being hired.
+# Optional spaces cover "实习 经验" the same as "实习经验".
+_CANDIDATE_INTERN_TAIL = r"[\s　]*(?:经历|经验|背景)"
+# A refusal verb is cancelled when it is itself negated: 不拒绝 / 不会拒绝 / 并不禁止.
+_NEGATED_REFUSAL = re.compile(r"(?:并不|不会|不再|没有|并未|并非|不|未)[\s　]*$")
+# Refusal verbs. A short modifier may sit before 实习 ("在校实习", "谢绝 实习生").
+# The modifier cannot cross a sentence break, and 实习经历/经验/背景 stays a candidate condition.
+_REFUSAL = r"谢绝|拒绝|拒收|婉拒|严禁|禁止|不录用|不招聘|不招收?|不接受"
+_REFUSAL_GAP = r"(?:[\s　]|[\u4e00-\u9fff]){0,6}?"
+_JOB_TYPE_DENIAL = re.compile(
+    rf"(?:{_REFUSAL}){_REFUSAL_GAP}实习(?!{_CANDIDATE_INTERN_TAIL})|非实习(?!{_CANDIDATE_INTERN_TAIL})"
+)
+# Affirmative full-time role. 接受全职 means "also acceptable", and 非/不是/并非 negates it.
+_EXCLUSIVE_FULL_TIME_JOB = re.compile(
+    r"只招正式|(?<!不是)(?<!并非)(?<!非)(?<!接受)(?:全职岗位|正式岗位)"
+)
+# The JD offers internship as a role, so a full-time phrase is not exclusive.
+_JD_ALSO_INTERNSHIP = re.compile(
+    rf"(?:或|和|及|与)实习(?!{_CANDIDATE_INTERN_TAIL})|实习或|实习亦可|亦可实习|也招实习|"
+    rf"也?欢迎实习(?!{_CANDIDATE_INTERN_TAIL})|"
+    rf"(?<!不)接受实习(?!{_CANDIDATE_INTERN_TAIL})"
+)
 
 # BOSS search-card tag such as 「5天/周」 or 「3个月」; the collector stamps
 # BOSS_INTERNSHIP_CARD into employment_source only when the internship-only
@@ -19,6 +36,20 @@ _JD_FULL_TIME_JOB = re.compile(r"全职岗位|正式岗位|只招正式")
 # persisted evidence as one internship signal alongside title/JD signals.
 BOSS_INTERNSHIP_CARD = "boss_internship_card"
 _INTERNSHIP_CARD_TAG = re.compile(r"^\s*\d+\s*(?:天/周|个月)\s*$")
+
+
+def _has_job_type_denial(text: str) -> bool:
+    """True when a refusal targets the internship role, not a negated refusal verb."""
+    for match in _JOB_TYPE_DENIAL.finditer(text):
+        if _NEGATED_REFUSAL.search(text[:match.start()]):
+            continue
+        return True
+    return False
+
+
+def _exclusive_full_time_jd(jd: str) -> bool:
+    """True when the JD states a full-time role and does not also accept internship."""
+    return bool(_EXCLUSIVE_FULL_TIME_JOB.search(jd)) and not _JD_ALSO_INTERNSHIP.search(jd)
 
 
 def has_internship_card_tag(tags) -> bool:
@@ -35,9 +66,9 @@ def classify_employment(job: Mapping[str, Any]) -> EmploymentType:
     jd = str(job.get("jd") or "")
     # A negative internship statement must not become positive internship evidence.
     # The same denial in the JD outranks a search-card tag.
-    denies_internship = bool(_JOB_TYPE_DENIAL.search(title) or _JOB_TYPE_DENIAL.search(jd))
+    denies_internship = _has_job_type_denial(title) or _has_job_type_denial(jd)
     signals: set[EmploymentType] = set()
-    if denies_internship or re.search(r"全职|正式岗", title) or _JD_FULL_TIME_JOB.search(jd):
+    if denies_internship or re.search(r"全职|正式岗", title) or _exclusive_full_time_jd(jd):
         signals.add("full_time")
     if not denies_internship and re.search(r"实习|\bintern(?:ship)?\b", title, re.I):
         signals.add("internship")

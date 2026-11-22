@@ -435,6 +435,58 @@ def test_persisted_card_evidence_is_one_internship_signal():
     }) == "unknown"
 
 
+@pytest.mark.parametrize("title,jd,kind,reason", [
+    ("数据分析", "本岗位为全职岗位，不招实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "不接受实习，只招正式员工。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "欢迎实习生。本岗位不招实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "不招收实习生。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "谢绝实习生。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "谢绝 实习生。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "拒绝实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "禁止实习生报名。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "不拒绝实习生。", "internship", ""),
+    ("数据分析", "不会拒绝实习生。", "internship", ""),
+    ("数据分析", "并不拒绝实习生。", "internship", ""),
+    ("数据分析", "不禁止实习生报名。", "internship", ""),
+    ("数据分析", "不接受实习 经验不足的候选人。", "internship", ""),
+    ("数据分析", "不接受实习　经历不足的候选人。", "internship", ""),
+    ("数据分析", "非实习 背景亦可。", "internship", ""),
+    ("数据分析", "不接受在校实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "拒绝应届实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "可接受全职岗位或实习。但谢绝在校实习生。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "欢迎实习。不接受在校实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "负责数据分析与报表。", "internship", ""),
+    ("数据分析", "有实习经历优先", "internship", ""),
+    ("数据分析", "不接受没有实习经历的候选人。", "internship", ""),
+    ("数据分析", "不接受没有实习经验的候选人。", "internship", ""),
+    ("数据分析", "不接受实习经历不足的候选人。", "internship", ""),
+    ("数据分析", "不接受实习经验不足的候选人。", "internship", ""),
+    ("数据分析", "非实习经历亦可。", "internship", ""),
+    ("数据分析", "非实习经验亦可。", "internship", ""),
+    ("数据分析", "实习背景不限。", "internship", ""),
+    ("实习数据分析", "本岗位不是正式岗位。", "internship", ""),
+    ("实习数据分析", "并非正式岗位。", "internship", ""),
+    ("数据分析", "可接受全职岗位或实习。", "internship", ""),
+    ("数据分析", "提供全职岗位与实习岗位。", "internship", ""),
+    ("数据分析", "亦可接受全职岗位。", "internship", ""),
+    ("实习数据分析", "亦可接受全职岗位。", "internship", ""),
+    ("数据分析", "全职岗位优先，实习亦可。", "internship", ""),
+    ("数据分析", "此岗为全职岗位，同时欢迎实习。", "internship", ""),
+    ("数据分析", "欢迎实习生。不接受没有实习经验的候选人。", "internship", ""),
+    # The post itself is named full-time, so the card conflicts and stays unverified.
+    ("数据分析", "本岗位为全职岗位。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
+    ("数据分析", "只招正式员工，实习经验优秀者优先。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
+])
+def test_card_evidence_respects_job_type_scope(title, jd, kind, reason):
+    job = {
+        "title": title, "jd": jd, "salary": "10-20K", "company": "测试企业",
+        "source_platform": "boss", "employment_source": BOSS_INTERNSHIP_CARD,
+    }
+    assert classify_employment(job) == kind
+    assert internship_rejection(job, CONFIG) == reason
+    assert quick_score(job, CONFIG)[0] == (0 if reason else 100)
+
+
 def test_merge_detail_keeps_employment_source():
     candidate = JobCandidate(
         platform="boss", source_job_id="merge", title="软件测试", company="测试企业",
@@ -676,7 +728,8 @@ def _database_missing_only_employment_source(tmp_path):
     return path
 
 
-def test_concurrent_employment_source_migration_keeps_both_connections(tmp_path):
+@pytest.mark.parametrize("_round_index", range(3))
+def test_concurrent_employment_source_migration_keeps_both_connections(tmp_path, _round_index):
     import bosshunter.db as dbmod
 
     path = _database_missing_only_employment_source(tmp_path)
@@ -686,19 +739,35 @@ def test_concurrent_employment_source_migration_keeps_both_connections(tmp_path)
     # or it would sit at the barrier alone after the winner has already finished.
     waits = {"count": 0}
     wait_lock = threading.Lock()
+    saw_missing = []
+    alter_counts = {"added": 0, "duplicate": 0}
 
     class PausingConnection:
         def __init__(self, conn):
             self._conn = conn
 
         def execute(self, sql, *args, **kwargs):
-            cursor = self._conn.execute(sql, *args, **kwargs)
             text = sql if isinstance(sql, str) else ""
+            if text.startswith("ALTER TABLE jobs ADD COLUMN employment_source"):
+                try:
+                    cursor = self._conn.execute(sql, *args, **kwargs)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" in str(exc).lower():
+                        with wait_lock:
+                            alter_counts["duplicate"] += 1
+                    raise
+                with wait_lock:
+                    alter_counts["added"] += 1
+                return cursor
+            cursor = self._conn.execute(sql, *args, **kwargs)
             stack = "".join(traceback.format_stack())
             if "PRAGMA table_info(jobs)" in text and "_migrate_employment_source" in stack:
+                names = {row[1] for row in self._conn.execute("PRAGMA table_info(jobs)")}
                 with wait_lock:
                     waits["count"] += 1
                     should_wait = waits["count"] <= 2
+                    if should_wait:
+                        saw_missing.append("employment_source" not in names)
                 if should_wait:
                     barrier.wait(timeout=5)
             return cursor
@@ -734,6 +803,8 @@ def test_concurrent_employment_source_migration_keeps_both_connections(tmp_path)
         dbmod.sqlite3.connect = real_connect
 
     assert outcomes == [True, True]
+    assert saw_missing == [True, True]
+    assert alter_counts == {"added": 1, "duplicate": 1}
     conn = get_db(path)
     try:
         row = dict(conn.execute("SELECT * FROM jobs WHERE id = 'keep-me'").fetchone())
