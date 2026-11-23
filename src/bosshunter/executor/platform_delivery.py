@@ -74,9 +74,10 @@ def approval_error(db, job, config):
 
 
 def reserve_delivery(db, job, config):
-    """Serialize the quota and company check before performing an external action."""
+    """Serialize quota, same-job protection and optional cross-platform company dedup."""
     platform = platform_of(job)
     key = company_name_key(job.get("company") or "")
+    cross_platform_dedup = config.get("delivery", {}).get("cross_platform_dedup", False) is True
     with db:
         db.execute("BEGIN IMMEDIATE")
         if reason := approval_error(db, job, config):
@@ -104,7 +105,10 @@ def reserve_delivery(db, job, config):
                           AND h.action IN ('sent','manual_sent','delivery_reserved','prior_application'))
         """)
         for row in prior:
-            if row["id"] == job["id"] or (key and row["platform"] != platform and company_name_key(row["company"] or "") == key):
+            if row["id"] == job["id"] or (
+                cross_platform_dedup and key and row["platform"] != platform
+                and company_name_key(row["company"] or "") == key
+            ):
                 return "duplicate_company"
         if not key and platform != "boss":
             return "unknown_company"

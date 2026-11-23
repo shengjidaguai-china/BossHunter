@@ -40,8 +40,9 @@ def job(db, platform, identifier, company):
     return record
 
 
-def config(job_id, platform="liepin"):
-    return {"delivery": {"ego_task_space_id": 7, "platforms": {"liepin": {"enabled": True}, "zhilian": {"enabled": True}}},
+def config(job_id, platform="liepin", *, cross_platform_dedup=False):
+    return {"delivery": {"ego_task_space_id": 7, "cross_platform_dedup": cross_platform_dedup,
+                         "platforms": {"liepin": {"enabled": True}, "zhilian": {"enabled": True}}},
             "_workbench_job_ids": [job_id], "_workbench_expected_platforms": {job_id: platform},
             "_workbench_expected_actions": {job_id: "apply_resume"}}
 
@@ -51,7 +52,7 @@ def test_cross_platform_company_dedup_includes_boss_history(db):
     second = job(db, "liepin", "new", "a公司")
     db.execute("INSERT INTO history(job_id, action) VALUES (?, 'sent')", (first["id"],))
     db.commit()
-    assert delivery.reserve_delivery(db, second, config("new")) == "duplicate_company"
+    assert delivery.reserve_delivery(db, second, config("new", cross_platform_dedup=True)) == "duplicate_company"
 
 
 def test_quota_independent_across_platforms(db):
@@ -224,7 +225,7 @@ def test_legacy_boss_sent_status_without_history_blocks_external_company(db):
     db.execute("UPDATE jobs SET status='resume_sent' WHERE id='old'")
     db.commit()
     record = job(db, "liepin", "new", "公司甲")
-    assert delivery.reserve_delivery(db, record, config("new")) == "duplicate_company"
+    assert delivery.reserve_delivery(db, record, config("new", cross_platform_dedup=True)) == "duplicate_company"
 
 
 def test_site_verified_manual_confirmation_resolves_uncertain_pilot(db):
@@ -264,7 +265,7 @@ def test_duplicate_does_not_spend_last_platform_slot(db, tmp_path):
     db.execute("UPDATE jobs SET score=99 WHERE id='duplicate'")
     db.execute("INSERT INTO history(job_id,action,created_at) VALUES('pilot','sent','2026-01-01')")
     db.commit()
-    cfg = config("duplicate")
+    cfg = config("duplicate", cross_platform_dedup=True)
     cfg["delivery"]["platforms"]["liepin"]["daily_limit"] = 1
     cfg["_workbench_job_ids"] = ["duplicate", "eligible"]
     cfg["_workbench_expected_platforms"] = {key: "liepin" for key in cfg["_workbench_job_ids"]}
@@ -317,7 +318,7 @@ def test_already_applied_report_protects_company_without_counting_pilot(db, tmp_
     assert delivery.first_application_pending(db)
     assert delivery.sent_today(db, "liepin") == 0
     other = job(db, "zhilian", "other", "公司甲")
-    assert delivery.reserve_delivery(db, other, config("other", "zhilian")) == "duplicate_company"
+    assert delivery.reserve_delivery(db, other, config("other", "zhilian", cross_platform_dedup=True)) == "duplicate_company"
 
 
 def test_unverified_feedback_cannot_emit_reply_or_open_liepin(db):
@@ -381,4 +382,53 @@ def test_complete_company_names_across_platforms(db, prior, candidate, duplicate
     db.commit()
     target = job(db, "liepin", "pilot", candidate)
     expected = "duplicate_company" if duplicate else None
-    assert delivery.reserve_delivery(db, target, config("pilot")) == expected
+    assert delivery.reserve_delivery(db, target, config("pilot", cross_platform_dedup=True)) == expected
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+@pytest.mark.parametrize("action", ["sent", "manual_sent", "delivery_reserved", "prior_application"])
+def test_cross_platform_company_dedup_switch(db, enabled, action):
+    job(db, "boss", "old", "同公司有限公司")
+    db.execute("INSERT INTO history(job_id, action) VALUES ('old', ?)", (action,))
+    db.commit()
+    target = job(db, "liepin", "new", "同公司")
+    cfg = config("new", cross_platform_dedup=enabled)
+    if enabled is None:
+        cfg["delivery"].pop("cross_platform_dedup")
+    assert delivery.reserve_delivery(db, target, cfg) == ("duplicate_company" if enabled else None)
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+@pytest.mark.parametrize("platform", ["boss", "liepin"])
+@pytest.mark.parametrize("action", ["sent", "manual_sent", "delivery_reserved", "prior_application"])
+def test_same_platform_job_history_always_blocks_retry(db, enabled, platform, action):
+    target = job(db, platform, "same", "同公司")
+    # A previous confirmed external application lets this test isolate dedup from the pilot gate.
+    job(db, "zhilian", "pilot", "首投公司")
+    db.execute("INSERT INTO history(job_id, action) VALUES ('pilot', 'sent')")
+    db.execute("INSERT INTO history(job_id, action) VALUES ('same', ?)", (action,))
+    db.commit()
+    cfg = config("same", platform, cross_platform_dedup=enabled)
+    if enabled is None:
+        cfg["delivery"].pop("cross_platform_dedup")
+    assert delivery.reserve_delivery(db, target, cfg) == "duplicate_company"
+    assert db.execute("SELECT COUNT(*) FROM history WHERE job_id='same'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_uncertain_first_application_still_blocks_automatic_retry(db, enabled):
+    target = job(db, "liepin", "same", "同公司")
+    cfg = config("same", cross_platform_dedup=enabled)
+    assert delivery.reserve_delivery(db, target, cfg) is None
+    assert delivery.reserve_delivery(db, target, cfg) == "pilot_pending"
+    assert db.execute("SELECT COUNT(*) FROM history WHERE job_id='same'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_cross_platform_dedup_config_loading(tmp_path, enabled):
+    from bosshunter.config import DEFAULTS, load_config
+    path = tmp_path / "config.yaml"
+    path.write_text("delivery: {}\n" if enabled is None else
+                    f"delivery:\n  cross_platform_dedup: {str(enabled).lower()}\n")
+    assert DEFAULTS["delivery"]["cross_platform_dedup"] is False
+    assert load_config(path)["delivery"]["cross_platform_dedup"] is (enabled is True)
