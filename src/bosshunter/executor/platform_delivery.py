@@ -440,7 +440,10 @@ def verify_zhilian_application(browser, job, stop=None, guard=None):
             guard.reserve("application_record")
         except PlatformSafetyStop:
             return False
-    target = browser.new_tab("https://i.zhaopin.com/schedule")
+    try:
+        target = browser.new_tab("https://i.zhaopin.com/schedule")
+    except EgoTaskSpaceError:
+        return False
     if not target:
         return False
     try:

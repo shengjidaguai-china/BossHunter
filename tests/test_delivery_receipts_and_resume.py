@@ -122,3 +122,10 @@ def test_sender_records_partial_chat_and_blocks_duplicate(tmp_path):
     assert db.execute("SELECT status FROM jobs WHERE id='chat'").fetchone()[0]=='needs_resume'
     assert [r[0] for r in db.execute("SELECT action FROM history")] == ['sent','needs_resume']
     db.close()
+
+
+def test_official_record_tab_failure_preserves_uncertainty():
+    browser=Mock()
+    browser.new_tab.side_effect=delivery.EgoTaskSpaceError('space unavailable')
+    assert not delivery.verify_zhilian_application(browser, {'id':'zhilian:123'})
+    browser.close_tab.assert_not_called()
