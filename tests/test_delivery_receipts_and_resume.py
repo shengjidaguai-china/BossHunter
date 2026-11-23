@@ -129,3 +129,16 @@ def test_official_record_tab_failure_preserves_uncertainty():
     browser.new_tab.side_effect=delivery.EgoTaskSpaceError('space unavailable')
     assert not delivery.verify_zhilian_application(browser, {'id':'zhilian:123'})
     browser.close_tab.assert_not_called()
+
+
+def test_attachment_name_is_exact_not_a_version_prefix():
+    expected = dict(origin='https://jobs.51job.com',path='/shanghai/123.html',title='Engineer',company='Acme',platform='51job',phase='submit',resume_choice='attachment',resume_name='approved_v8.1')
+    run_js(delivery._APPLY_SCRIPT.replace('EXPECTED_JOB',json.dumps(expected)),r'''
+const assert=require('node:assert/strict');global.location={origin:'https://jobs.51job.com',pathname:'/shanghai/123.html'};
+global.getComputedStyle=()=>({visibility:'visible'});let applications=0, selections=0, name='approved_v8.10';
+const button={innerText:'立即投递',id:'123',getClientRects:()=>[{}],getAttribute:()=>null,click:()=>applications++};
+const attachment={getClientRects:()=>[{}],querySelector:s=>s==='.name'?{innerText:name}:{},closest:()=>attachment,click:()=>selections++};
+global.document={body:{innerText:'Engineer Acme'},querySelectorAll:s=>s==='div.apply-btn-new.big'?[button]:s.includes('.attachment_item')?[attachment]:[]};
+assert.equal(eval(SCRIPT).error,'attachment_selection_unverified');assert.equal(applications,0);assert.equal(selections,0);
+name='approved_v8.1';assert.deepEqual(eval(SCRIPT),{found:true});assert.equal(applications,1);assert.equal(selections,1);
+''')

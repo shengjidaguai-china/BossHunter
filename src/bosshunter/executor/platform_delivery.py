@@ -271,12 +271,14 @@ _APPLY_SCRIPT = r"""
     if (expected.phase === 'submit' && expected.resume_choice === 'attachment' && !expected.resume_verified) {
         const candidates = [...document.querySelectorAll('.attachment_item')].filter(el =>
             el.getClientRects().length && el.querySelector('input[type=radio],.radio'));
-        const matches = expected.resume_name ? candidates.filter(el => (el.innerText || '').includes(expected.resume_name)) : candidates;
+        const attachmentName = el => (el.querySelector('.name')?.innerText || '').trim();
+        const isExpected = name => !expected.resume_name || name === expected.resume_name || name === expected.resume_name + '.pdf';
+        const matches = candidates.filter(el => isExpected(attachmentName(el)));
         if (matches.length === 1) matches[0].click();
         const selected = [...document.querySelectorAll('.attachment_item:has(.radio.selected),.attachment_item:has(input:checked)')]
             .filter(el => el.getClientRects().length);
-        const names = selected.map(el => (el.closest('.attachment_item') || el).innerText || '');
-        if (!names.length || (expected.resume_name && !names.some(name => name.includes(expected.resume_name))))
+        const names = selected.map(el => attachmentName(el.closest('.attachment_item') || el));
+        if (names.length !== 1 || !isExpected(names[0]))
             return {error:'attachment_selection_unverified'};
     }
     if (expected.phase === 'submit') matches[0].click();
