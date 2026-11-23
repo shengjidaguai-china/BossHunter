@@ -22,6 +22,7 @@ from bosshunter.ai.credentials import (
 from bosshunter.browser.diagnostics import run_browser_diagnostics
 from bosshunter.browser.ego import EgoTaskSpace, EgoTaskSpaceError
 from bosshunter.collection.orchestrator import normalize_collection_options
+from bosshunter.collection.capabilities import platform_supports
 
 VALID_MODES = {"full", "collect", "rescore", "monitor"}
 
@@ -58,7 +59,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 
 	with ThreadPoolExecutor(max_workers=2) as executor:
 		ai_future = executor.submit(check_ai_connection, deepcopy(config), True)
-		browser_future = executor.submit(_check_workflow_browser, mode, deepcopy(config), collection_options)
+		browser_future = executor.submit(_check_workflow_browser, mode, deepcopy(config), options if mode == "full" else collection_options)
 		for future, fallback in (
 			(ai_future, _check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config")),
 			(
@@ -312,6 +313,16 @@ def _python_runtime_checks() -> list[dict[str, str]]:
 
 
 def _check_workflow_browser(mode: str, config: dict, options: dict | None) -> list[dict[str, str]]:
+	if mode == "full":
+		try:
+			full = normalize_collection_options(config, options)
+		except ValueError:
+			return []  # The full-flow configuration check reports the invalid options.
+		external = [platform for platform in full["platform_order"] if platform != "boss"]
+		if external:
+			if not all(platform_supports(platform, "deliver", config) for platform in external):
+				return [_check("ego_task_space", "Ego Lite 任务空间", "error", "外部平台投递尚未启用", "请在本机设置平台开关和任务空间。", "config")]
+			mode = "deliver"
 	if mode in {"collect", "monitor", "deliver"}:
 		section = "collection" if mode == "collect" else "delivery"
 		try:
