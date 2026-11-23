@@ -142,3 +142,13 @@ global.document={body:{innerText:'Engineer Acme'},querySelectorAll:s=>s==='div.a
 assert.equal(eval(SCRIPT).error,'attachment_selection_unverified');assert.equal(applications,0);assert.equal(selections,0);
 name='approved_v8.1';assert.deepEqual(eval(SCRIPT),{found:true});assert.equal(applications,1);assert.equal(selections,1);
 ''')
+
+
+def test_liepin_attachment_filename_ignores_upload_date_and_preview_label():
+    from bosshunter.executor.liepin_chat import _SELECT_ATTACHMENT
+    run_js(_SELECT_ATTACHMENT.replace('RESUME_NAME',json.dumps('approved_v8.1')),r'''
+const assert=require('node:assert/strict');let clicks=0;
+const label={innerText:'approved_v8.1.pdf\n2026-11-23上传\n预览',querySelector:s=>s==='p'?{innerText:'approved_v8.1.pdf'}:{},click:()=>clicks++};
+const dialog={getClientRects:()=>[{}],innerText:'选择附件简历',querySelectorAll:()=>[label]};
+global.document={querySelectorAll:()=>[dialog]};assert.deepEqual(eval(SCRIPT),{selected:true});assert.equal(clicks,1);
+''')

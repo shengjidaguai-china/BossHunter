@@ -154,7 +154,8 @@ _SELECT_ATTACHMENT = r"""
  const dialogs=[...document.querySelectorAll('[role=dialog]')].filter(e=>e.getClientRects().length && e.innerText.includes('选择附件简历'));
  if(dialogs.length!==1)return {selected:false};
  const radios=[...dialogs[0].querySelectorAll('label')].filter(e=>e.querySelector('input[type=radio]'));
- const matches=name?radios.filter(e=>e.innerText.trim()===name || e.innerText.trim()===name+'.pdf'):radios;
+ const filename=e=>(e.querySelector('p')?.innerText || '').trim();
+ const matches=name?radios.filter(e=>filename(e)===name || filename(e)===name+'.pdf'):radios;
  // The observed chooser is newest-first. Multiple unknown versions require an explicit name.
  if(matches.length!==1)return {selected:false};
  matches[0].click(); return {selected:!!matches[0].querySelector('input:checked')};
