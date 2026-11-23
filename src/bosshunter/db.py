@@ -1521,16 +1521,20 @@ def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[s
 
 
 def get_daily_activity(conn: sqlite3.Connection, days: int = 7) -> list[dict]:
-    """Get daily activity for last N days."""
+    """Get activity for N UTC calendar days ending today (0 also selects today)."""
+    if days < 0:
+        return []
+    days_back = max(days - 1, 0)
     rows = conn.execute("""
         SELECT date(h.created_at) as day, h.action, COUNT(*) as cnt
         FROM history h
         JOIN jobs j ON h.job_id = j.id
         WHERE h.created_at >= date('now', ?)
+          AND h.created_at < date('now', '+1 day')
           AND j.deleted_at IS NULL
         GROUP BY date(h.created_at), h.action
         ORDER BY day DESC
-    """, (f"-{days} days",)).fetchall()
+    """, (f"-{days_back} days",)).fetchall()
     return [dict(row) for row in rows]
 
 

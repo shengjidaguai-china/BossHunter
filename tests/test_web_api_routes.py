@@ -915,6 +915,34 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual(json.loads(body), [])
 
+    def test_activity_window_counts_today_as_one_of_the_requested_days(self):
+        today = datetime.now(UTC).date()
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(server.DATA_DIR / "bosshunter.db")
+            try:
+                for offset in range(-7, 2):
+                    day = today + timedelta(days=offset)
+                    job_id = day.isoformat()
+                    insert_job(db, _job(job_id))
+                    db.execute(
+                        "INSERT INTO history (job_id, action, created_at) VALUES (?, 'sent', ?)",
+                        (job_id, f"{day} 00:00:00"),
+                    )
+                db.commit()
+            finally:
+                db.close()
+
+            for days, expected_days in ((7, 7), (1, 1), (0, 1), (-1, 0)):
+                with self.subTest(days=days):
+                    status, _, body = self._request(f"/api/activity?days={days}")
+                    self.assertTrue(status.startswith("200"), body)
+                    expected = [
+                        {"day": (today - timedelta(days=i)).isoformat(), "action": "sent", "cnt": 1}
+                        for i in range(expected_days)
+                    ]
+                    self.assertEqual(json.loads(body), expected)
+
     def test_job_search_filters_keyword_score_salary_and_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
