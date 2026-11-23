@@ -33,6 +33,8 @@ async function dispatch(task) {
             return true;
         case "evaluate":
             return await page.evaluate(args.expression);
+        case "info":
+            return await page.evaluate(() => ({ title: document.title, url: location.href, ready: document.readyState }));
         case "scroll":
             return await page.evaluate(({ y, direction }) => {
                 if (direction === "top") window.scrollTo(0, 0);
@@ -44,8 +46,27 @@ async function dispatch(task) {
             await page.waitForLoadState("load", { timeout: args.ms });
             return true;
         case "click":
-            await page.click(args.selector, { timeout: 10_000, label: "Focus job search input" });
+            await page.click(args.selector, { timeout: 10_000, label: "Use recruitment page control" });
             return true;
+        case "click_at": {
+            const point = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(args.selector);
+            if (point) await page.mouse.click(Number(point[1]), Number(point[2]), { label: "Use recruitment page control" });
+            else await page.click(args.selector, { timeout: 10_000, label: "Use recruitment page control" });
+            return true;
+        }
+        case "files":
+            await page.setInputFiles(args.selector, args.files);
+            return true;
+        case "screenshot":
+            if (args.selector) throw new Error("Element screenshots are not supported");
+            await page.screenshot({ path: args.path });
+            return true;
+        case "pdf": {
+            const fs = await import("node:fs/promises");
+            const result = await page.cdp("Page.printToPDF", { printBackground: true });
+            await fs.writeFile(args.path, Buffer.from(result.data, "base64"));
+            return true;
+        }
         case "type":
             await page.keyboard.insertText(args.text);
             return true;
@@ -53,7 +74,7 @@ async function dispatch(task) {
             await page.keyboard.press(args.chord);
             return true;
         default:
-            throw new Error("Unknown collection browser action");
+            throw new Error("Unknown task-space browser action");
     }
 }
 

@@ -1420,13 +1420,12 @@ def api_history_open_chat(history_id):
 			return _json_response({"error": "该平台不支持聊天定位"}, 400)
 
 		from bosshunter.executor.monitor import MonitorRiskDetected, _open_conversation_from_chat_list
+		from bosshunter.browser import delivery_browser
 
 		try:
-			target_id = _open_conversation_from_chat_list(
-				job,
-				load_config(CONFIG_PATH),
-				background=False,
-			)
+			config = load_config(CONFIG_PATH)
+			with delivery_browser(config):
+				target_id = _open_conversation_from_chat_list(job, config, background=False)
 		except MonitorRiskDetected as exc:
 			return _json_response({"error": f"BOSS 页面出现风险提示：{exc.kind}"}, 409)
 		if not target_id:

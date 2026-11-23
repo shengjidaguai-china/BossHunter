@@ -153,6 +153,9 @@ DEFAULTS: dict[str, Any] = {
         "threshold": 71,
         "max_candidates": 20,
     },
+    "delivery": {
+        "ego_task_space_id": None,
+    },
     "throttle": {
         "daily_limit": 30,
         "interval_min": 60,

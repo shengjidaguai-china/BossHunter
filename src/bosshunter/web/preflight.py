@@ -312,14 +312,15 @@ def _python_runtime_checks() -> list[dict[str, str]]:
 
 
 def _check_workflow_browser(mode: str, config: dict, options: dict | None) -> list[dict[str, str]]:
-	if mode == "collect":
+	if mode in {"collect", "monitor", "deliver"}:
+		section = "collection" if mode == "collect" else "delivery"
 		try:
-			browser = EgoTaskSpace.from_config(config)
+			browser = EgoTaskSpace.from_config(config, section=section)
 			if browser is not None:
 				browser.check()
 				return [_check("ego_task_space", "Ego Lite 任务空间", "pass", "Ego Lite 已连接", f"任务空间 {browser.space_id} 已就绪。")]
 		except (ValueError, EgoTaskSpaceError) as exc:
-			return [_check("ego_task_space", "Ego Lite 任务空间", "error", str(exc), "请检查 collection.ego_task_space_id 与任务空间的控制权。", "browser")]
+			return [_check("ego_task_space", "Ego Lite 任务空间", "error", str(exc), f"请检查 {section}.ego_task_space_id 与任务空间的控制权。", "browser")]
 	return check_browser_connection(config, options)
 
 

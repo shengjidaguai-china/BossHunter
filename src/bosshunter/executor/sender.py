@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
 from bosshunter.browser import (
+    delivery_workflow,
     new_tab,
     close_tab,
     evaluate,
@@ -1048,6 +1049,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
     }, target_id
 
 
+@delivery_workflow
 def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
     """Send generated greetings. Returns count of successfully sent.
 

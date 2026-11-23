@@ -95,6 +95,11 @@ scoring:
   threshold: 70
   max_candidates: 20
 
+# 发送与回复监测共用同一个已有、Agent 控制的任务空间。
+# 不会创建 Ego Lite 实例或任务空间；省略/null 保持原 Browser Runtime。
+delivery:
+  ego_task_space_id: null
+
 throttle:
   daily_limit: 30
   interval_min: 60

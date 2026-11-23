@@ -1,4 +1,4 @@
-"""Collection browser operations scoped to an existing Ego Lite task space."""
+"""Browser operations scoped to an existing Ego Lite task space."""
 
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ class EgoTaskSpace:
         self.executable = shutil.which("ego-browser") or Path.home() / ".local/bin/ego-browser"
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> EgoTaskSpace | None:
-        space_id = (config.get("collection") or {}).get("ego_task_space_id")
+    def from_config(cls, config: dict[str, Any], *, section: str = "collection") -> EgoTaskSpace | None:
+        space_id = (config.get(section) or {}).get("ego_task_space_id")
         if space_id is None:
             return None
         if type(space_id) is not int or space_id <= 0:
-            raise ValueError("collection.ego_task_space_id 必须是已有 Ego Lite 任务空间的正整数 ID")
+            raise ValueError(f"{section}.ego_task_space_id 必须是已有 Ego Lite 任务空间的正整数 ID")
         return cls(space_id)
 
     def _call(self, action: str, *, timeout: float = 30, **args: Any) -> Any:
@@ -56,7 +56,7 @@ class EgoTaskSpace:
                     if reply.get("unavailable"):
                         break
                     return reply.get("value")
-        raise EgoTaskSpaceError(f"无法使用 Ego Lite 任务空间 {self.space_id}，请确认它仍由采集 Agent 控制")
+        raise EgoTaskSpaceError(f"无法使用 Ego Lite 任务空间 {self.space_id}，请确认它仍由 Agent 控制")
 
     def check(self) -> None:
         if self._call("check") is not True:
@@ -99,3 +99,28 @@ class EgoTaskSpace:
     def press_key_action(self, target_id: str, key: str) -> bool:
         chord = "ControlOrMeta+A" if key == "SelectAll" else key
         return self._call("key", label=target_id, chord=chord) is True
+
+    # RuntimeClient names used by the shared browser facade.
+    targets = get_page_targets
+    click = click_action
+    type_text = type_text_action
+    press_key = press_key_action
+
+    def health(self) -> dict:
+        self.check()
+        return {"ego_task_space_id": self.space_id}
+
+    def click_at(self, target_id: str, selector: str) -> bool:
+        return self._call("click_at", label=target_id, selector=selector) is True
+
+    def info(self, target_id: str) -> dict | None:
+        return self._call("info", label=target_id)
+
+    def set_files(self, target_id: str, selector: str, files: list[str]) -> bool:
+        return self._call("files", label=target_id, selector=selector, files=files) is True
+
+    def screenshot(self, target_id: str, file_path: str | Path, *, selector: str = "") -> bool:
+        return self._call("screenshot", label=target_id, path=str(file_path), selector=selector) is True
+
+    def print_pdf(self, target_id: str, file_path: str | Path) -> bool:
+        return self._call("pdf", label=target_id, path=str(file_path)) is True

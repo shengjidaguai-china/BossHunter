@@ -7,6 +7,7 @@ from rich.console import Console
 
 from bosshunter.ai.credentials import call_anthropic_text
 from bosshunter.browser import new_tab, close_tab, evaluate, click, wait_for_load, get_page_info
+from bosshunter.browser import delivery_browser, delivery_workflow
 from bosshunter.cancellation import (
     OperationCancelled,
     get_stop_event,
@@ -452,7 +453,10 @@ def close_monitor_chat_target(config: dict) -> None:
     target_id = runtime_state.pop("chat_target_id", None)
     if target_id:
         _SHARED_MONITOR_TARGETS.discard(str(target_id))
-        close_tab(str(target_id))
+        # Cleanup may run after the user has taken control. Do not turn that
+        # into a fresh connection check or mask the workflow's original error.
+        with delivery_browser(config, check=False):
+            close_tab(str(target_id))
 
 
 def _discard_monitor_chat_target(config: dict, target_id: str) -> None:
@@ -1365,6 +1369,7 @@ def _check_boss_replies(config: dict, tracked_jobs: list[dict] | None = None) ->
     return results
 
 
+@delivery_workflow
 def check_replies(config: dict) -> list[dict]:
     """Check BOSS replies; collection-only platforms never enter chat flows."""
     db = get_db()
@@ -2079,6 +2084,7 @@ def _generate_follow_up(job: dict, config: dict) -> str | None:
     return _call_claude(prompt, config)
 
 
+@delivery_workflow
 def monitor_and_send_resumes(config: dict) -> dict:
     """Full monitoring cycle:
     1. Detect HR replies
