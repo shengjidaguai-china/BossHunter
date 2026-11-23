@@ -18,6 +18,7 @@ from bosshunter.db import (
     get_db, get_jobs_by_status,
     update_job_status, add_history, add_risk_event, set_platform_safety_lock,
 )
+from bosshunter.collection.capabilities import platform_supports
 from bosshunter.throttle import RequestThrottle, SendWindowChecker
 from bosshunter.platform_safety import (
     PlatformAccessGuard,
@@ -1386,8 +1387,20 @@ def check_replies(config: dict) -> list[dict]:
     }
     if requested_ids:
         tracked = [job for job in tracked if str(job.get("id") or "") in requested_ids]
-    boss_results = _check_boss_replies(config, tracked)
-    return boss_results
+    from bosshunter.executor.platform_delivery import observe_replies, platform_of
+    external_count = 0
+    for platform in ("liepin", "zhilian", "51job"):
+        jobs = [job for job in tracked if platform_of(job) == platform]
+        if jobs:
+            conn = get_db()
+            try:
+                external_count += observe_replies(conn, config, platform, jobs)
+            except PlatformSafetyStop as exc:
+                raise MonitorRiskDetected(exc.reason) from exc
+            finally:
+                conn.close()
+    config["_observed_platform_replies"] = external_count
+    return _check_boss_replies(config, tracked) if platform_supports("boss", "monitor", config) else []
 
 
 def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
@@ -1978,7 +1991,7 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
     if stop_event and stop_event.is_set():
         return 0
     follow_up_cfg = config.get("follow_up", {})
-    if not follow_up_cfg.get("enabled", False):
+    if not follow_up_cfg.get("enabled", False) or not platform_supports("boss", "monitor", config):
         return 0
 
     # Skip weekends if configured
@@ -1999,6 +2012,8 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
     cutoff = datetime.now() - timedelta(hours=interval_hours)
     stale_jobs = []
     for job in sent_jobs:
+        if (job.get("source_platform") or "boss") != "boss":
+            continue
         # Skip any job that already had an HR reply this cycle
         if replied_job_ids and job["id"] in replied_job_ids:
             console.print(f"[dim]  跟进跳过（本轮已有HR回复）: {job['company']}[/dim]")
@@ -2132,6 +2147,7 @@ def monitor_and_send_resumes(config: dict) -> dict:
     console.print("\n[bold cyan]═══ 第一步：处理HR回复 ═══[/bold cyan]")
     try:
         replied_conversations = check_replies(monitor_config)
+        summary["replied"] += monitor_config.get("_observed_platform_replies", 0)
     except MonitorRiskDetected as exc:
         console.print(f"[red]⚠ 监测检测到风险信号 {exc.kind}，已立即停止[/red]")
         summary["stop_reason"] = exc.kind

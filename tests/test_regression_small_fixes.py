@@ -488,7 +488,7 @@ class DashboardPageTests(unittest.TestCase):
             / "useDashboard.ts"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("refreshingRef.current", hook_source)
+        self.assertIn("if (refreshControllerRef.current) return", hook_source)
         self.assertIn("setLastRefreshedAt", hook_source)
         self.assertIn("setWorkbench(prev => ({ ...prev, task, last_task: task }))", hook_source)
         self.assertIn("scope === 'monitor' ? 2000 : 5000", hook_source)

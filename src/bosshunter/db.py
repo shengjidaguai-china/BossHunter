@@ -25,7 +25,7 @@ REJECT_ALLOWED_STATUSES = {"ready", "approved", "error"}
 MANUAL_STATUS_TARGETS = {"ready", "filtered", "skipped", "rejected"}
 MANUAL_STATUS_PROTECTED = {"sent", "replied", "resume_sent", "needs_resume", "follow_up_sent"}
 DELETION_PROTECTED_HISTORY_ACTIONS = {
-    "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
+    "sent", "manual_sent", "delivery_reserved", "prior_application", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
 EXTERNAL_MANUAL_SEND_PLATFORMS = {"zhilian", "51job", "liepin"}
 
@@ -425,6 +425,12 @@ def mark_external_jobs_sent(conn: sqlite3.Connection, job_ids: Any, *, confirmed
             conn.execute(
                 "UPDATE jobs SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
                 (job_id,),
+            )
+            # An explicit site-verified manual confirmation also resolves a missing
+            # automatic receipt. Retain the original reservation time for quota.
+            conn.execute(
+                "UPDATE history SET action='sent', detail=? WHERE job_id=? AND action='delivery_reserved'",
+                ("用户核实在线简历已投递", job_id),
             )
             conn.execute(
                 "INSERT INTO history (job_id, action, detail) VALUES (?, 'manual_sent', ?)",
@@ -1045,16 +1051,16 @@ def get_jobs_ready_to_send(
     conn: sqlite3.Connection,
     *,
     include_pending_review: bool = False,
+    resume_platforms: tuple[str, ...] = (),
 ) -> list[dict]:
-    """Get jobs that have generated greetings and are ready to send."""
+    """Select confirmed greeting or online resume candidates for enabled platforms."""
     review_filter = "" if include_pending_review else "AND greeting_selection != 'pending'"
+    placeholders = ",".join("?" for _ in resume_platforms) or "NULL"
     rows = conn.execute(f"""
         SELECT * FROM jobs
         WHERE status IN ('ready', 'approved')
           AND deleted_at IS NULL
-          AND greeting IS NOT NULL
-          AND TRIM(greeting) != ''
-          {review_filter}
+          AND ((TRIM(greeting) != '' {review_filter}) OR source_platform IN ({placeholders}))
           AND (status = 'approved' OR NOT EXISTS (
               SELECT 1 FROM history AS evaluation
                    WHERE evaluation.job_id = jobs.id AND evaluation.action = 'agent_evaluated'
@@ -1065,20 +1071,20 @@ def get_jobs_ready_to_send(
                      )
           ))
         ORDER BY score DESC
-    """).fetchall()
+    """, resume_platforms).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_jobs_with_send_errors(conn: sqlite3.Connection) -> list[dict]:
+def get_jobs_with_send_errors(conn: sqlite3.Connection, *, resume_platforms: tuple[str, ...] = ()) -> list[dict]:
     """Get jobs where greeting sending failed and can be retried."""
-    rows = conn.execute("""
+    placeholders = ",".join("?" for _ in resume_platforms) or "NULL"
+    rows = conn.execute(f"""
         SELECT * FROM jobs
         WHERE status = 'error'
           AND deleted_at IS NULL
-          AND greeting IS NOT NULL
-          AND TRIM(greeting) != ''
+          AND (TRIM(greeting) != '' OR source_platform IN ({placeholders}))
         ORDER BY updated_at DESC, score DESC
-    """).fetchall()
+    """, resume_platforms).fetchall()
     return [dict(row) for row in rows]
 
 

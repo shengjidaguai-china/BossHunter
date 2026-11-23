@@ -155,6 +155,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "delivery": {
         "ego_task_space_id": None,
+        "platforms": {
+            platform: {"enabled": False, "daily_limit": 10}
+            for platform in ("liepin", "zhilian", "51job")
+        },
     },
     "throttle": {
         "daily_limit": 30,

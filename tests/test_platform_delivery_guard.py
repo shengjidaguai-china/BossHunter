@@ -72,3 +72,23 @@ class PlatformDeliveryGuardTests(TestCase):
                 self.assertTrue(deliver_status.startswith("403"), deliver_payload)
                 self.assertTrue(resume_status.startswith("403"), resume_payload)
                 start.assert_not_called()
+
+
+    def test_direct_delivery_rechecks_same_action_platform_before_queueing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            db.execute("INSERT INTO jobs(id,title,company,source_platform,status) VALUES ('job','开发','甲','51job','approved')")
+            db.commit()
+            db.close()
+            saved = {"delivery": {"ego_task_space_id": 7, "platforms": {"51job": {"enabled": True}}}}
+            with mock.patch.object(server, "DATA_DIR", base_dir / "data"), mock.patch.object(
+                server, "load_config", return_value=saved
+            ), mock.patch.object(server.task_runner, "start") as start:
+                status, payload = self._request("/api/workbench/deliver", {
+                    "job_ids": ["job"], "direct_send": True, "expected_actions": {"job": "apply_resume"},
+                    "expected_platforms": {"job": "zhilian"},
+                })
+            self.assertTrue(status.startswith("409"), payload)
+            self.assertEqual(payload["code"], "confirmed_platform_changed")
+            start.assert_not_called()

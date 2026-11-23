@@ -99,6 +99,11 @@ scoring:
 # 不会创建 Ego Lite 实例或任务空间；省略/null 保持原 Browser Runtime。
 delivery:
   ego_task_space_id: null
+  # 按平台明确开启，且必须使用已有 Ego Lite 任务空间。日限额各自计算。
+  platforms:
+    liepin: {enabled: false, daily_limit: 10}
+    zhilian: {enabled: false, daily_limit: 10}
+    "51job": {enabled: false, daily_limit: 10}
 
 throttle:
   daily_limit: 30
