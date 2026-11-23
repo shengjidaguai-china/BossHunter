@@ -93,7 +93,8 @@ def test_cancel_and_risk_do_not_submit_or_retry(db, tmp_path, monkeypatch):
         browser.evaluate.return_value = {"error": "captcha"}
         assert delivery.submit_resume(db, record, cfg)["error"] == "captcha"
         assert browser.evaluate.call_count == 1
-        assert "liepin" in (tmp_path / "需要扫码.txt").read_text()
+        assert "liepin 检测到 captcha" in (tmp_path / "需要扫码.txt").read_text()
+        assert "任务空间 7" in (tmp_path / "需要扫码.txt").read_text()
 
 
 def test_missing_ego_never_uses_runtime_or_browser(db):
@@ -366,3 +367,18 @@ def test_external_full_preflight_never_falls_back_to_runtime():
         assert _check_workflow_browser("full", config("pilot"), {})[0]["status"] == "pass"
         runtime.assert_not_called()
         ego_check.assert_called_once()
+
+
+@pytest.mark.parametrize(("prior", "candidate", "duplicate"), [
+    ("合成科技有限公司", "合成科技", True),
+    ("合成（ＡＩ）技术股份有限公司", "合成-ai 技术", True),
+    ("合成科技（上海）有限公司", "合成科技（苏州）有限公司", False),
+    ("合成科技有限公司", "合成科技文化传媒有限责任公司", False),
+])
+def test_complete_company_names_across_platforms(db, prior, candidate, duplicate):
+    job(db, "boss", "historical", prior)
+    db.execute("UPDATE jobs SET status='sent' WHERE id='historical'")
+    db.commit()
+    target = job(db, "liepin", "pilot", candidate)
+    expected = "duplicate_company" if duplicate else None
+    assert delivery.reserve_delivery(db, target, config("pilot")) == expected

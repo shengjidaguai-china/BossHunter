@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from bosshunter.browser.ego import EgoTaskSpace, EgoTaskSpaceError
 from bosshunter.collection.capabilities import platform_supports
+from bosshunter.outsourcing import company_name_key
 from bosshunter.job_filters import matching_blocked_company
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
@@ -39,7 +40,7 @@ def sent_today(db, platform):
     return row[0]
 
 
-def company_key(company):
+def _feedback_company_key(company):
     return "".join(unicodedata.normalize("NFKC", company or "").casefold().split())
 
 
@@ -75,7 +76,7 @@ def approval_error(db, job, config):
 def reserve_delivery(db, job, config):
     """Serialize the quota and company check before performing an external action."""
     platform = platform_of(job)
-    key = company_key(job.get("company"))
+    key = company_name_key(job.get("company") or "")
     with db:
         db.execute("BEGIN IMMEDIATE")
         if reason := approval_error(db, job, config):
@@ -103,7 +104,7 @@ def reserve_delivery(db, job, config):
                           AND h.action IN ('sent','manual_sent','delivery_reserved','prior_application'))
         """)
         for row in prior:
-            if row["id"] == job["id"] or (key and row["platform"] != platform and company_key(row["company"]) == key):
+            if row["id"] == job["id"] or (key and row["platform"] != platform and company_name_key(row["company"] or "") == key):
                 return "duplicate_company"
         if not key and platform != "boss":
             return "unknown_company"
@@ -116,9 +117,9 @@ def release_delivery(db, job_id):
         db.execute("DELETE FROM history WHERE job_id = ? AND action = 'delivery_reserved'", (job_id,))
 
 
-def note_risk(platform, reason):
+def note_risk(platform, reason, space_id):
     with Path("需要扫码.txt").open("a", encoding="utf-8") as file:
-        file.write(f"{platform} 检测到 {reason}，请在现有 Ego Lite 任务空间手动处理。\n")
+        file.write(f"{platform} 检测到 {reason}，请在现有 Ego Lite 任务空间 {space_id} 手动处理。\n")
 
 
 def _failed(reason, *, uncertain=False):
@@ -184,7 +185,7 @@ def submit_resume(db, job, config):
             if reason := result.get("error"):
                 if reason in {"captcha", "blocked", "rate_limit"}:
                     guard.lock(reason)
-                    note_risk(platform, reason)
+                    note_risk(platform, reason, config["delivery"]["ego_task_space_id"])
                 return _failed(reason, uncertain=clicked and (phase == "receipt"))
         if result.get("receipt") is True:
             return {"success": True}
@@ -265,7 +266,7 @@ def observe_replies(db, config, platform, jobs):
             selected = browser.evaluate(target, _ZHILIAN_INTEREST_FILTER)
             if selected in ("captcha", "rate_limit", "blocked"):
                 guard.lock(selected)
-                note_risk(platform, selected)
+                note_risk(platform, selected, config["delivery"]["ego_task_space_id"])
                 raise PlatformSafetyStop(selected)
             if selected != "selected" or (stop and stop.is_set()):
                 return 0
@@ -275,7 +276,7 @@ def observe_replies(db, config, platform, jobs):
             return 0
         if reason := result.get("risk"):
             guard.lock(reason)
-            note_risk(platform, reason)
+            note_risk(platform, reason, config["delivery"]["ego_task_space_id"])
             raise PlatformSafetyStop(reason)
         if stop and stop.is_set():
             return 0
@@ -303,7 +304,7 @@ def record_replies(db, platform, jobs, rows):
         matches = [
             job for job in jobs if platform_of(job) == platform
             and str(job.get("source_job_id") or "") == source[1]
-            and company_key(job.get("company")) == company_key(row.get("company"))
+            and _feedback_company_key(job.get("company")) == _feedback_company_key(row.get("company"))
             and job.get("title") == row.get("title")
         ]
         if len(matches) != 1:

@@ -446,7 +446,8 @@ _TOKEN_RE = re.compile(r"[^一-鿿\w]+", re.UNICODE)
 _LEGAL_SUFFIX_RE = re.compile(r"(?:股份有限公司|有限责任公司|有限公司)$")
 
 
-def _company_key(value: str) -> str:
+def company_name_key(value: str) -> str:
+    """Normalize a complete company name, retaining regional and trade-name distinctions."""
     normalized = unicodedata.normalize("NFKC", str(value)).casefold()
     normalized = _TOKEN_RE.sub("", normalized)
     return _LEGAL_SUFFIX_RE.sub("", normalized)
@@ -460,12 +461,12 @@ def _match_company_strict(company: str, vendors: tuple[str, ...]) -> list[str]:
     """
     if not company or not vendors:
         return []
-    haystack = _company_key(company)
+    haystack = company_name_key(company)
     if not haystack:
         return []
     hits: list[str] = []
     for vendor in vendors:
-        needle = _company_key(vendor)
+        needle = company_name_key(vendor)
         if not needle:
             continue
         if needle == haystack and vendor not in hits:
