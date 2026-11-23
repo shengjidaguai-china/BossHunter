@@ -27,3 +27,28 @@ The three apply controls have been located without clicking: Liepin `a[data-sele
 BOSS chat and follow-up processing exclude external jobs. The job-agent watch integration consumes explicit reply history across the four platforms; it does not itself scrape these sites or start monitor tasks.
 
 The real first application and successful receipt remain user acceptance steps. Development verification must stop before apply/message buttons. Offline tests use synthetic DOM, disposable databases and mocked Ego; the original proxy-starting integration tests must be excluded when the session forbids new debug listeners.
+
+
+## Résumé choice and explicit Liepin chat
+
+External platforms default to `delivery.platforms.<platform>.resume_choice: attachment`;
+`online` is an explicit opt-in. `resume_name` selects the approved attachment by name.
+Zhilian verifies the official default before opening a job page; ambiguous attachments
+stop delivery. 51job requires verified attachment selection before the initial click.
+Its current site may first submit an online application and only then offer a synchronous
+attachment chooser: that layout is deliberately blocked with `attachment_selection_unverified`,
+rather than silently sending an online résumé. An attachment existing in the résumé centre
+is never evidence of the type sent.
+
+For a Liepin chat-only job configure `delivery.platforms.liepin.action: chat`. The preview
+action becomes `greeting` (聊一聊), bound to the confirmation token. An application confirmation
+cannot fall back to chat. The adapter verifies the job and recruiter, sends the reviewed
+greeting once and verifies it in the message list. It then selects the named attachment
+in the site's chooser. Failure after a verified greeting records `needs_resume` and does
+not resend the greeting. Receipts are saved privately under `data/delivery-receipts/`.
+Chat with a visible application control stops for a fresh action choice.
+
+Zhilian receipt checks recognize success prompts and changed button labels. When these
+are missing, the adapter opens the official schedule and matches the exact job detail
+ID, title, company and successful delivery in one row. Unverified outcomes retain their
+reservation, preventing automatic retries.

@@ -1269,7 +1269,7 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
                     send_report["stop_reason"] = "platform_disabled"
                     break
                 expected_action = config.get("_workbench_expected_actions", {}).get(str(job["id"]))
-                action = "greeting" if platform == "boss" else "apply_resume"
+                action = external.delivery_action(config, platform)
                 if expected_action and action != expected_action:
                     send_report["stop_reason"] = "confirmed_action_changed"
                     break
@@ -1354,10 +1354,12 @@ def send_greetings(config: dict, force: bool = False, db_path=None) -> int:
 
                 if result_data.get("success"):
                     throttle.mark()
-                    update_job_status(db, job["id"], "sent")
+                    update_job_status(db, job["id"], "needs_resume" if result_data.get("needs_resume") else "sent")
                     update_job_last_error(db, job["id"], "")
-                    add_history(db, job["id"], "sent", greeting[:50] if platform == "boss" else "投递在线简历")
+                    add_history(db, job["id"], "sent", greeting[:50] if platform == "boss" else result_data.get("history_detail", "投递简历"))
                     external.release_delivery(db, job["id"])
+                    if result_data.get("needs_resume"):
+                        add_history(db, job["id"], "needs_resume", "招呼语已发送；待手动发附件简历")
                     sent_count += 1
                     send_report["sent_count"] = sent_count
                     backoff.record_success()

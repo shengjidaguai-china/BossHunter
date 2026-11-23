@@ -157,7 +157,7 @@ DEFAULTS: dict[str, Any] = {
         "ego_task_space_id": None,
         "cross_platform_dedup": False,
         "platforms": {
-            platform: {"enabled": False, "daily_limit": 10}
+            platform: {"enabled": False, "daily_limit": 10, "resume_choice": "attachment", "resume_name": ""}
             for platform in ("liepin", "zhilian", "51job")
         },
     },

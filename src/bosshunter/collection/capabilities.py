@@ -33,8 +33,9 @@ def delivery_capabilities(config: dict) -> dict:
     return {
         platform: {
             "enabled": platform_supports(platform, "deliver", config),
-            "action_id": "greeting" if platform == "boss" else "apply_resume",
-            "action_label": "发招呼语" if platform == "boss" else "投递简历",
+            "action_id": delivery_action(config, platform),
+            "action_label": ("聊一聊：招呼语及附件简历" if platform == "liepin" and delivery_action(config, platform) == "greeting" else
+                             "发招呼语" if platform == "boss" else "投递简历"),
         }
         for platform in PLATFORM_CAPABILITIES
     }
@@ -42,3 +43,10 @@ def delivery_capabilities(config: dict) -> dict:
 
 def enabled_resume_platforms(config: dict) -> tuple[str, ...]:
     return tuple(platform for platform in ("liepin", "zhilian", "51job") if platform_supports(platform, "deliver", config))
+
+
+def delivery_action(config: dict, platform: str) -> str:
+    if platform == "boss":
+        return "greeting"
+    options = config.get("delivery", {}).get("platforms", {}).get(platform, {})
+    return "greeting" if platform == "liepin" and options.get("action") == "chat" else "apply_resume"

@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from bosshunter.browser.ego import EgoTaskSpace, EgoTaskSpaceError
-from bosshunter.collection.capabilities import platform_supports
+from bosshunter.collection.capabilities import platform_supports, delivery_action
 from bosshunter.outsourcing import company_name_key
 from bosshunter.job_filters import matching_blocked_company
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
@@ -68,7 +68,7 @@ def approval_error(db, job, config):
         return "job_unavailable"
     if "greeting_selection" in job and current["greeting_selection"] != job["greeting_selection"]:
         return "approval_changed"
-    if platform == "boss" and (current["greeting_selection"] == "pending" or current["greeting"] != job.get("greeting")):
+    if delivery_action(config, platform) == "greeting" and (current["greeting_selection"] == "pending" or current["greeting"] != job.get("greeting")):
         return "approval_changed"
     return None
 
@@ -87,7 +87,7 @@ def reserve_delivery(db, job, config):
             expected_platforms = config.get("_workbench_expected_platforms")
             expected_actions = config.get("_workbench_expected_actions")
             if (list(selected) != [job["id"]] or expected_platforms != {job["id"]: platform} or
-                expected_actions != {job["id"]: "apply_resume"}):
+                expected_actions != {job["id"]: delivery_action(config, platform)}):
                 return "single_confirmed_pilot_required"
             pending = db.execute("""
                 SELECT 1 FROM history h JOIN jobs j ON j.id = h.job_id
@@ -141,6 +141,13 @@ def submit_resume(db, job, config):
     parsed = urlsplit(url)
     if parsed.scheme != "https" or parsed.netloc not in DETAIL_HOSTS[platform] or parsed.path in ("", "/"):
         return _failed("unverified_job_url")
+    options = config.get("delivery", {}).get("platforms", {}).get(platform, {})
+    choice = options.get("resume_choice", "attachment")
+    if choice not in {"attachment", "online"}:
+        return _failed("invalid_resume_choice")
+    if delivery_action(config, platform) == "greeting":
+        from bosshunter.executor.liepin_chat import submit_chat
+        return submit_chat(db, job, config)
     browser = EgoTaskSpace.from_config(config, section="delivery")
     stop = config.get("_workbench_stop_event")
     if stop and stop.is_set():
@@ -153,7 +160,18 @@ def submit_resume(db, job, config):
     if stop and stop.is_set():
         return _failed("stopped")
     try:
+        resume_verified = False
+        if platform == "zhilian":
+            guard.reserve("resume_page")
+            resume_verified = prepare_zhilian_resume(browser, choice, options.get("resume_name", ""), stop, guard)
+            if not resume_verified:
+                return _failed("resume_selection_unverified")
         target = browser.new_tab(url)
+    except PlatformSafetyStop as exc:
+        if exc.reason in {"captcha", "blocked", "rate_limit"}:
+            guard.lock(exc.reason)
+            note_risk(platform, exc.reason, browser.space_id)
+        return _failed(exc.reason)
     except EgoTaskSpaceError:
         return _failed("ego_unavailable")
     if not target:
@@ -169,6 +187,8 @@ def submit_resume(db, job, config):
             expected = {
                 "origin": f"https://{parsed.netloc}", "path": parsed.path, "platform": platform,
                 "company": job.get("company"), "title": job.get("title"), "phase": phase,
+                "resume_choice": choice, "resume_name": options.get("resume_name", ""),
+                "resume_verified": resume_verified,
             }
             if phase == "submit":
                 if reason := approval_error(db, job, config):
@@ -190,13 +210,20 @@ def submit_resume(db, job, config):
                 if reason in {"captcha", "blocked", "rate_limit"}:
                     guard.lock(reason)
                     note_risk(platform, reason, config["delivery"]["ego_task_space_id"])
+                if clicked and phase == "receipt" and platform == "zhilian" and reason not in {"captcha", "blocked", "rate_limit"}:
+                    if verify_zhilian_application(browser, job, stop, guard):
+                        return {"success": True, "history_detail": "原站投递记录已核实"}
                 return _failed(reason, uncertain=clicked and (phase == "receipt"))
         if result.get("receipt") is True:
             return {"success": True}
+        if platform == "zhilian" and verify_zhilian_application(browser, job, stop, guard):
+            return {"success": True, "history_detail": "原站投递记录已核实"}
         return _failed("unconfirmed_application", uncertain=True)
     except PlatformSafetyStop as exc:
         return _failed(exc.reason, uncertain=clicked)
     except EgoTaskSpaceError:
+        if clicked and platform == "zhilian" and verify_zhilian_application(browser, job, stop, guard):
+            return {"success": True, "history_detail": "原站投递记录已核实"}
         return _failed("ego_unavailable", uncertain=clicked)
     finally:
         browser.close_tab(target)
@@ -219,6 +246,8 @@ _APPLY_SCRIPT = r"""
     if (location.origin !== expected.origin || location.pathname !== expected.path ||
         !expected.title || !expected.company || !text.includes(expected.title) || !text.includes(expected.company))
         return {error:'job_identity_mismatch'};
+    if (expected.phase === 'receipt' && [...document.querySelectorAll('[role=alert],[role=status],.a-message,.ivu-message,.success-popup-2')]
+        .some(el => el.getClientRects().length && /投递成功|申请成功|简历已投递/.test(el.innerText || ''))) return {receipt:true};
     const rules = {
         zhilian: ['button.a-button', '立即投递'],
         '51job': ['div.apply-btn-new.big', '立即投递'],
@@ -230,13 +259,26 @@ _APPLY_SCRIPT = r"""
         el.getClientRects().length && getComputedStyle(el).visibility === 'visible' &&
         (expected.platform !== '51job' || expected.path.endsWith('/' + el.id + '.html')) &&
         (label(el) === expectedLabel || /^(已申请|已投递)$/.test(label(el))));
-    if (controls.length !== 1) return {error:'application_control_unverified'};
+    if (controls.length !== 1) return expected.phase === 'receipt' ? {receipt:false} : {error:'application_control_unverified'};
     const receipt = /^(已申请|已投递)$/.test(label(controls[0]));
     if (expected.phase === 'receipt') return {receipt};
     if (receipt) return {error:'already_applied'};
     const matches = controls.filter(el => label(el) === expectedLabel &&
         !el.disabled && el.getAttribute('aria-disabled') !== 'true');
     if (matches.length !== 1) return {error:'application_control_unverified'};
+    // The initial click can submit immediately. Require a verified selected résumé BEFORE it.
+    // Never infer selection from an attachment merely existing in the résumé centre.
+    if (expected.phase === 'submit' && expected.resume_choice === 'attachment' && !expected.resume_verified) {
+        const candidates = [...document.querySelectorAll('.attachment_item')].filter(el =>
+            el.getClientRects().length && el.querySelector('input[type=radio],.radio'));
+        const matches = expected.resume_name ? candidates.filter(el => (el.innerText || '').includes(expected.resume_name)) : candidates;
+        if (matches.length === 1) matches[0].click();
+        const selected = [...document.querySelectorAll('.attachment_item:has(.radio.selected),.attachment_item:has(input:checked)')]
+            .filter(el => el.getClientRects().length);
+        const names = selected.map(el => (el.closest('.attachment_item') || el).innerText || '');
+        if (!names.length || (expected.resume_name && !names.some(name => name.includes(expected.resume_name))))
+            return {error:'attachment_selection_unverified'};
+    }
     if (expected.phase === 'submit') matches[0].click();
     return {found:true};
 })()
@@ -385,5 +427,114 @@ _JOB51_FEEDBACK_SCRIPT = r"""
     if (location.origin !== 'https://i.51job.com' || location.pathname !== '/userset/my_apply.php')
         return {state:'unknown_page'};
     return {state:text.includes('暂无社会申请记录') ? 'empty' : 'unverified_rows'};
+})()
+"""
+
+
+def verify_zhilian_application(browser, job, stop=None, guard=None):
+    """Read official application rows; never submit or repeat an application."""
+    if stop and stop.is_set():
+        return False
+    if guard:
+        try:
+            guard.reserve("application_record")
+        except PlatformSafetyStop:
+            return False
+    target = browser.new_tab("https://i.zhaopin.com/schedule")
+    if not target:
+        return False
+    try:
+        if not browser.wait_for_load(target):
+            return False
+        identity = {"id": str(job.get("source_job_id") or job["id"].removeprefix("zhilian:")),
+                    "company": job.get("company"), "title": job.get("title")}
+        script = _ZHILIAN_APPLICATION_RECORD.replace("EXPECTED_RECORD", json.dumps(identity))
+        deadline = time.monotonic() + 5
+        while True:
+            if stop and stop.is_set():
+                return False
+            result = browser.evaluate(target, script)
+            if isinstance(result, dict) and result.get("receipt") is True:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(.25)
+    except EgoTaskSpaceError:
+        return False
+    finally:
+        browser.close_tab(target)
+
+
+_ZHILIAN_APPLICATION_RECORD = r"""
+(() => {
+ const expected = EXPECTED_RECORD;
+ if (location.origin !== 'https://i.zhaopin.com' || location.pathname !== '/schedule') return {receipt:false};
+ const links = [...document.querySelectorAll('a[href]')].filter(a => {
+   try { const u=new URL(a.href);return ['jobs.zhaopin.com','www.zhaopin.com'].includes(u.hostname) &&
+     u.pathname === '/' + expected.id + '.htm'; } catch {return false;}
+ });
+ const rows=links.map(a=>a.closest('.ji-item') || a.closest('li') || a.closest('tr')).filter(Boolean);
+ return {receipt:rows.some(row => {
+   const text=row.innerText || '';
+   return text.includes(expected.company) && text.includes(expected.title) && /投递成功|成功投递/.test(text);
+ })};
+})()
+"""
+
+
+def prepare_zhilian_resume(browser, choice, name, stop=None, guard=None):
+    """Select and read back the official default before opening a job page."""
+    target = browser.new_tab("https://i.zhaopin.com/resume")
+    if not target:
+        return False
+    try:
+        if not browser.wait_for_load(target):
+            return False
+        script = _ZHILIAN_SELECT_RESUME.replace("RESUME_OPTIONS", json.dumps({"choice": choice, "name": name}))
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if stop and stop.is_set():
+                return False
+            if guard:
+                guard.ensure_unlocked()
+            result = browser.evaluate(target, script)
+            if isinstance(result, dict) and result.get("error") in {"captcha", "blocked", "rate_limit"}:
+                raise PlatformSafetyStop(result["error"])
+            if isinstance(result, dict) and result.get("selected") is True:
+                return True
+            if isinstance(result, dict) and result.get("error"):
+                return False
+            time.sleep(.25)
+        return False
+    finally:
+        browser.close_tab(target)
+
+
+_ZHILIAN_SELECT_RESUME = r"""
+(() => {
+ const e=RESUME_OPTIONS;
+ if(location.origin!=='https://i.zhaopin.com' || location.pathname!=='/resume') return {error:'resume_page_unverified'};
+ const text=document.body?.innerText || '';
+ if(/安全验证|验证码|拖动滑块|请完成验证|扫码登录/.test(text)) return {error:'captcha'};
+ const rows=[...document.querySelectorAll('.parse-item,.online-resume')].filter(e=>e.getClientRects().length);
+ if(!rows.length)return {selected:false};
+ const candidates=e.choice==='attachment' ? rows.filter(e=>e.querySelector('.parse-item__left-title-text')) :
+   rows.filter(e=>e.innerText.includes('我的在线简历'));
+ let matches=e.name && e.choice==='attachment'?candidates.filter(row=>row.querySelector('.parse-item__left-title-text')?.innerText.trim()===e.name ||
+   row.querySelector('.parse-item__left-title-text')?.innerText.trim()===e.name+'.pdf'):candidates;
+ if(!e.name && e.choice==='attachment' && matches.length>1) {
+   const stamp=row=>{ const value=row.querySelector('.create-time')?.innerText || '';
+     const now=new Date(), day=now.toISOString().slice(0,10);
+     const normalized=value.replace('今日',day).replace(' 上传','');
+     const parsed=Date.parse(normalized);return Number.isFinite(parsed)?parsed:0; };
+   matches.sort((a,b)=>stamp(b)-stamp(a));
+   if(stamp(matches[0])>stamp(matches[1]))matches=[matches[0]];
+ }
+ if(matches.length!==1)return {error:'resume_selection_unverified'};
+ const row=matches[0];
+ if(row.innerText.includes('默认投递'))return {selected:true};
+ const button=row.querySelector('.parse-item__right-text,.online-resume__right-text');
+ if(button?.innerText.trim()==='设为默认')button.click();
+ return {selected:false};
 })()
 """
