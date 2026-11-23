@@ -438,6 +438,11 @@ def test_persisted_card_evidence_is_one_internship_signal():
 @pytest.mark.parametrize("title,jd,kind,reason", [
     ("数据分析", "本岗位为全职岗位，不招实习。", "full_time", "仅实习：非实习岗位"),
     ("数据分析", "不接受实习，只招正式员工。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "本岗位为全职岗位，不会接受实习生。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "并不接受实习。", "full_time", "仅实习：非实习岗位"),
+    ("数据分析", "拒绝不了实习生。", "internship", ""),
+    ("数据分析", "请勿拒绝实习生。", "internship", ""),
+    ("数据分析", "无法谢绝实习生。", "internship", ""),
     ("数据分析", "欢迎实习生。本岗位不招实习。", "full_time", "仅实习：非实习岗位"),
     ("数据分析", "不招收实习生。", "full_time", "仅实习：非实习岗位"),
     ("数据分析", "谢绝实习生。", "full_time", "仅实习：非实习岗位"),
