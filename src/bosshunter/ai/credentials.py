@@ -44,6 +44,13 @@ def _extract_text_content(value: object) -> str | None:
     """Normalize provider text blocks without treating reasoning as final output."""
     if isinstance(value, str):
         text = value.strip()
+        # Some compatible providers put reasoning before the final answer in
+        # a leading <think> block instead of a separate reasoning_content field.
+        while text.lower().startswith("<think>"):
+            closing = re.search(r"</think>", text, flags=re.IGNORECASE)
+            if closing is None:
+                return None
+            text = text[closing.end():].strip()
         return text or None
 
     if isinstance(value, (list, tuple)):
@@ -314,47 +321,70 @@ def get_ai_service(config: dict) -> str:
     return "custom" if ai_cfg.get("provider") == "openai_compatible" else "anthropic"
 
 
+def get_ai_provider(config: dict) -> str:
+    service = get_ai_service(config)
+    if service == "custom":
+        return config.get("ai", {}).get("provider") or "openai_compatible"
+    return AI_SERVICE_PRESETS[service]["provider"]
+
+
+def ai_uses_no_auth(config: dict) -> bool:
+    """Explicit keyless mode must never inherit ambient API credentials."""
+    preset = AI_SERVICE_PRESETS[get_ai_service(config)]
+    return (get_ai_provider(config) == "openai_compatible"
+            and config.get("ai", {}).get("auth_mode", preset["auth_mode"]) == "none")
+
+
+def _key_env_names(config: dict) -> tuple[str, ...]:
+    service = get_ai_service(config)
+    legacy = {
+        "deepseek": ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"),
+        "doubao": ("ARK_API_KEY", "OPENAI_API_KEY"),
+        "custom": ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"),
+        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+    }
+    if service == "custom" and get_ai_provider(config) == "anthropic":
+        return legacy["anthropic"]
+    name = AI_SERVICE_PRESETS[service]["key_env"]
+    return legacy.get(service, (name,) if name else ())
+
+
+def _base_url_env_names(config: dict) -> tuple[str, ...]:
+    service = get_ai_service(config)
+    legacy = {
+        "deepseek": ("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"),
+        "doubao": ("ARK_BASE_URL", "OPENAI_BASE_URL"),
+        "custom": ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
+        "anthropic": ("ANTHROPIC_BASE_URL",),
+    }
+    if service == "custom" and get_ai_provider(config) == "anthropic":
+        return legacy["anthropic"]
+    key_env = AI_SERVICE_PRESETS[service]["key_env"]
+    return legacy.get(service, (key_env.replace("_API_KEY", "_BASE_URL"),) if key_env else ())
+
+
 def get_ai_api_key(config: dict) -> str | None:
     """Resolve a standard API key from config first, then env, without exposing its value."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     service = get_ai_service(config)
-    if service == "deepseek":
-        return (
-            ai_cfg.get("api_key")
-            or os.environ.get("DEEPSEEK_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-        )
-    if service == "doubao":
-        return (
-            ai_cfg.get("api_key")
-            or os.environ.get("ARK_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-        )
-    if service == "custom":
-        return (
-            ai_cfg.get("api_key")
-            or ai_cfg.get("auth_token")
-            or os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("ANTHROPIC_API_KEY")
-        )
-    return get_anthropic_api_key(config)
+    if service in {"codex_cli", "claude_cli"} or ai_uses_no_auth(config):
+        return None
+    if get_ai_provider(config) == "anthropic":
+        return get_anthropic_api_key(config)
+    return (ai_cfg.get("api_key") or ai_cfg.get("auth_token")
+            or next((os.environ[name] for name in _key_env_names(config) if os.environ.get(name)), None))
 
 
 def get_ai_key_source(config: dict) -> str | None:
     """Return only the credential source name, never the credential value."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    if get_ai_service(config) in {"codex_cli", "claude_cli"} or ai_uses_no_auth(config):
+        return None
     if ai_cfg.get("api_key"):
         return "本地配置"
     if ai_cfg.get("auth_token"):
         return "本地配置（Auth Token）"
-    service = get_ai_service(config)
-    candidates = {
-        "deepseek": ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"),
-        "doubao": ("ARK_API_KEY", "OPENAI_API_KEY"),
-        "custom": ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"),
-        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
-    }[service]
-    for env_name in candidates:
+    for env_name in _key_env_names(config):
         if os.environ.get(env_name):
             return env_name
     return None
@@ -364,42 +394,63 @@ def get_ai_base_url(config: dict) -> str | None:
     """Resolve the service-specific API base URL from config first, then env, then preset."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     service = get_ai_service(config)
-    if service == "deepseek":
-        return (
-            ai_cfg.get("base_url")
-            or os.environ.get("DEEPSEEK_BASE_URL")
-            or os.environ.get("OPENAI_BASE_URL")
-            or AI_SERVICE_PRESETS[service]["base_url"]
-        )
-    if service == "doubao":
-        return (
-            ai_cfg.get("base_url")
-            or os.environ.get("ARK_BASE_URL")
-            or os.environ.get("OPENAI_BASE_URL")
-            or AI_SERVICE_PRESETS[service]["base_url"]
-        )
-    if service == "custom":
-        return (
-            ai_cfg.get("base_url")
-            or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("ANTHROPIC_BASE_URL")
-        )
-    return ai_cfg.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL")
+    if service in {"codex_cli", "claude_cli"}:
+        return None
+    return (ai_cfg.get("base_url")
+            or next((os.environ[name] for name in _base_url_env_names(config) if os.environ.get(name)), None)
+            or AI_SERVICE_PRESETS[service]["base_url"] or None)
+
+
+# 请求构造方自己负责的头，配置里的同名项不得覆盖。x-api-key 必须在内：
+# list_ai_models 的 Anthropic 分支用它承载真实 Key，被同名配置头盖住会认证失败。
+_RESERVED_HEADERS = frozenset(
+    {"authorization", "content-type", "content-length", "host", "x-api-key", "anthropic-version"}
+)
+
+
+def get_ai_extra_headers(config: dict) -> dict[str, str]:
+    """Return extra HTTP headers required by the configured AI service/gateway.
+
+    两个来源，优先级由低到高：服务商预设的 required_headers（网关路由等
+    「怎么调用这个端点」的必需知识，例如 opencode.ai 的 x-opencode-session），
+    以及 ai.extra_headers 供用户覆盖。无法安全发送的条目直接跳过而不抛错，
+    避免一条坏配置让所有 AI 任务全部失败。
+    """
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    merged: dict[str, object] = {}
+    required = AI_SERVICE_PRESETS[get_ai_service(config)].get("required_headers")
+    if isinstance(required, dict):
+        merged.update(required)
+    configured = ai_cfg.get("extra_headers")
+    if isinstance(configured, dict):
+        merged.update(configured)
+
+    headers: dict[str, str] = {}
+    for name, value in merged.items():
+        header = str(name or "").strip()
+        # 头名会直接交给 httpx，拒绝可能注入第二个头或破坏请求行的写法。
+        if (
+            not header
+            or any(ch in header for ch in "\r\n: ")
+            or header.lower() in _RESERVED_HEADERS
+        ):
+            continue
+        text = "" if value is None else str(value)
+        if not text.strip() or any(ch in text for ch in "\r\n"):
+            continue
+        headers[header] = text
+    return headers
 
 
 def get_ai_base_url_source(config: dict) -> str | None:
     """Return only the base URL source name, consistent with get_ai_base_url resolution."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    if get_ai_service(config) in {"codex_cli", "claude_cli"}:
+        return None
     if ai_cfg.get("base_url"):
         return "本地配置"
     service = get_ai_service(config)
-    env_names = {
-        "deepseek": ("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"),
-        "doubao": ("ARK_BASE_URL", "OPENAI_BASE_URL"),
-        "custom": ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
-        "anthropic": ("ANTHROPIC_BASE_URL",),
-    }[service]
-    for env_name in env_names:
+    for env_name in _base_url_env_names(config):
         if os.environ.get(env_name):
             return env_name
     if AI_SERVICE_PRESETS[service]["base_url"]:
@@ -409,7 +460,9 @@ def get_ai_base_url_source(config: dict) -> str | None:
 
 def list_ai_models(config: dict) -> list[str]:
     """Fetch model IDs without sending prompts or exposing provider error bodies."""
-    anthropic = get_ai_service(config) == "anthropic"
+    if get_ai_service(config) in {"codex_cli", "claude_cli"}:
+        raise AIRequestError("unsupported", "本机 AI 使用工具默认模型，或手动填写该工具支持的模型 ID")
+    anthropic = get_ai_provider(config) == "anthropic"
     base = (get_ai_base_url(config) or ("https://api.anthropic.com" if anthropic else "")).strip().rstrip("/")
     try:
         url = httpx.URL(base)
@@ -418,17 +471,22 @@ def list_ai_models(config: dict) -> list[str]:
     except (httpx.InvalidURL, ValueError):
         raise AIRequestError("invalid_url", "请填写有效的 Base URL（http:// 或 https://，不含查询参数）") from None
     key = get_ai_api_key(config)
-    if not key:
+    if not key and not ai_uses_no_auth(config):
         raise AIRequestError("auth", "请先填写 API Key，再获取模型列表")
 
-    headers = {"Authorization": f"Bearer {key}"}
+    # 认证头最后写入：即便 _RESERVED_HEADERS 过滤被绕过，配置也无法遮蔽真实凭证。
+    extra_headers = get_ai_extra_headers(config)
     if anthropic:
         kwargs = build_anthropic_client_kwargs(config)
-        headers = {"anthropic-version": "2023-06-01"}
+        headers = {**extra_headers, "anthropic-version": "2023-06-01"}
         if kwargs.get("auth_token"):
             headers["Authorization"] = f"Bearer {kwargs['auth_token']}"
         else:
             headers["x-api-key"] = key
+    else:
+        headers = dict(extra_headers)
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
     endpoint = f"{base}/models"
     if anthropic and not base.endswith("/v1"):
         endpoint = f"{base}/v1/models"
@@ -481,9 +539,13 @@ def build_anthropic_client_kwargs(config: dict) -> dict:
     if auth_token:
         kwargs["auth_token"] = auth_token
 
-    base_url = ai_cfg.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL")
+    base_url = get_ai_base_url(config)
     if base_url:
         kwargs["base_url"] = base_url
+
+    extra_headers = get_ai_extra_headers(config)
+    if extra_headers:
+        kwargs["default_headers"] = extra_headers
 
     if _ambient_proxy_vars():
         kwargs["http_client"] = httpx.Client(trust_env=False)
@@ -494,7 +556,7 @@ def build_anthropic_client_kwargs(config: dict) -> dict:
 def resolve_anthropic_model(model: str, config: dict) -> str:
     """Resolve configured model name against compatible API model IDs when needed."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
-    base_url = ai_cfg.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL")
+    base_url = get_ai_base_url(config)
     if not base_url:
         return model
 
@@ -516,7 +578,7 @@ def resolve_anthropic_model(model: str, config: dict) -> str:
 
     try:
         response = httpx.get(
-            f"{base_url.rstrip('/')}/v1/models",
+            f"{base_url.rstrip('/')}/models" if base_url.rstrip('/').endswith('/v1') else f"{base_url.rstrip('/')}/v1/models",
             headers=headers,
             timeout=10,
             trust_env=False,
@@ -542,7 +604,10 @@ def call_anthropic_text(
 ) -> str | None:
     """Call Anthropic-compatible Messages API and return the first text block."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
-    if ai_cfg.get("provider") == "openai_compatible":
+    if get_ai_service(config) in {"codex_cli", "claude_cli"}:
+        from bosshunter.ai.local_cli import call_local_text
+        return call_local_text(prompt, config, timeout=timeout)
+    if get_ai_provider(config) == "openai_compatible":
         return call_openai_compatible_text(
             prompt,
             config,
@@ -615,7 +680,7 @@ def call_openai_compatible_text(
     model = get_openai_compatible_model(config)
     if _should_resolve_openai_model(model, config):
         model = resolve_openai_model(model, config)
-    if not api_key or not base_url:
+    if (not api_key and not ai_uses_no_auth(config)) or not base_url:
         return None
 
     mode, budget = resolve_thinking_options(config, purpose)
@@ -624,6 +689,9 @@ def call_openai_compatible_text(
     thinking_rejected = False
     compatibility_error: Exception | None = None
     output_truncated = False
+    token_field = ai_cfg.get("token_limit_field") or AI_SERVICE_PRESETS[get_ai_service(config)]["token_limit_field"]
+    if token_field not in {"max_tokens", "max_completion_tokens"}:
+        raise AIRequestError("invalid_config", "请选择有效的输出 Token 参数")
     for overrides, token_limit in strategies:
         if thinking_rejected and "thinking" in overrides:
             continue
@@ -631,14 +699,19 @@ def call_openai_compatible_text(
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": token_limit,
-            "temperature": 0.2,
+            token_field: token_limit,
             **overrides,
         }
+        if token_field == "max_tokens":
+            payload["temperature"] = 0.2
         try:
             response = httpx.post(
                 f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    **get_ai_extra_headers(config),
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
                 json=payload,
                 timeout=request_timeout,
                 trust_env=False,
