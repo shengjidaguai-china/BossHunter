@@ -23,8 +23,28 @@ def collector(browser, conn=None, **extra):
 
 
 class CityCollectionTests(TestCase):
-    def test_no_ids_skips_remaining_keywords_and_visits_next_city(self):
+    def test_unfilled_batch_finishes_keyword_and_still_visits_next_city(self):
+        # A 1-card batch cannot have a page 2, so the city's second keyword still
+        # runs before the collection moves on to the next city (2026-11-22 fix).
         browser = SearchBrowser([[card("a")]])
+        states = {}
+        hooks = CollectorHooks(None, lambda _: True, lambda _: True, lambda _: None, lambda **_: None,
+                               on_city_state=lambda city, state: states.update({city: state}))
+        result = collector(browser).collect(PlatformCollectionRequest("boss", ["A", "B"], ["北京", "上海"], {}, max_pages=2), hooks)
+        search_urls = [url for url in browser.opens if "job_detail" not in url]
+        self.assertEqual(len(search_urls), 4)
+        self.assertIn("101010100", search_urls[0])
+        self.assertIn("query=A", search_urls[0])
+        self.assertIn("101010100", search_urls[1])
+        self.assertIn("query=B", search_urls[1])
+        self.assertIn("101020100", search_urls[2])
+        self.assertEqual(states["北京"]["status"], "yielded_no_ids")
+        self.assertEqual(result.status, "completed_with_shortage")
+
+    def test_stalled_full_batch_skips_remaining_keywords_and_visits_next_city(self):
+        # A full batch that never advances stays a city-level stall, so the city's
+        # remaining keywords are skipped as the city-yield design requires.
+        browser = SearchBrowser([[card(f"job-{index}") for index in range(15)]])
         states = {}
         hooks = CollectorHooks(None, lambda _: True, lambda _: True, lambda _: None, lambda **_: None,
                                on_city_state=lambda city, state: states.update({city: state}))
@@ -35,7 +55,6 @@ class CityCollectionTests(TestCase):
         self.assertIn("101020100", search_urls[1])
         self.assertTrue(all("query=A" in url for url in search_urls))
         self.assertEqual(states["北京"]["status"], "yielded_no_ids")
-        self.assertEqual(states["北京"]["next_keyword_index"], 1)
         self.assertEqual(result.status, "completed_with_shortage")
 
     def test_repeated_pages_also_switch_city(self):

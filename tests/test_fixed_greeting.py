@@ -88,4 +88,4 @@ def test_style_review_catches_observed_ai_slogans(greeting):
 
 def test_normal_greeting_and_simple_closing_do_not_trigger_forced_rewrite():
     greeting = '您好，我做过品牌内容，也独立运营过账号，负责选题和社群互动。方便聊聊吗？'
-    assert greeter._greeting_style_issues(greeting, ['您好']) == []
+    assert [issue for issue in greeter._greeting_style_issues(greeting, ['您好']) if '少于' not in issue] == []

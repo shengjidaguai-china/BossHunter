@@ -4,7 +4,7 @@ import random
 import re
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import pairwise
 from threading import Event
 
@@ -140,6 +140,20 @@ class SendWindowChecker:
         latest_end = max(end_h * 60 + end_m for _, _, end_h, end_m in self._windows)
         end_hour, end_minute = divmod(latest_end, 60)
         return current.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+
+    def next_end_datetime(self, now: datetime | None = None) -> datetime | None:
+        """End of the current send window, or tomorrow's when today's is over.
+
+        采集与评分不按时间截断，只有投递受窗口约束；长任务的自动截止时间因此取
+        “下一个发送窗口结束”，而不是“今天窗口结束”（否则晚上启动会立即被判截止）。
+        """
+        today_end = self.latest_end_datetime(now)
+        if today_end is None:
+            return None
+        current = now or datetime.now()
+        if current < today_end:
+            return today_end
+        return today_end + timedelta(days=1)
 
     def next_window_info(self) -> str:
         """Describe when next window opens."""

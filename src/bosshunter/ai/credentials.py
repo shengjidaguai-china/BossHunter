@@ -3,9 +3,11 @@
 import hashlib
 import os
 import re
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 
+from bosshunter.ai import response_cache
 from bosshunter.config import AI_SERVICE_PRESETS
 
 
@@ -550,6 +552,26 @@ def call_anthropic_text(
             timeout=timeout,
             purpose=purpose,
         )
+    return _cached_text_call(
+        lambda: _call_anthropic_text_uncached(prompt, config, max_tokens, timeout=timeout, purpose=purpose),
+        prompt=prompt,
+        config=config,
+        max_tokens=max_tokens,
+        purpose=purpose,
+        provider_tag="anthropic",
+    )
+
+
+def _call_anthropic_text_uncached(
+    prompt: str,
+    config: dict,
+    max_tokens: int,
+    *,
+    timeout: float | None = None,
+    purpose: str | None = None,
+) -> str | None:
+    """Anthropic Messages API call without the local response cache."""
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
 
     try:
         import anthropic
@@ -600,7 +622,57 @@ def call_anthropic_text(
     raise AIRequestError("empty_response", "AI 服务没有返回文本内容，可能只返回了思考过程")
 
 
+def _cached_text_call(
+    call,
+    *,
+    prompt: str,
+    config: dict,
+    max_tokens: int,
+    purpose: str | None,
+    provider_tag: str,
+) -> str | None:
+    """Run one model call through the local response cache."""
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    model = str(ai_cfg.get("model") or "")
+    base_url = get_ai_base_url(config) or ""
+    key = response_cache.make_cache_key(
+        base_url=base_url or provider_tag,
+        model=model,
+        purpose=purpose,
+        prompt=prompt,
+        max_tokens=max_tokens,
+    )
+    cached = response_cache.lookup(key, config)
+    if cached is not None:
+        return cached
+    text = call()
+    if text:
+        response_cache.store(key, response=text, purpose=purpose, model=model, config=config)
+    return text
+
+
 def call_openai_compatible_text(
+    prompt: str,
+    config: dict,
+    max_tokens: int,
+    *,
+    timeout: float | None = None,
+    purpose: str | None = None,
+) -> str | None:
+    """Call an OpenAI-compatible endpoint through the local response cache."""
+    return _cached_text_call(
+        lambda: _call_openai_compatible_text_uncached(
+            prompt, config, max_tokens, timeout=timeout, purpose=purpose
+        ),
+        prompt=prompt,
+        config=config,
+        max_tokens=max_tokens,
+        purpose=purpose,
+        provider_tag="openai_compatible",
+    )
+
+
+def _call_openai_compatible_text_uncached(
     prompt: str,
     config: dict,
     max_tokens: int,
@@ -621,6 +693,26 @@ def call_openai_compatible_text(
     mode, budget = resolve_thinking_options(config, purpose)
     strategies = _openai_thinking_strategies(mode, budget, max_tokens)
     request_timeout = _coerce_timeout(timeout if timeout is not None else ai_cfg.get("timeout_seconds", 60))
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        hostname = httpx.URL(base_url).host.lower()
+    except httpx.InvalidURL:
+        hostname = ""
+    if hostname == "opencode.ai" or hostname.endswith(".opencode.ai"):
+        # OpenCode 用会话标识把“同一段对话”固定在同一条路由上并缓存前缀。
+        # 因此会话必须按用途稳定（scoring/greeting/...），不能按提示词变化——
+        # 每个岗位换一个会话等于每个岗位都从零开始，缓存永远命中不了。
+        namespace = config.setdefault("_opencode_session_namespace", str(uuid4()))
+        try:
+            namespace_id = UUID(str(namespace))
+        except (TypeError, ValueError, AttributeError):
+            namespace_id = uuid4()
+            config["_opencode_session_namespace"] = str(namespace_id)
+        session_id = str(uuid5(namespace_id, str(purpose or "default")))
+        from bosshunter import __version__
+
+        headers["x-opencode-session"] = session_id
+        headers["User-Agent"] = f"BossHunter/{__version__}"
     thinking_rejected = False
     compatibility_error: Exception | None = None
     output_truncated = False
@@ -638,7 +730,7 @@ def call_openai_compatible_text(
         try:
             response = httpx.post(
                 f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                headers=headers,
                 json=payload,
                 timeout=request_timeout,
                 trust_env=False,
@@ -652,6 +744,7 @@ def call_openai_compatible_text(
             raise normalize_ai_error(exc, response) from exc
 
         payload_data = response.json()
+        response_cache.record_usage(payload_data.get("usage") if isinstance(payload_data, dict) else None)
         choices = payload_data.get("choices", []) if isinstance(payload_data, dict) else []
         if not choices:
             if isinstance(payload_data, dict):

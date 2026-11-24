@@ -14,6 +14,7 @@ from bosshunter.ai.credentials import call_anthropic_text
 from bosshunter.browser import close_tab, evaluate, new_tab, print_pdf, screenshot, wait_for_load
 from bosshunter.cancellation import OperationCancelled, run_cancellable, stop_requested
 from bosshunter.db import get_db
+from bosshunter.resumes import path_for_job as resume_path_for_job
 
 console = Console()
 
@@ -70,6 +71,9 @@ RESUME_TAILOR_PROMPT = """你是一位专业简历顾问。请输出一份正常
 ## 固定母版策略
 {master_policy}
 
+## 候选人简历
+{resume}
+
 ## 投递岗位
 - 职位：{title}
 - 公司：{company}
@@ -78,9 +82,6 @@ RESUME_TAILOR_PROMPT = """你是一位专业简历顾问。请输出一份正常
 - 招聘类型：{recruitment_type}
 - 核心要求：
 {jd}
-
-## 候选人简历
-{resume}
 
 请直接输出 Markdown 简历正文：
 """
@@ -1067,7 +1068,9 @@ def save_resume_draft(
             raise KeyError(job_id)
         job = dict(row)
         candidate = _remove_recruiter_company_references(candidate, job)
-        base_path = Path(str(config.get("profile", {}).get("resume_path") or ""))
+        base_path = resume_path_for_job(config, job) or Path(
+            str(config.get("profile", {}).get("resume_path") or "")
+        )
         if not base_path.exists():
             raise ValueError("基础简历文件不存在")
         base_resume = base_path.read_text(encoding="utf-8")
@@ -1122,8 +1125,10 @@ def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
 
     job = dict(row)
 
-    # Load base resume
-    resume_path = Path(config.get("profile", {}).get("resume_path", "./resume.md"))
+    # Load the base resume that scored this job best (primary resume by default).
+    resume_path = resume_path_for_job(config, job) or Path(
+        config.get("profile", {}).get("resume_path", "./resume.md")
+    )
     if not resume_path.exists():
         return fail(f"基础简历文件不存在：{resume_path}")
 

@@ -1,5 +1,6 @@
 import { ResumeDualPreview } from '@/components/config/ResumeDualPreview'
 import { ResumeFileCard } from '@/components/config/ResumeFileCard'
+import { ResumeLibrarySection } from '@/components/config/ResumeLibrarySection'
 import {
   afterDropOutside,
   afterResumeLoadFailure,
@@ -189,6 +190,10 @@ export function ResumeUploadSection({ currentResumePath = '', updateConfig }: Re
       {panelMessage ? (
         <p className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{panelMessage}</p>
       ) : null}
+      <ResumeLibrarySection
+        currentResumePath={resumeInfo?.path || currentResumePath}
+        onPrimaryChange={(path) => updateConfig('profile.resume_path', path, { markDirty: false })}
+      />
     </div>
   )
 }

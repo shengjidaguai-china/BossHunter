@@ -35,6 +35,12 @@ from bosshunter import __version__
 from bosshunter.ai.credentials import AIRequestError, get_ai_api_key, list_ai_models
 from bosshunter.ai.scorer import sanitize_score_trace
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
+from bosshunter.resumes import (
+	MAX_RESUMES,
+	PRIMARY_RESUME_ID,
+	normalize_resume_record,
+	resume_entries,
+)
 from bosshunter.config import (
 	AI_SERVICE_PRESETS,
 	load_config,
@@ -66,6 +72,7 @@ from bosshunter.db import (
 	get_stats,
 	get_top_companies,
 	mark_external_jobs_sent,
+	mark_history_read,
 	permanent_delete_jobs,
 	query_jobs,
 	persist_agent_evaluations,
@@ -90,11 +97,13 @@ from bosshunter.collection_run_store import (
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
 )
+from bosshunter.job_insights import build_filter_stats, classify_job_title
 from bosshunter.job_filters import (
 	city_base_name,
 	city_match_clause,
 	job_keyword_match_clause,
 	matching_blocked_company,
+	matching_deal_breaker,
 	parse_monthly_salary_k,
 )
 from bosshunter.job_export import InvalidJobSelectionError, export_jobs, export_row_count
@@ -1362,11 +1371,12 @@ def api_top_companies():
 @app.route("/api/history")
 def api_history():
 	limit = int(request.params.get("limit", 15))
+	unread_only = request.params.get("unread_only", "").lower() in ("1", "true", "yes")
 	include_unresolved = request.params.get("include_unresolved", "").lower() in ("1", "true", "yes")
 	include_monitor_conversations = request.params.get("include_monitor_conversations", "").lower() in ("1", "true", "yes")
 	db = _get_web_db()
 	try:
-		data = get_recent_history(db, limit)
+		data = get_recent_history(db, limit, unread_only=unread_only)
 		if include_unresolved or include_monitor_conversations:
 			monitor_replies = get_recent_monitor_replies(db) if include_monitor_conversations else []
 			if include_monitor_conversations:
@@ -1392,6 +1402,30 @@ def api_history():
 				reverse=True,
 			)
 		return _json_response(_serialize_history_items(data))
+	finally:
+		db.close()
+
+
+@app.route("/api/history/read-all", method="POST")
+def api_history_read_all():
+	body = request.json if isinstance(request.json, dict) else {}
+	raw_max_id = body.get("max_id")
+	max_id = None
+	if raw_max_id is not None and raw_max_id != "":
+		if isinstance(raw_max_id, bool):
+			return _json_response({"error": "max_id 必须是正整数"}, 400)
+		try:
+			max_id = int(raw_max_id)
+		except (TypeError, ValueError):
+			return _json_response({"error": "max_id 必须是正整数"}, 400)
+		if max_id <= 0:
+			return _json_response({"error": "max_id 必须是正整数"}, 400)
+	db = _get_web_db()
+	try:
+		marked_count = mark_history_read(db, max_id=max_id)
+		return _json_response({"success": True, "marked_count": marked_count})
+	except Exception as exc:
+		return _json_response({"error": str(exc)}, 500)
 	finally:
 		db.close()
 
@@ -3482,6 +3516,299 @@ def api_resume_delete():
 		return _json_response({"success": True})
 	except ResumeUploadError as e:
 		return _json_response({"error": str(e)}, 400)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+# ─── 过滤分析（为什么被过滤 / 哪类岗位被过滤）───────────────
+
+@app.route("/api/jobs/filter-stats")
+def api_job_filter_stats():
+	"""Aggregate every active filtered job by role type and filter reason."""
+	db = _get_web_db()
+	try:
+		rows = db.execute(
+			"SELECT id, title, company, city, salary, score, score_reason, filter_reason, url, created_at "
+			"FROM jobs WHERE deleted_at IS NULL AND status = 'filtered'"
+		).fetchall()
+		return _json_response(build_filter_stats([dict(row) for row in rows]))
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+	finally:
+		db.close()
+
+
+@app.route("/api/jobs/unfilter", method="POST")
+def api_jobs_unfilter():
+	"""Move filtered jobs back to 待确认 so the user can deliver them manually."""
+	try:
+		body = request.json or {}
+		if not isinstance(body, dict):
+			return _json_response({"error": "请求体必须是对象"}, 400)
+		job_ids = [str(job_id) for job_id in (body.get("job_ids") or []) if str(job_id)]
+		category = str(body.get("category") or "").strip()
+		restore_all = body.get("all") is True
+		if not job_ids and not category and not restore_all:
+			return _json_response({"error": "请选择要恢复的岗位或分类"}, 400)
+		db = _get_web_db()
+		try:
+			with job_mutation_lock:
+				conflict = _active_task_mutation_error()
+				if conflict is not None:
+					return conflict
+				rows = db.execute(
+					"SELECT id, title FROM jobs WHERE deleted_at IS NULL AND status = 'filtered'"
+				).fetchall()
+				if restore_all:
+					targets = [str(row["id"]) for row in rows]
+				elif category:
+					targets = [
+						str(row["id"]) for row in rows
+						if classify_job_title(row["title"]) == category
+					]
+				else:
+					wanted = set(job_ids)
+					targets = [str(row["id"]) for row in rows if str(row["id"]) in wanted]
+				if not targets:
+					return _json_response({"error": "没有可恢复的已过滤岗位"}, 400)
+				with db:
+					for job_id in targets:
+						db.execute(
+							"UPDATE jobs SET status = 'ready', filter_reason = NULL, "
+							"updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+							(job_id,),
+						)
+						db.execute(
+							"INSERT INTO history (job_id, action, detail) VALUES (?, 'unfiltered', ?)",
+							(job_id, "手动取消过滤，恢复为待确认"),
+						)
+			return _json_response({"success": True, "restored": len(targets), "job_ids": targets[:500]})
+		finally:
+			db.close()
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+# ─── 否决关键词（一定不投）─────────────────────────────────
+
+@app.route("/api/jobs/apply-deal-breakers", method="POST")
+def api_apply_deal_breakers():
+	"""Re-check existing jobs against the saved deal-breaker keywords."""
+	config = load_config(CONFIG_PATH)
+	profile = config.get("profile") or {}
+	deal_breakers = [str(item) for item in (profile.get("deal_breakers") or []) if str(item).strip()]
+	jd_breakers = [str(item) for item in (profile.get("jd_deal_breakers") or []) if str(item).strip()]
+	if not deal_breakers and not jd_breakers:
+		return _json_response({"error": "还没有配置否决关键词"}, 400)
+
+	db = _get_web_db()
+	try:
+		with job_mutation_lock:
+			rows = db.execute(
+				"SELECT id, title, company, jd, status, score_reason FROM jobs "
+				"WHERE deleted_at IS NULL AND status IN ('pending', 'ready', 'approved', 'error')"
+			).fetchall()
+			matched: list[dict] = []
+			for row in rows:
+				hit = matching_deal_breaker(row["title"], deal_breakers)
+				if not hit:
+					hit = matching_deal_breaker(row["jd"] or "", jd_breakers)
+				if not hit:
+					continue
+				reason = f"【否决词：{hit}】{row['score_reason'] or ''}"[:1000]
+				db.execute(
+					"UPDATE jobs SET status = 'filtered', score_reason = ?, "
+					"updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+					(reason, row["id"]),
+				)
+				matched.append({
+					"id": row["id"],
+					"title": row["title"],
+					"company": row["company"],
+					"keyword": str(hit),
+				})
+			if matched:
+				db.commit()
+		return _json_response({
+			"success": True,
+			"filtered": len(matched),
+			"checked": len(rows),
+			"keywords": deal_breakers + jd_breakers,
+			"samples": matched[:20],
+		})
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+	finally:
+		db.close()
+
+
+# ─── Resume library APIs ─────────────────────────────────
+
+def _resume_library_payload(config: dict) -> dict:
+	"""Describe every configured resume; ``primary`` drives the default view."""
+	items = []
+	for entry in resume_entries(config):
+		path = Path(entry.path)
+		exists = entry.exists
+		stat = path.stat() if exists else None
+		items.append({
+			"id": entry.id,
+			"name": entry.label,
+			"focus": entry.focus,
+			"label": entry.display_label(),
+			"path": entry.path,
+			"primary": entry.primary,
+			"exists": exists,
+			"size": stat.st_size if stat else 0,
+			"updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)) if stat else None,
+		})
+	primary = next((item for item in items if item["primary"]), items[0] if items else None)
+	return {
+		"resumes": items,
+		"primary_id": primary["id"] if primary else "",
+		"max_resumes": MAX_RESUMES,
+	}
+
+
+def _managed_resume_dir() -> Path:
+	return RESUME_DIR.resolve()
+
+
+@app.route("/api/resumes")
+def api_resumes_get():
+	try:
+		return _json_response(_resume_library_payload(load_config(CONFIG_PATH)))
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/resumes/upload", method="POST")
+def api_resumes_upload():
+	"""Add one resume to the library without replacing the others."""
+	try:
+		upload = request.files.get("file")
+		if not upload:
+			return _json_response({"error": "No file uploaded"}, 400)
+		content = upload.file.read()
+		if len(content) > 10 * 1024 * 1024:
+			return _json_response({"error": "文件大小超过 10MB 限制"}, 400)
+
+		config = load_config(CONFIG_PATH)
+		entries = resume_entries(config)
+		if len(entries) >= MAX_RESUMES:
+			return _json_response({"error": f"最多只能保存 {MAX_RESUMES} 份简历，请先删除一份"}, 400)
+
+		raw_name = upload.raw_filename or upload.filename
+		safe_name, stored_content = prepare_resume_content(raw_name, content)
+		RESUME_DIR.mkdir(parents=True, exist_ok=True)
+		active_path = resolve_active_resume_path(
+			config.get("profile", {}).get("resume_path") or None,
+			BASE_DIR,
+		)
+		final_name = select_resume_markdown_filename(RESUME_DIR, safe_name, stored_content, active_path)
+		dest = RESUME_DIR / final_name
+		original_pdf_bytes = content if upload_keeps_original_pdf(raw_name) else None
+		write_resume_artifacts(dest, stored_content, original_pdf_bytes=original_pdf_bytes)
+
+		profile = config.setdefault("profile", {})
+		record = normalize_resume_record(
+			label=request.forms.get("label") or Path(safe_name).stem,
+			focus=request.forms.get("focus") or "",
+			path=str(dest.resolve()),
+			existing_ids={entry.id for entry in entries},
+		)
+		resumes = [item for item in (profile.get("resumes") or []) if isinstance(item, dict)]
+		resumes.append(record)
+		profile["resumes"] = resumes
+		if not str(profile.get("resume_path") or "").strip():
+			# First resume in the library also becomes the default/primary one.
+			profile["resume_path"] = record["path"]
+		_write_config(config)
+		payload = _resume_library_payload(load_config(CONFIG_PATH))
+		payload.update({"success": True, "added_id": record["id"]})
+		return _json_response(payload)
+	except ResumeUploadError as e:
+		return _json_response({"error": str(e)}, 400)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/resumes/<resume_id>/primary", method="POST")
+def api_resumes_set_primary(resume_id):
+	try:
+		config = load_config(CONFIG_PATH)
+		entry = next((item for item in resume_entries(config) if item.id == resume_id), None)
+		if entry is None:
+			return _json_response({"error": "简历不存在"}, 404)
+		config.setdefault("profile", {})["resume_path"] = entry.path
+		_write_config(config)
+		payload = _resume_library_payload(load_config(CONFIG_PATH))
+		payload["success"] = True
+		return _json_response(payload)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/resumes/<resume_id>", method="DELETE")
+def api_resumes_delete(resume_id):
+	try:
+		config = load_config(CONFIG_PATH)
+		entries = resume_entries(config)
+		entry = next((item for item in entries if item.id == resume_id), None)
+		if entry is None:
+			return _json_response({"error": "简历不存在"}, 404)
+		profile = config.setdefault("profile", {})
+		profile["resumes"] = [
+			item for item in (profile.get("resumes") or [])
+			if isinstance(item, dict) and Path(str(item.get("path") or "")).resolve() != Path(entry.path).resolve()
+		]
+		if str(profile.get("resume_path") or "") and Path(profile["resume_path"]).resolve() == Path(entry.path).resolve():
+			profile["resume_path"] = ""
+		# Only delete files this app manages; never touch a user's own resume outside data/resumes.
+		path = Path(entry.path)
+		try:
+			if path.resolve().is_relative_to(_managed_resume_dir()):
+				path.unlink(missing_ok=True)
+				path.with_suffix(".pdf").unlink(missing_ok=True)
+		except (OSError, ValueError):
+			pass
+		_write_config(config)
+		payload = _resume_library_payload(load_config(CONFIG_PATH))
+		payload["success"] = True
+		return _json_response(payload)
+	except Exception as e:
+		return _json_response({"error": str(e)}, 500)
+
+
+@app.route("/api/resumes/<resume_id>", method="PATCH")
+def api_resumes_update(resume_id):
+	"""Rename a library entry or attach a direction hint used by the scorer."""
+	try:
+		body = request.json or {}
+		if not isinstance(body, dict):
+			return _json_response({"error": "请求体必须是对象"}, 400)
+		config = load_config(CONFIG_PATH)
+		entry = next((item for item in resume_entries(config) if item.id == resume_id), None)
+		if entry is None:
+			return _json_response({"error": "简历不存在"}, 404)
+		profile = config.setdefault("profile", {})
+		resumes = [dict(item) for item in (profile.get("resumes") or []) if isinstance(item, dict)]
+		target = next(
+			(item for item in resumes if Path(str(item.get("path") or "")).resolve() == Path(entry.path).resolve()),
+			None,
+		)
+		if target is None:
+			target = {"id": entry.id, "label": entry.label, "path": entry.path, "focus": entry.focus}
+			resumes.append(target)
+		if "label" in body:
+			target["label"] = " ".join(str(body.get("label") or "").split())[:40] or entry.label
+		if "focus" in body:
+			target["focus"] = " ".join(str(body.get("focus") or "").split())[:60]
+		profile["resumes"] = resumes
+		_write_config(config)
+		payload = _resume_library_payload(load_config(CONFIG_PATH))
+		payload["success"] = True
+		return _json_response(payload)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
 

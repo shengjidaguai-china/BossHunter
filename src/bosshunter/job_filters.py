@@ -33,12 +33,31 @@ def city_match_clause(cities: list[str]) -> tuple[str, list[str]]:
 	return f"({' OR '.join(clauses)})", params
 
 
+_SEPARATOR_RE = re.compile(r"[\s\-_·/、,，.]+")
+
+
+def _squash(value: str) -> str:
+    """Drop separators so "AI-Infra" also matches the keyword "ai infra"."""
+    return _SEPARATOR_RE.sub("", str(value or "").lower())
+
+
 def matching_deal_breaker(text: str, deal_breakers: list[str]) -> str | None:
-    """Return the first deal-breaker keyword found in text."""
-    text_lower = text.lower()
-    for keyword in deal_breakers:
-        cleaned_keyword = keyword.strip()
-        if cleaned_keyword and cleaned_keyword.lower() in text_lower:
+    """Return the first deal-breaker keyword found in text.
+
+    Substring match, case-insensitive, with a separator-insensitive fallback so
+    "AI Infra" / "AI-Infra" / "ai_infra" are treated as the same rule.
+    """
+    text_lower = str(text or "").lower()
+    squashed_text = _squash(text_lower)
+    for keyword in deal_breakers or []:
+        cleaned_keyword = str(keyword or "").strip()
+        if not cleaned_keyword:
+            continue
+        lowered = cleaned_keyword.lower()
+        if lowered in text_lower:
+            return keyword
+        squashed_keyword = _squash(lowered)
+        if squashed_keyword and squashed_keyword in squashed_text:
             return keyword
     return None
 

@@ -553,3 +553,167 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect(screen.getByText('确认开始评分')).toBeTruthy()
   })
 })
+
+describe('DashboardPage collapsible sections and mark-all-read', () => {
+  function mockMediaMatches(matches: boolean) {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+    vi.stubGlobal('matchMedia', vi.fn().mockImplementation((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })))
+  }
+
+  function makeJob(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      company: `公司${id}`,
+      title: `岗位${id}`,
+      status: 'ready',
+      score: 85,
+      salary: '150-200元/天',
+      city: '广州',
+      experience: '在校/应届',
+      jd: 'AI Agent',
+      hr_name: 'HR',
+      hr_title: 'Recruiter',
+      hr_active: '',
+      company_size: '',
+      company_industry: '',
+      url: `https://example.com/${id}`,
+      created_at: '2026-11-24 10:00:00',
+      greeting: `您好，应聘岗位${id}`,
+      greeting_selection: 'generated',
+      ...overrides,
+    }
+  }
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('marks recent activity read via POST /api/history/read-all and hides read items', async () => {
+    mockMediaMatches(true)
+    const historyItems = [
+      { id: 10, job_id: 'j1', action: 'sent', detail: '', created_at: '2026-11-24 09:30:00', company: '甲公司', title: 'Agent实习' },
+      { id: 12, job_id: 'j2', action: 'scored', detail: '', created_at: '2026-11-24 09:45:00', company: '乙公司', title: '全栈实习' },
+    ]
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench') return jsonResponse(baseWorkbench({ funnel: { 采集总数: 2 } }))
+      if (url === '/api/activity?days=7') return jsonResponse([{ day: '2026-11-24', action: 'scored', cnt: 2 }])
+      if (url === '/api/top-companies?limit=5') return jsonResponse([{ company: '甲公司', avg_score: 90, job_count: 1 }])
+      if (url === '/api/history?limit=10&unread_only=1') return jsonResponse(historyItems)
+      if (url === '/api/history/read-all' && init?.method === 'POST') return jsonResponse({ success: true, marked_count: 2 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    render(<DashboardPage view="workbench" />)
+    expect(await screen.findByText('甲公司 · Agent实习')).toBeTruthy()
+    expect(screen.getByText('乙公司 · 全栈实习')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '折叠最近活动' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '一键已读' }))
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(([u, init]) => String(u) === '/api/history/read-all' && init?.method === 'POST')
+      expect(postCall).toBeTruthy()
+      expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({ max_id: 12 })
+    })
+    expect(await screen.findByText('暂无未读活动')).toBeTruthy()
+    expect(screen.queryByText('甲公司 · Agent实习')).toBeNull()
+    expect(screen.queryByRole('button', { name: '一键已读' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /折叠最近活动|展开最近活动/ })).toBeNull()
+  })
+
+  it('hides collapse toggles when each section has at most one row', async () => {
+    mockMediaMatches(true)
+    const wb = baseWorkbench({
+      needs_resume: [makeJob('hr-1')],
+      pending_greetings: [makeJob('pg-1')],
+      pending_confirmation: [makeJob('td-1'), makeJob('td-2')],
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/workbench') return jsonResponse(wb)
+      if (url === '/api/activity?days=7') return jsonResponse([{ day: '2026-11-24', action: 'scored', cnt: 1 }])
+      if (url === '/api/history?limit=10&unread_only=1') {
+        return jsonResponse([{ id: 1, job_id: 'j1', action: 'sent', detail: '', created_at: '2026-11-24 09:30:00', company: '单条公司', title: '单条岗位' }])
+      }
+      return jsonResponse({})
+    }))
+
+    render(<DashboardPage view="workbench" />)
+    expect(await screen.findByText('单条公司 · 单条岗位')).toBeTruthy()
+    expect(screen.getByText('公司hr-1｜岗位hr-1')).toBeTruthy()
+    expect(screen.getByText('公司pg-1｜岗位pg-1')).toBeTruthy()
+    expect(screen.getByText('公司td-1｜岗位td-1')).toBeTruthy()
+    expect(screen.getByText('公司td-2｜岗位td-2')).toBeTruthy()
+    expect(
+      screen.queryByRole('button', {
+        name: /^(折叠|展开)(最近活动|HR 简历待办|待发送招呼语|今日待确认)$/,
+      })
+    ).toBeNull()
+  })
+
+  it('collapses HR 简历待办, 待发送招呼语, and 今日待确认 to 1 row and expands back', async () => {
+    mockMediaMatches(true)
+    const wb = baseWorkbench({
+      needs_resume: [makeJob('hr-1'), makeJob('hr-2')],
+      pending_greetings: [makeJob('pg-1'), makeJob('pg-2')],
+      pending_confirmation: [makeJob('td-1'), makeJob('td-2'), makeJob('td-3')],
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/workbench') return jsonResponse(wb)
+      if (url === '/api/history?limit=10&unread_only=1') return jsonResponse([])
+      return jsonResponse({})
+    }))
+
+    const { container } = render(<DashboardPage view="workbench" />)
+    expect(await screen.findByText('公司hr-2｜岗位hr-2')).toBeTruthy()
+
+    // HR 简历待办: 2 items -> 2 rows -> collapsible
+    const hrToggle = screen.getByRole('button', { name: '折叠HR 简历待办' })
+    fireEvent.click(hrToggle)
+    expect(screen.getByRole('button', { name: '展开HR 简历待办' }).getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('#hr-resume-overflow')?.hasAttribute('hidden')).toBe(true)
+    expect(screen.getByText('公司hr-1｜岗位hr-1').closest('[hidden]')).toBeNull()
+    expect(screen.getByText('公司hr-2｜岗位hr-2').closest('[hidden]')).toBe(container.querySelector('#hr-resume-overflow'))
+    fireEvent.click(screen.getByRole('button', { name: '展开HR 简历待办' }))
+    expect(container.querySelector('#hr-resume-overflow')?.hasAttribute('hidden')).toBe(false)
+
+    // 待发送招呼语: 2 items -> collapsible
+    const pgToggle = screen.getByRole('button', { name: '折叠待发送招呼语' })
+    fireEvent.click(pgToggle)
+    expect(screen.getByRole('button', { name: '展开待发送招呼语' }).getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('#pending-greetings-overflow')?.hasAttribute('hidden')).toBe(true)
+    expect(screen.getByText('公司pg-1｜岗位pg-1').closest('[hidden]')).toBeNull()
+    expect(screen.getByText('公司pg-2｜岗位pg-2').closest('[hidden]')).toBe(container.querySelector('#pending-greetings-overflow'))
+    fireEvent.click(screen.getByRole('button', { name: '展开待发送招呼语' }))
+    expect(container.querySelector('#pending-greetings-overflow')?.hasAttribute('hidden')).toBe(false)
+
+    // 今日待确认: 3 items on 2-col desktop grid -> row 1 keeps td-1 & td-2, overflow hides td-3
+    const tdToggle = screen.getByRole('button', { name: '折叠今日待确认' })
+    fireEvent.click(tdToggle)
+    expect(screen.getByRole('button', { name: '展开今日待确认' }).getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('#today-jobs-overflow')?.hasAttribute('hidden')).toBe(true)
+    expect(screen.getByText('公司td-1｜岗位td-1').closest('[hidden]')).toBeNull()
+    expect(screen.getByText('公司td-2｜岗位td-2').closest('[hidden]')).toBeNull()
+    expect(screen.getByText('公司td-3｜岗位td-3').closest('[hidden]')).toBe(container.querySelector('#today-jobs-overflow'))
+    fireEvent.click(screen.getByRole('button', { name: '展开今日待确认' }))
+    expect(container.querySelector('#today-jobs-overflow')?.hasAttribute('hidden')).toBe(false)
+  })
+})

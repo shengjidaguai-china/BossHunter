@@ -2,8 +2,14 @@
 # 复制此文件为 config.yaml 并修改为你的实际配置
 
 profile:
-  resume_path: "./resume.md"
-  # 用于校招/社招岗位筛选与 AI 评分；留空保持旧行为。
+  resume_path: "./resume.md"  # 用于校招/社招岗位筛选与 AI 评分；留空保持旧行为。
+  # 多份简历：评分时逐份对比，取最匹配的一份作为该岗位的简历（招呼语与定制简历跟随它）。
+  # 面板「简历库」会自动维护这段配置，也可以手写（path 用绝对路径）。
+  # resumes:
+  #   - id: "ops"
+  #     label: "内容运营"
+  #     focus: "内容/社群"
+  #     path: "C:/Users/me/resumes/resume-ops.md"
   education: ""
   recruitment_type: ""  # campus / experienced / both
   ai_greeting_enabled: true  # 关闭后使用下面的固定招呼语，不调用 AI 生成或优化
@@ -112,6 +118,12 @@ ai:
   thinking: "auto"               # auto / disabled / enabled / off
   thinking_budget: 2048           # thinking=enabled 时使用，至少 1024
   timeout_seconds: 180
+  retry_attempts: 3              # 瞬时故障（网络抖动/限流/5xx）的 AI 请求尝试次数，1 表示不重试
+  retry_backoff_seconds: 5       # 指数退避基数：5s、10s、20s……上限 60s
+  prompt_cache: true             # 本地响应缓存：同一模型+同一提示词只请求一次，重复评分不再计费
+  prompt_cache_ttl_hours: 168    # 本地缓存有效期（小时）
+  filter_reason: false           # 让 AI 在评分 JSON 里附带 filter_reason（被过滤的一句话理由），不额外调用
+  greeting_enforce_length: false # 招呼语不在 50-90 字时重试一次（提示词本身已要求 50-90 字）
   scoring_max_tokens: 8192
   scoring_max_attempts: 2
   scoring_concurrency: 1          # AI评分并发数，范围1-3；数据库仍串行写入

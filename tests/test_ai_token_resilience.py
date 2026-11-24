@@ -1204,7 +1204,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(call_ai.call_count, 2)
-        save_preview.assert_called_once_with(db, 'review-format', original='这是一条可用的个性化招呼语。', optimized=None, style_issues=[], selected_greeting='这是一条可用的个性化招呼语。', selection='generated', expected_greeting='', expected_status='approved')
+        save_preview.assert_called_once_with(db, 'review-format', original='这是一条可用的个性化招呼语。', optimized=None, style_issues=greeter._greeting_style_issues('这是一条可用的个性化招呼语。'), selected_greeting='这是一条可用的个性化招呼语。', selection='generated', expected_greeting='', expected_status='approved')
         self.assertTrue(any("质量检查返回格式无法识别" in message for message in logs))
 
     def test_existing_greeting_is_preserved_and_marked_ready(self):
@@ -1367,7 +1367,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(call_ai.call_count, 2)
-        save_preview.assert_called_once_with(db, 'retry-empty', original='第二次生成成功的个性化招呼语', optimized=None, style_issues=[], selected_greeting='第二次生成成功的个性化招呼语', selection='generated', expected_greeting='', expected_status='approved')
+        save_preview.assert_called_once_with(db, 'retry-empty', original='第二次生成成功的个性化招呼语', optimized=None, style_issues=greeter._greeting_style_issues('第二次生成成功的个性化招呼语'), selected_greeting='第二次生成成功的个性化招呼语', selection='generated', expected_greeting='', expected_status='approved')
         add_history.assert_not_called()
 
     def test_review_quota_error_keeps_draft_and_continues_without_review(self):
@@ -1548,7 +1548,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
             count = greeter.generate_greetings(config)
 
         self.assertEqual(count, 0)
-        save_greeting.assert_called_once_with(db, 'status-race', expected_status='approved', original='已生成但不应保存的招呼语', optimized=None, style_issues=[], selected_greeting='已生成但不应保存的招呼语', selection='generated', expected_greeting='')
+        save_greeting.assert_called_once_with(db, 'status-race', expected_status='approved', original='已生成但不应保存的招呼语', optimized=None, style_issues=greeter._greeting_style_issues('已生成但不应保存的招呼语'), selected_greeting='已生成但不应保存的招呼语', selection='generated', expected_greeting='')
         self.assertTrue(any("生成结果未覆盖现有招呼语" in message for message in logs))
         self.assertEqual(
             config["_workbench_greeting_report"]["conflict_ids"], ["status-race"]
@@ -1575,7 +1575,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
         self.assertEqual(count, 1)
         call_ai.assert_called_once()
         mark_ready.assert_not_called()
-        save_greeting.assert_called_once_with(db, 'regenerate-existing', expected_greeting='旧招呼语', expected_status='error', original='重新生成的招呼语', optimized=None, style_issues=[], selected_greeting='重新生成的招呼语', selection='generated')
+        save_greeting.assert_called_once_with(db, 'regenerate-existing', expected_greeting='旧招呼语', expected_status='error', original='重新生成的招呼语', optimized=None, style_issues=greeter._greeting_style_issues('重新生成的招呼语'), selected_greeting='重新生成的招呼语', selection='generated')
 
     def test_job_ids_filter_excludes_scored_status_before_ai_call(self):
         db = MagicMock()
@@ -1598,7 +1598,7 @@ class GreeterTokenResilienceTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         call_ai.assert_called_once()
-        save_greeting.assert_called_once_with(db, 'ready-job', expected_status='ready', original='只为允许状态生成', optimized=None, style_issues=[], selected_greeting='只为允许状态生成', selection='generated', expected_greeting='')
+        save_greeting.assert_called_once_with(db, 'ready-job', expected_status='ready', original='只为允许状态生成', optimized=None, style_issues=greeter._greeting_style_issues('只为允许状态生成'), selected_greeting='只为允许状态生成', selection='generated', expected_greeting='')
         self.assertEqual(config["_workbench_greeting_report"]["requested_count"], 1)
 
     def test_review_empty_response_keeps_draft_and_continues_batch(self):

@@ -488,7 +488,8 @@ class DashboardPageTests(unittest.TestCase):
             / "useDashboard.ts"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("refreshingRef.current", hook_source)
+        # 刷新互斥由 AbortController 引用实现（旧实现用刷新布尔 ref）。
+        self.assertIn("if (refreshControllerRef.current) return", hook_source)
         self.assertIn("setLastRefreshedAt", hook_source)
         self.assertIn("setWorkbench(prev => ({ ...prev, task, last_task: task }))", hook_source)
         self.assertIn("scope === 'monitor' ? 2000 : 5000", hook_source)
@@ -812,25 +813,40 @@ class ConfigPageTests(unittest.TestCase):
             / "hooks"
             / "useConfig.ts"
         ).read_text(encoding="utf-8")
+        self.deal_breaker_source = (
+            ROOT
+            / "src"
+            / "bosshunter"
+            / "web"
+            / "frontend"
+            / "src"
+            / "components"
+            / "config"
+            / "DealBreakerPanel.tsx"
+        ).read_text(encoding="utf-8")
 
     def test_config_page_does_not_render_prefilter_threshold(self):
         # Act / Assert
         self.assertNotIn("prefilter_threshold", self.source)
         self.assertNotIn("预筛阈值", self.source)
 
-    def test_allow_internship_switch_appears_below_deal_breakers(self):
-        # Act
-        deal_breakers_index = self.source.index("排除关键词")
+    def test_deal_breaker_section_sits_above_profile_and_keeps_the_internship_switch(self):
+        # 否决关键词是独立栏目，排在「个人信息」之前；接受实习开关仍在个人信息里。
+        self.assertIn('<SectionCard title="绝对不投（否决关键词）"', self.source)
+        deal_breaker_index = self.source.index("绝对不投（否决关键词）")
+        profile_index = self.source.index('title="个人信息"')
         allow_internship_index = self.source.index("接受实习/管培岗位")
-
-        # Assert
-        self.assertGreater(allow_internship_index, deal_breakers_index)
+        self.assertLess(deal_breaker_index, profile_index)
+        self.assertGreater(allow_internship_index, profile_index)
+        self.assertIn("DealBreakerPanel", self.source)
         self.assertIn("profile.allow_internship", self.source)
 
     def test_config_page_exposes_jd_deal_breakers(self):
-        self.assertIn("JD 排除关键词", self.source)
+        self.assertIn("JD 含这些词 → 直接跳过", self.deal_breaker_source)
         self.assertIn("profile.jd_deal_breakers", self.source)
-        self.assertIn("完整 JD 含这些词时会在 AI 评分前跳过", self.source)
+        self.assertIn("JD 里出现这些词才会跳过", self.deal_breaker_source)
+        self.assertIn("职位名含这些词 → 直接跳过", self.deal_breaker_source)
+        self.assertIn("profile.deal_breakers", self.source)
 
     def test_config_page_exposes_salary_filter_controls(self):
         self.assertIn("薪资上限放宽倍数", self.source)
