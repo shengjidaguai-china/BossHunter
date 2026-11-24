@@ -6,6 +6,8 @@ __pycache__/
 dist/
 build/
 *.egg
+# Portable launcher sources live in scripts/dist — never ignore them.
+!scripts/dist/
 
 # Virtual environments
 .venv/
