@@ -7,6 +7,42 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
+. (Join-Path $PSScriptRoot "BossHunterProcessMatch.ps1")
+
+# One workbench only: it owns port 8686 and the database. A second copy cannot
+# serve a second panel (both would bind the same port) and would share the same
+# config.yaml and jobs.db without coordination, so it is refused up front.
+$WebPort = 8686
+$WorkbenchUrl = "http://127.0.0.1:$WebPort"
+
+function Get-WorkbenchOwner {
+	try {
+		$listeners = @(Get-NetTCPConnection -LocalPort $WebPort -State Listen -ErrorAction Stop)
+	} catch {
+		return $null
+	}
+	foreach ($conn in $listeners) {
+		try {
+			$proc = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $conn.OwningProcess) -ErrorAction Stop
+		} catch {
+			continue
+		}
+		if ($proc -and (Test-WorkbenchCommandLine -CommandLine ([string]$proc.CommandLine))) {
+			return $proc
+		}
+	}
+	return $null
+}
+
+function Test-WorkbenchHttp {
+	try {
+		$health = Invoke-RestMethod -Uri ("{0}/api/health" -f $WorkbenchUrl) -TimeoutSec 2 -ErrorAction Stop
+	} catch {
+		return $false
+	}
+	return ($health.status -eq "ok")
+}
+
 if ($PythonPath) {
 	if (-not (Test-Path -LiteralPath $PythonPath)) {
 		throw "Configured Python was not found: $PythonPath"
@@ -39,6 +75,14 @@ if ($PythonPath) {
 	}
 }
 
+$Workbench = Get-WorkbenchOwner
+if (-not $Workbench) {
+	$Busy = @(Get-NetTCPConnection -LocalPort $WebPort -State Listen -ErrorAction SilentlyContinue)
+	if ($Busy.Count -gt 0) {
+		throw ("Port {0} is already used by another program (PID {1}). Close it before starting BossHunter." -f $WebPort, $Busy[0].OwningProcess)
+	}
+}
+
 $ChromeCandidates = @()
 if ($env:ProgramFiles) {
 	$ChromeCandidates += Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"
@@ -64,41 +108,65 @@ $ChromeArguments = @(
 )
 
 if (-not $SkipChrome) {
-	Write-Host "Starting the BossHunter Chrome profile..."
-	Start-Process -FilePath $Chrome -ArgumentList $ChromeArguments
-	$ChromeReady = $false
-	for ($i = 0; $i -lt 20; $i++) {
-		Start-Sleep -Milliseconds 500
-		try {
-			$null = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json/version" -TimeoutSec 2
-			$ChromeReady = $true
-			break
-		} catch {
-			# Chrome is still starting.
+	$ChromeRunning = $false
+	try {
+		$null = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json/version" -TimeoutSec 2
+		$ChromeRunning = $true
+	} catch {
+		# Chrome is not running yet.
+	}
+	if ($ChromeRunning) {
+		Write-Host "Reusing the running BossHunter Chrome profile..."
+	} else {
+		Write-Host "Starting the BossHunter Chrome profile..."
+		Start-Process -FilePath $Chrome -ArgumentList $ChromeArguments
+		$ChromeReady = $false
+		for ($i = 0; $i -lt 20; $i++) {
+			Start-Sleep -Milliseconds 500
+			try {
+				$null = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json/version" -TimeoutSec 2
+				$ChromeReady = $true
+				break
+			} catch {
+				# Chrome is still starting.
+			}
+		}
+		if (-not $ChromeReady) {
+			Write-Warning "Chrome remote debugging did not become ready within 10 seconds."
 		}
 	}
-	if (-not $ChromeReady) {
-		Write-Warning "Chrome remote debugging did not become ready within 10 seconds."
+}
+
+if ($Workbench) {
+	Write-Host ("The local workbench is already running at {0} (PID {1}). Reusing it." -f $WorkbenchUrl, $Workbench.ProcessId)
+} else {
+	Write-Host "Starting the Browser Runtime..."
+	& $Runner @RunnerPrefix "connect"
+	if ($LASTEXITCODE -ne 0) {
+		Write-Warning "Browser connection check returned exit code $LASTEXITCODE. The workbench will still be opened."
 	}
-}
 
-Write-Host "Starting the Browser Runtime..."
-& $Runner @RunnerPrefix "connect"
-if ($LASTEXITCODE -ne 0) {
-	Write-Warning "Browser connection check returned exit code $LASTEXITCODE. The workbench will still be opened."
-}
+	Write-Host "Starting the local workbench..."
+	$WebArguments = @($RunnerPrefix) + @("web", "--no-open")
+	$WebProcess = Start-Process -FilePath $Runner -ArgumentList $WebArguments -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
 
-Write-Host "Starting the local workbench..."
-$WebArguments = @($RunnerPrefix) + @("web", "--no-open")
-Start-Process -FilePath $Runner -ArgumentList $WebArguments -WorkingDirectory $RepoRoot -WindowStyle Hidden
-
-for ($i = 0; $i -lt 20; $i++) {
-	Start-Sleep -Milliseconds 500
-	try {
-		$null = Invoke-WebRequest -Uri "http://127.0.0.1:8686/" -UseBasicParsing -TimeoutSec 2
-		break
-	} catch {
-		# The local server is still starting.
+	# Wait on the process this launcher started. Probing the port alone would be
+	# satisfied by a workbench that won the race, hiding a child that just died.
+	$WebReady = $false
+	for ($i = 0; $i -lt 20; $i++) {
+		Start-Sleep -Milliseconds 500
+		if ($WebProcess.HasExited) {
+			# The venv trampoline does not report the child's exit code, so point at
+			# the likely cause instead of printing a number that may be wrong.
+			throw ("The local workbench exited during startup. Check that port {0} is free and that 'bosshunter web' starts on its own." -f $WebPort)
+		}
+		if (Test-WorkbenchHttp) {
+			$WebReady = $true
+			break
+		}
+	}
+	if (-not $WebReady) {
+		throw ("The local workbench did not answer {0}/api/health within 10 seconds." -f $WorkbenchUrl)
 	}
 }
 
