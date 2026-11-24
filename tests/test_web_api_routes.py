@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import tempfile
@@ -914,6 +915,34 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertIn("application/json", headers["Content-Type"])
         self.assertEqual(json.loads(body), [])
 
+    def test_activity_window_counts_today_as_one_of_the_requested_days(self):
+        today = datetime.now(UTC).date()
+        with tempfile.TemporaryDirectory() as tmp:
+            server.set_base_dir(Path(tmp))
+            db = get_db(server.DATA_DIR / "bosshunter.db")
+            try:
+                for offset in range(-7, 2):
+                    day = today + timedelta(days=offset)
+                    job_id = day.isoformat()
+                    insert_job(db, _job(job_id))
+                    db.execute(
+                        "INSERT INTO history (job_id, action, created_at) VALUES (?, 'sent', ?)",
+                        (job_id, f"{day} 00:00:00"),
+                    )
+                db.commit()
+            finally:
+                db.close()
+
+            for days, expected_days in ((7, 7), (1, 1), (0, 1), (-1, 0)):
+                with self.subTest(days=days):
+                    status, _, body = self._request(f"/api/activity?days={days}")
+                    self.assertTrue(status.startswith("200"), body)
+                    expected = [
+                        {"day": (today - timedelta(days=i)).isoformat(), "action": "sent", "cnt": 1}
+                        for i in range(expected_days)
+                    ]
+                    self.assertEqual(json.loads(body), expected)
+
     def test_job_search_filters_keyword_score_salary_and_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -958,6 +987,63 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["all_total"], 4)
         self.assertEqual(payload["limit"], 15)
         self.assertEqual(payload["offset"], 0)
+
+    def test_job_search_and_filtered_export_match_literal_keywords(self):
+        cases = [
+            ("%", "100% remote", "1000 remote"),
+            ("_", "data_engineer", "dataXengineer"),
+            ("data_engineer", "DATA_engineer", "dataXengineer"),
+            ("100%", "100% remote", "1000 remote"),
+            ("\\", "path\\segment", "pathsegment"),
+            ("path\\", "path\\", "path"),
+            (r"\%", r"path\%done", r"path\Xdone"),
+            (r"\_", r"path\_done", r"path\Xdone"),
+            ("pYtHoN", "Python developer", "Java developer"),
+            ("数据", "数据工程师", "软件工程师"),
+            ("O'Reilly", "O'Reilly", "OReilly"),
+        ]
+        fields = ("title", "company", "jd", "score_reason")
+        expected_ids = {f"match-{field}" for field in fields}
+        for keyword, matching_text, nonmatching_text in cases:
+            with self.subTest(keyword=keyword), tempfile.TemporaryDirectory() as tmp:
+                server.set_base_dir(Path(tmp))
+                db = get_db(server.DATA_DIR / "bosshunter.db")
+                try:
+                    for field in fields:
+                        job_id = f"match-{field}"
+                        job = _job(job_id)
+                        if field != "score_reason":
+                            job[field] = f"prefix {matching_text} suffix"
+                        insert_job(db, job)
+                        reason = f"prefix {matching_text} suffix" if field == "score_reason" else "matched skills"
+                        update_job_score(db, job_id, 80, reason)
+                    insert_job(db, {**_job("nonmatching"), "title": nonmatching_text})
+                finally:
+                    db.close()
+
+                query = quote(keyword, safe="")
+                status, _, body = self._request(f"/api/jobs/search?q={query}")
+                self.assertTrue(status.startswith("200"), body)
+                payload = json.loads(body)
+                self.assertEqual({job["id"] for job in payload["items"]}, expected_ids)
+                self.assertEqual(payload["total"], 4)
+                self.assertEqual(payload["all_total"], 5)
+
+                page_status, _, page_body = self._request(f"/api/jobs/search?q={query}&limit=2&offset=1")
+                self.assertTrue(page_status.startswith("200"), page_body)
+                page = json.loads(page_body)
+                self.assertEqual(page["total"], 4)
+                self.assertEqual(len(page["items"]), 2)
+                self.assertTrue({job["id"] for job in page["items"]} <= expected_ids)
+
+                export_status, headers, export_body = self._request(
+                    "/api/jobs/export", "POST",
+                    {"format": "csv", "scope": "filtered", "filters": {"q": keyword}},
+                )
+                self.assertTrue(export_status.startswith("200"), export_body)
+                rows = list(csv.DictReader(io.StringIO(export_body.lstrip("\ufeff"))))
+                self.assertEqual({row["岗位 ID"] for row in rows}, expected_ids)
+                self.assertEqual(headers["X-Exported-Count"], "4")
 
     def test_job_search_hides_blocked_companies_before_pagination_without_deleting_records(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1297,6 +1383,46 @@ class WebApiRouteTests(unittest.TestCase):
 
         self.assertTrue(status.startswith("200"), body)
         self.assertIsInstance(json.loads(body), list)
+
+    def test_workbench_greeting_generation_moves_jobs_between_disjoint_queues(self):
+        from bosshunter.ai.greeter import generate_greetings
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            path = base_dir / "data" / "bosshunter.db"
+            resume = base_dir / "resume.md"
+            resume.write_text("具备相关产品设计经验", encoding="utf-8")
+            db = get_db(path)
+            try:
+                for job_id in ("new", "blank", "generated", "pending-review", "failed", "deleted"):
+                    insert_job(db, _job(job_id))
+                    update_job_score(db, job_id, 82, "匹配")
+                    update_job_status(db, job_id, "ready")
+                db.execute("UPDATE jobs SET greeting='现有招呼语' WHERE id IN ('generated','pending-review','failed','deleted')")
+                db.execute("UPDATE jobs SET greeting='   ' WHERE id='blank'")
+                db.execute("UPDATE jobs SET greeting_selection='pending' WHERE id='pending-review'")
+                db.execute("UPDATE jobs SET status='error' WHERE id='failed'")
+                db.execute("UPDATE jobs SET deleted_at=CURRENT_TIMESTAMP WHERE id='deleted'")
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+            status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            before = json.loads(body)
+            self.assertEqual({j["id"] for j in before["pending_confirmation"]}, {"new", "blank"})
+            self.assertEqual({j["id"] for j in before["pending_greetings"]}, {"generated", "pending-review"})
+            self.assertEqual({j["id"] for j in before["send_errors"]}, {"failed"})
+            with patch("bosshunter.ai.greeter._call_claude", return_value="你好，我做过相关产品设计，希望进一步了解岗位。"):
+                self.assertEqual(generate_greetings({"profile": {"resume_path": str(resume)}, "ai": {"greeting_style_suggestions": False}}, job_ids=["new"], db_path=path), 1)
+            status, _, body = self._request("/api/workbench")
+            self.assertTrue(status.startswith("200"), body)
+            after = json.loads(body)
+            confirmation = {j["id"] for j in after["pending_confirmation"]}
+            greetings = {j["id"] for j in after["pending_greetings"]}
+            self.assertEqual(confirmation, {"blank"})
+            self.assertEqual(greetings, {"new", "generated", "pending-review"})
+            self.assertTrue(confirmation.isdisjoint(greetings))
+            self.assertEqual({j["id"] for j in after["send_errors"]}, {"failed"})
 
     def test_web_api_workbench_pending_confirmation_returns_ready_jobs(self):
         # Arrange

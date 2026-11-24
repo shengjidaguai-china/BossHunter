@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ScoreJobsDialog } from './ScoreJobsDialog'
 
 afterEach(() => {
@@ -64,4 +64,25 @@ describe('ScoreJobsDialog progress polling', () => {
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50')
   })
 
+})
+
+
+describe('ScoreJobsDialog cooperative end', () => {
+  it('keeps an ending run visible and blocks another start until it exits', async () => {
+    let status = 'running'
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/end')) status = 'stopping'
+      const run = { id: 'run-1', status, remaining_job_ids: ['a'], progress: {} }
+      return new Response(JSON.stringify(
+        url === '/api/scoring/runs' ? [run] : url.endsWith('/end') ? run : { eligible_jobs: 1 }
+      ), { status: url.endsWith('/end') ? 202 : 200 })
+    }))
+    render(<ScoreJobsDialog open selectedJobIds={[]} onClose={vi.fn()} onStart={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '结束' }))
+    expect(await screen.findByText('正在结束 · 剩余 1 个岗位')).toBeTruthy()
+    expect(await screen.findByText('已请求结束，正在等待评分处理退出。')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '结束' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '确认开始评分' }) as HTMLButtonElement).disabled).toBe(true)
+  })
 })

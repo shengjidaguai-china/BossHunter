@@ -26,6 +26,11 @@ _NON_INTERN_ROLE = re.compile(rf"非实习(?!{_CANDIDATE_INTERN_TAIL})")
 _EXCLUSIVE_FULL_TIME_JOB = re.compile(
     r"只招正式|(?<!不是)(?<!并非)(?<!非)(?<!接受)(?:全职岗位|正式岗位)"
 )
+# "本岗位为全职" / "岗位性质为全职" name the role. A candidate's 实习经验 does not cancel it.
+_DECLARED_FULL_TIME = re.compile(
+    r"(?:本岗位|该岗位|此岗位|此岗|岗位性质|岗位类型|工作性质|用工性质)"
+    r"(?<!不)(?:是|为)[\s　]*全职"
+)
 # Conjunctions that name internship as a role alongside another type.
 _JD_ALSO_INTERNSHIP = re.compile(
     rf"(?:或|和|及|与)实习(?!{_CANDIDATE_INTERN_TAIL})|实习或|实习亦可|亦可实习|也招实习"
@@ -63,7 +68,7 @@ def _exclusive_full_time_jd(jd: str, offers_role: bool) -> bool:
     """True when the JD states a full-time role and does not also accept internship."""
     if offers_role or _JD_ALSO_INTERNSHIP.search(jd):
         return False
-    return bool(_EXCLUSIVE_FULL_TIME_JOB.search(jd))
+    return bool(_EXCLUSIVE_FULL_TIME_JOB.search(jd) or _DECLARED_FULL_TIME.search(jd))
 
 
 def has_internship_card_tag(tags) -> bool:

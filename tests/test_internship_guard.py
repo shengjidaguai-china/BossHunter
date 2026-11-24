@@ -479,6 +479,11 @@ def test_persisted_card_evidence_is_one_internship_signal():
     ("数据分析", "此岗为全职岗位，同时欢迎实习。", "internship", ""),
     ("数据分析", "欢迎实习生。不接受没有实习经验的候选人。", "internship", ""),
     # The post itself is named full-time, so the card conflicts and stays unverified.
+    ("数据分析", "期待有实习经验的候选人，本岗位为全职。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
+    ("数据分析", "有实习经历的候选人优先，岗位性质为全职。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
+    ("数据分析", "岗位类型为全职。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
+    ("实习数据分析", "本岗位不是全职。", "internship", ""),
+    ("数据分析", "本岗位为全职或实习。", "internship", ""),
     ("数据分析", "本岗位为全职岗位。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
     ("数据分析", "只招正式员工，实习经验优秀者优先。", "unknown", "仅实习：职位类型待核实，禁止自动投递"),
 ])

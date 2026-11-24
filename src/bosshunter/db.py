@@ -302,10 +302,15 @@ def _history_protection_reasons(conn: sqlite3.Connection, job_id: str) -> list[s
     return ["历史中存在发送或回复证据"] if actions & DELETION_PROTECTED_HISTORY_ACTIONS else []
 
 
-def _scoring_run_conflicts(conn: sqlite3.Connection, job_ids: set[str]) -> list[dict[str, Any]]:
+def _scoring_run_conflicts(
+    conn: sqlite3.Connection, job_ids: set[str], *, include_paused: bool = True
+) -> list[dict[str, Any]]:
     conflicts: list[dict[str, Any]] = []
+    statuses = ('pending', 'running', 'stopping', 'paused') if include_paused else ('pending', 'running', 'stopping')
+    placeholders = ','.join('?' for _ in statuses)
     rows = conn.execute(
-        "SELECT id, status, remaining_job_ids_json FROM scoring_runs WHERE status IN ('running', 'paused')"
+        f"SELECT id, status, remaining_job_ids_json FROM scoring_runs WHERE status IN ({placeholders})",
+        statuses,
     ).fetchall()
     for row in rows:
         try:
@@ -332,7 +337,8 @@ def soft_delete_jobs(
     if confirmed is not True:
         raise JobDeletionConfirmationError("移入回收站需要 confirmed=true")
     ids = _normalize_job_ids(job_ids, required=True)
-    run_conflicts = _scoring_run_conflicts(conn, set(ids))
+    # Paused runs have no writer; resume reselects jobs and skips recycled records.
+    run_conflicts = _scoring_run_conflicts(conn, set(ids), include_paused=False)
     if run_conflicts:
         raise JobDeletionConflictError("岗位仍被评分任务引用，请先结束该评分任务", blocked=run_conflicts)
     rows = _job_rows_by_ids(conn, ids)
@@ -1540,16 +1546,20 @@ def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[s
 
 
 def get_daily_activity(conn: sqlite3.Connection, days: int = 7) -> list[dict]:
-    """Get daily activity for last N days."""
+    """Get activity for N UTC calendar days ending today (0 also selects today)."""
+    if days < 0:
+        return []
+    days_back = max(days - 1, 0)
     rows = conn.execute("""
         SELECT date(h.created_at) as day, h.action, COUNT(*) as cnt
         FROM history h
         JOIN jobs j ON h.job_id = j.id
         WHERE h.created_at >= date('now', ?)
+          AND h.created_at < date('now', '+1 day')
           AND j.deleted_at IS NULL
         GROUP BY date(h.created_at), h.action
         ORDER BY day DESC
-    """, (f"-{days} days",)).fetchall()
+    """, (f"-{days_back} days",)).fetchall()
     return [dict(row) for row in rows]
 
 
