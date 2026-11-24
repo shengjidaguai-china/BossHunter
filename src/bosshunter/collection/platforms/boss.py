@@ -130,6 +130,10 @@ JS_VERIFY_INTERNSHIP_FILTER = """(() => {
 })()"""
 
 JS_IS_SCROLL_LIST = "Boolean(document.querySelector('.page-jobs .job-list-container .rec-job-list'))"
+# BOSS serves the search list in batches of 15 and the last batch is shorter.
+# A short batch therefore proves the keyword's result set ended, instead of the
+# page failing to load the next batch.
+BOSS_LIST_BATCH_SIZE = 15
 # Chrome can defer native scroll events in a hidden tab. The site's public
 # scroll handler must run after moving the viewport to request the next batch.
 JS_DISPATCH_LIST_SCROLL = "window.dispatchEvent(new Event('scroll'))"
@@ -321,6 +325,15 @@ def _positive_int(value: object, default: int) -> int:
         return default
 
 
+def _optional_limit(value: object, default: int) -> int | None:
+    """Page budget: ``0``/负数 表示不限制（采集不受时间约束）。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return None if parsed <= 0 else parsed
+
+
 def _bounded_float(value: object, default: float, minimum: float, maximum: float) -> float:
     try:
         return min(max(float(value), minimum), maximum)
@@ -400,8 +413,8 @@ class BossCollector:
             delay_max=5.0 * delay_multiplier,
         )
         guard = PlatformAccessGuard(self.safety_conn, self.config, "collection", "boss") if self.safety_conn is not None else None
-        search_limit = _positive_int(collection_cfg.get("daily_search_page_limit", 60), 60)
-        detail_limit = _positive_int(collection_cfg.get("daily_detail_page_limit", 900), 900)
+        search_limit = _optional_limit(collection_cfg.get("daily_search_page_limit", 60), 60)
+        detail_limit = _optional_limit(collection_cfg.get("daily_detail_page_limit", 900), 900)
         failure_limit = _positive_int(collection_cfg.get("max_consecutive_page_failures", 3), 3)
         risk_pause_min = _positive_int(collection_cfg.get("risk_pause_min_minutes", 5), 5)
         risk_pause_max = max(
@@ -422,6 +435,7 @@ class BossCollector:
         page_failures = 0
         seen_jobs = 0
         incomplete_combos = 0
+        stalled_combos = 0
         undecodable_salary: set[str] = set()
         salary_decode_action = _salary_decode_failure_action(self.config)
 
@@ -551,6 +565,32 @@ class BossCollector:
             ))
 
 
+        def confirm_internship_filter() -> bool:
+            """Confirm BOSS kept the 实习 filter, retrying before aborting the run.
+
+            The filter chip renders a moment after the list request, so one early
+            evaluate aborted whole runs with ``internship_filter_not_applied``
+            (2026-11-19) even though the URL already carried ``jobType=1902``.
+            """
+            for attempt in range(6):
+                if self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is True:
+                    return True
+                if attempt < 5 and wait(1.0 * delay_multiplier):
+                    raise ListStopped(make_result(self.platform, "stopped", "user_stopped", "用户已停止"))
+            return False
+
+        def skip_to_next_keyword(reason: str, message: str, page_no: int) -> None:
+            """Move on to the city's next keyword after one keyword proved exhausted.
+
+            Writing off the whole city because one keyword had no further pages is
+            what froze collection on the first keyword (2026-11-22: "vibe" has 11
+            results, so both cities ended before "agent"/"ai" were ever searched).
+            """
+            nonlocal last_yield_reason
+            last_yield_reason = reason
+            hooks.on_event(phase="searching", city=active_city, keyword=current_keyword,
+                           page=page_no, reason_code=reason, message=message)
+
         class CityYielded(Exception):
             pass
 
@@ -653,7 +693,7 @@ class BossCollector:
                 return limited(exc.reason)
 
         try:
-            for city, city_code, keyword in combos:
+            for combo_index, (city, city_code, keyword) in enumerate(combos):
                 if city in skipped_cities:
                     continue
                 if city != active_city:
@@ -722,12 +762,11 @@ class BossCollector:
                                     return make_result(self.platform, "stopped", "user_stopped", "用户已停止")
                                 if signal:
                                     return risk(signal["kind"], signal["evidence"])
-                                if only_internships:
-                                    if self.browser.evaluate(worker_target, JS_VERIFY_INTERNSHIP_FILTER) is not True:
-                                        return make_result(
-                                            self.platform, "completed_with_shortage", "internship_filter_not_applied",
-                                            "无法确认 BOSS 实习筛选已生效，已停止；请在网站核对职位类型后重试",
-                                        )
+                                if only_internships and not confirm_internship_filter():
+                                    return make_result(
+                                        self.platform, "completed_with_shortage", "internship_filter_not_applied",
+                                        "无法确认 BOSS 实习筛选已生效，已停止；请在网站核对职位类型后重试",
+                                    )
                                 self._refresh_font_digits(worker_target)
                                 scroll_list = self.browser.evaluate(worker_target, JS_IS_SCROLL_LIST) is True
                                 jobs = read_list()
@@ -742,9 +781,24 @@ class BossCollector:
                         except PlatformSafetyStop as exc:
                             return limited(exc.reason)
                         except ListStopped as exc:
-                            if exc.result.reason_code == "search_page_not_advanced":
-                                yield_city(exc.result.reason_code)
-                            return exc.result
+                            if exc.result.reason_code != "search_page_not_advanced":
+                                return exc.result
+                            stalled_combos += 1
+                            last_batch = len(jobs) if isinstance(jobs, list) else 0
+                            if last_batch < BOSS_LIST_BATCH_SIZE and any(
+                                name == city for name, _code, _word in combos[combo_index + 1:]
+                            ):
+                                # An unfilled batch cannot have a next page, so this
+                                # keyword is merely read out; the city's remaining
+                                # keywords still deserve their turn.
+                                combo_complete = True
+                                skip_to_next_keyword(
+                                    "search_page_not_advanced",
+                                    f"BOSS「{city}·{keyword}」列表已到末页（{last_batch} 条），继续下一个关键词",
+                                    page,
+                                )
+                                break
+                            yield_city("search_page_not_advanced")
                         if not isinstance(jobs, list):
                             combo_complete = False
                             page_failures += 1
@@ -763,6 +817,16 @@ class BossCollector:
                                 return risk(signal["kind"], signal["evidence"])
                             if self.browser.evaluate(worker_target, JS_SEARCH_READY) is not True:
                                 return make_result(self.platform, "failed", "list_load_unconfirmed", "BOSS 空列表尚未可靠加载，等待检查")
+                            # One keyword without results says nothing about the city's
+                            # other keywords, so only skip this search combination.
+                            combo_complete = True
+                            if any(name == city for name, _code, _word in combos[combo_index + 1:]):
+                                skip_to_next_keyword(
+                                    "no_jobs_for_search",
+                                    f"BOSS「{city}·{keyword}」没有搜索结果，继续下一个关键词",
+                                    page,
+                                )
+                                break
                             yield_city("no_jobs_for_search")
                         fingerprint = frozenset(list_ids(jobs))
                         if fingerprint and fingerprint in page_fingerprints:
@@ -914,6 +978,11 @@ class BossCollector:
                 if worker_target:
                     self.browser.close_tab(worker_target)
         if not seen_jobs:
+            if stalled_combos:
+                return make_result(
+                    self.platform, "completed_with_shortage", "search_page_not_advanced",
+                    "BOSS 列表未再加载新岗位，本轮新增 0 条；可能已采尽或页面加载异常，可稍后重试",
+                )
             return make_result(
                 self.platform, "completed_with_shortage", last_yield_reason or "no_jobs_extracted",
                 "BOSS 本轮未读取到岗位，请检查搜索页是否加载完成、登录状态及搜索条件",
@@ -922,6 +991,11 @@ class BossCollector:
             return make_result(
                 self.platform, "completed_with_shortage", last_yield_reason or "incomplete_search",
                 f"BOSS 本轮搜索结束，{incomplete_combos} 个搜索组合未完整读取，可再次采集",
+            )
+        if stalled_combos:
+            return make_result(
+                self.platform, "completed", "search_exhausted",
+                f"BOSS 本轮搜索已结束；{stalled_combos} 个关键词已读到末页，其余关键词已执行",
             )
         return make_result(self.platform, "completed", "search_exhausted", "BOSS 本轮搜索已结束")
 

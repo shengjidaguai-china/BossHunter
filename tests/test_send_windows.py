@@ -66,10 +66,34 @@ def test_adjacent_and_empty_windows_keep_legacy_behavior(tmp_path):
     empty = SendWindowChecker([])
     assert empty.is_active()
     assert empty.latest_end_datetime() is None
+    assert empty.next_end_datetime() is None
     assert not empty.latest_end_time_reached()
     path = tmp_path / "config.yaml"
     save_config({"throttle": {"send_windows": []}}, path)
     assert load_config(path)["throttle"]["send_windows"] == []
+
+
+def test_next_window_end_rolls_to_tomorrow_after_the_window():
+    checker = SendWindowChecker(["09:00-16:00"])
+    assert checker.next_end_datetime(datetime(2026, 10, 8, 10, 0)) == datetime(2026, 10, 8, 16)  # noqa: DTZ001
+    assert checker.next_end_datetime(datetime(2026, 10, 8, 15, 59, 59)) == datetime(2026, 10, 8, 16)  # noqa: DTZ001
+    # 窗口结束后启动的长流程不被判为“今日已截止”，顺延到明天的窗口结束。
+    assert checker.next_end_datetime(datetime(2026, 10, 8, 16, 0)) == datetime(2026, 10, 9, 16)  # noqa: DTZ001
+    assert checker.next_end_datetime(datetime(2026, 10, 8, 23, 30)) == datetime(2026, 10, 9, 16)  # noqa: DTZ001
+
+
+def test_full_pipeline_can_start_after_the_send_window(tmp_path):
+    from bosshunter.web.tasks import _deadline_from_config
+
+    config = {"throttle": {"send_windows": ["09:00-16:00"]}}
+    evening = datetime(2026, 10, 8, 18, 30)  # noqa: DTZ001
+    with patch("bosshunter.throttle.datetime") as window_clock:
+        window_clock.now.return_value = evening
+        assert _deadline_from_config("full", config) == datetime(2026, 10, 9, 16)  # noqa: DTZ001
+        assert _deadline_from_config("monitor", config) == datetime(2026, 10, 8, 16)  # noqa: DTZ001
+        assert _deadline_from_config("collect", config) is None
+        assert _deadline_from_config("score", config) is None
+        assert _deadline_from_config("greet", config) is None
 
 
 def test_yaml_round_trip_and_last_window_task_admission(tmp_path):

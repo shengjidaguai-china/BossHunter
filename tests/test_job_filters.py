@@ -64,6 +64,22 @@ class DealBreakerTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_research_and_algorithm_roles_are_blocked(self):
+        rules = ["算法", "研发", "Infra"]
+        self.assertEqual(matching_deal_breaker("AI Agent 算法实习生", rules), "算法")
+        self.assertEqual(matching_deal_breaker("AI 智能体研发实习生", rules), "研发")
+        self.assertEqual(matching_deal_breaker("AI Infra 实习生", rules), "Infra")
+
+    def test_separators_do_not_hide_a_blocked_role(self):
+        self.assertEqual(matching_deal_breaker("AI-Infra 实习生", ["AI Infra"]), "AI Infra")
+        self.assertEqual(matching_deal_breaker("ai_infra 方向", ["Infra"]), "Infra")
+        self.assertEqual(matching_deal_breaker("AI／Infra（实习）", ["Infra"]), "Infra")
+
+    def test_unrelated_titles_survive_the_blocklist(self):
+        self.assertIsNone(matching_deal_breaker("AI 产品实习生", ["算法", "研发", "Infra"]))
+        self.assertIsNone(matching_deal_breaker("", ["算法"]))
+        self.assertIsNone(matching_deal_breaker("研发", ["", "   "]))
+
 
 class BlockedCompanyEdgeCaseTests(unittest.TestCase):
     def test_none_company_returns_none(self):

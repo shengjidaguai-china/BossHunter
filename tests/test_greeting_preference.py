@@ -32,7 +32,7 @@ def test_greeting_preference_is_bounded_and_cannot_replace_fixed_rules():
 
     assert result == "自然简短的招呼语"
     assert "语气简洁，不主动询问薪资" in captured["prompt"]
-    assert "不得捏造我没有的经历" in captured["prompt"]
+    assert "不得捏造经历" in captured["prompt"]
     assert "不得覆盖下方事实与安全要求" in captured["prompt"]
 
 
@@ -107,7 +107,7 @@ def test_review_receives_user_preferences():
     '你们的内容获客可以先围绕一个细分场景试选题。我做过公众号和社群运营，想聊聊这个岗位。',
     '您好，我做过公众号和社群运营，想应聘这个岗位。',
 ])
-def test_business_suggestion_is_optional_and_does_not_trigger_regeneration(greeting):
+def test_business_suggestion_is_not_required_and_does_not_trigger_regeneration(greeting):
     config = {'profile': {'greeting_preference': '自然简短，有依据时带业务建议'}}
     with (
         patch.object(greeter, 'get_db', return_value=MagicMock()),
@@ -121,7 +121,9 @@ def test_business_suggestion_is_optional_and_does_not_trigger_regeneration(greet
     ):
         assert greeter.generate_greetings(config) == 1
     call.assert_called_once()
-    assert '不硬编建议' in call.call_args.args[0]
+    # 招呼语不再要求主动给公司提业务建议：求职者只讲自己的真实经历与匹配点。
+    assert '产品/业务建议' not in call.call_args.args[0]
+    assert '不硬编建议' not in call.call_args.args[0]
     assert save.call_args.kwargs['selected_greeting'] == greeting
     assert config['_workbench_greeting_report']['failed_count'] == 0
 
@@ -189,7 +191,7 @@ def test_general_generation_and_review_do_not_impose_no_question_preference(pref
     assert '不强制使用或禁止问句' in prompt
     assert '【本次必须不提问】' not in prompt
     assert '只有用户明确要求提问时' not in prompt
-    assert not greeter._greeting_style_issues(greeting)
+    assert [issue for issue in greeter._greeting_style_issues(greeting) if '少于' not in issue] == []
     with patch.object(greeter, '_call_claude', return_value='{"avg": 9, "critique": ""}') as review_call:
         greeter._review_greeting(greeting, job, config)
     review_prompt = review_call.call_args.args[0]

@@ -12,7 +12,8 @@ from bosshunter.collection.models import PlatformCollectionRequest
 from bosshunter.collection.orchestrator import CollectionOrchestrator
 from bosshunter.collection.platforms.boss import (
     BossBrowser, BossCollector, JS_DETECT_COLLECTION_RISK, JS_EXTRACT_DETAIL,
-    JS_EXTRACT_LIST, JS_IS_SCROLL_LIST, JS_DISPATCH_LIST_SCROLL, decode_boss_text,
+    JS_EXTRACT_LIST, JS_IS_SCROLL_LIST, JS_DISPATCH_LIST_SCROLL, JS_SEARCH_READY,
+    decode_boss_text,
 )
 from bosshunter.collection.registry import CollectorRegistry
 from bosshunter.collection_run_store import get_collection_run, boss_combo_key
@@ -79,6 +80,34 @@ class SearchBrowser:
         return BossBrowser(new_tab=self.open, navigate=self.navigate, evaluate=self.evaluate,
                            scroll=self.scroll, close_tab=self.closed.append,
                            wait_for_load=lambda *_, **__: True)
+
+
+class KeywordSearchBrowser(SearchBrowser):
+    """Give every keyword its own scroll batches, like the live search page."""
+
+    def __init__(self, per_keyword):
+        super().__init__([[]])
+        self.per_keyword = per_keyword
+
+    def _enter(self, url):
+        if "/job_detail/" in url:
+            return
+        keyword = url.split("query=")[1].split("&")[0]
+        self.batches = self.per_keyword[keyword]
+        self.page = 0
+
+    def open(self, url, **_):
+        self._enter(url)
+        return super().open(url)
+
+    def navigate(self, target, url):
+        self._enter(url)
+        return super().navigate(target, url)
+
+    def evaluate(self, target, script):
+        if script == JS_SEARCH_READY:
+            return True
+        return super().evaluate(target, script)
 
 
 class BossSearchRegressionTests(TestCase):
@@ -221,6 +250,35 @@ class BossSearchRegressionTests(TestCase):
             self.assertEqual(result.reason_code, "daily_search_page_limit")
             self.assertEqual(browser.scrolls, 0)
             self.assertEqual(len(self.seen), 1)
+
+    def test_stalled_keyword_continues_with_the_rest_of_the_city(self):
+        # 2026-11-22: "vibe" only has one batch, so every run ended on its page 2
+        # and never searched the city's other keywords again.
+        browser = KeywordSearchBrowser({
+            "vibe": [[card("v1")]],
+            "agent": [[card("a1"), card("a2")]],
+        })
+        result = self.collector(browser).collect(
+            PlatformCollectionRequest("boss", ["vibe", "agent"], ["北京"], {}, max_pages=3), self.hooks())
+        keywords = [url.split("query=")[1].split("&")[0] for url in browser.opens
+                    if "/job_detail/" not in url]
+        self.assertEqual(keywords, ["vibe", "agent"])
+        self.assertEqual([c.source_job_id for c in self.seen], ["v1", "a1", "a2"])
+        self.assertTrue(any("继续下一个关键词" in str(event.get("message", "")) for event in self.events))
+        # The city still ends terminal once its last keyword is read out.
+        self.assertEqual(result.reason_code, "search_page_not_advanced")
+
+    def test_empty_keyword_does_not_skip_the_city_remaining_keywords(self):
+        browser = KeywordSearchBrowser({
+            "FDE": [[]],
+            "AI": [[card("a1")], [card("a1"), card("a2")]],
+        })
+        result = self.collector(browser).collect(
+            PlatformCollectionRequest("boss", ["FDE", "AI"], ["北京"], {}, max_pages=2), self.hooks())
+        self.assertEqual([c.source_job_id for c in self.seen], ["a1", "a2"])
+        self.assertTrue(any(event.get("reason_code") == "no_jobs_for_search" for event in self.events))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.reason_code, "search_exhausted")
 
     def test_stalled_city_is_terminal_but_a_new_run_can_find_new_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:

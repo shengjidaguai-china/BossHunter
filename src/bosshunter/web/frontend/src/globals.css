@@ -4,6 +4,7 @@
 
 :root {
   color-scheme: light;
+  interpolate-size: allow-keywords;
 
   /* 基础面 */
   --background: 27 100% 97%;
@@ -156,4 +157,27 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--scrollbar-thumb-hover));
+}
+
+.collapsible-overflow {
+  overflow: clip;
+  contain: layout;
+  block-size: auto;
+}
+
+.collapsible-overflow[hidden] {
+  display: none;
+  block-size: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .collapsible-overflow {
+    transition: block-size 0.25s ease-in-out, display 0.25s allow-discrete;
+  }
+
+  .collapsible-overflow:not([hidden]) {
+    @starting-style {
+      block-size: 0;
+    }
+  }
 }

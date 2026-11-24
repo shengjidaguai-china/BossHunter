@@ -227,9 +227,17 @@ class WorkbenchTaskRunner:
 
 
 def _deadline_from_config(mode: str, config: dict) -> datetime | None:
-    """Resolve the automatic stop deadline for long-running/send tasks."""
+    """Resolve the automatic stop deadline for long-running/send tasks.
+
+    采集、评分、生成招呼语本身没有时间上限。``full`` 是一条长流水线，允许在发送窗口
+    之外启动，因此截止时间取“下一个窗口结束”；``monitor``/``deliver`` 属于发送动作，
+    仍以“今天窗口结束”为准，窗口已过就不启动。
+    """
     if mode not in DEADLINE_MODES:
         return None
     throttle = config.get("throttle", {}) if isinstance(config, dict) else {}
     windows = throttle.get("send_windows", ["09:00-16:00"])
-    return SendWindowChecker(windows).latest_end_datetime()
+    checker = SendWindowChecker(windows)
+    if mode == "full":
+        return checker.next_end_datetime()
+    return checker.latest_end_datetime()

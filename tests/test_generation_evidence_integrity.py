@@ -28,11 +28,11 @@ def test_excessive_output_is_kept_without_quality_retry():
         )
     assert result == "经历。" * 110
     assert call.call_count == 1
-    assert "全文不得超过300字符" in call.call_args.args[0]
+    assert "50-90 字" in call.call_args.args[0]
 
 
 def test_style_length_hint_does_not_trigger_rewrite_when_disabled():
-    greeting = "内容策划与复盘。" * 12
+    greeting = "内容策划与复盘。" * 15  # 105 字，超出 50-90 的硬性区间
     db = MagicMock()
     job = {"id": "one", "title": "运营", "company": "示例", "salary": "", "status": "approved"}
     with (
@@ -45,7 +45,7 @@ def test_style_length_hint_does_not_trigger_rewrite_when_disabled():
         assert greeter.generate_greetings({"ai": {"greeting_style_suggestions": False}}) == 1
     assert call.call_count == 1
     assert save.call_args.kwargs["selected_greeting"] == greeting
-    assert any("40-90字" in issue for issue in save.call_args.kwargs["style_issues"])
+    assert any("超过90字" in issue for issue in save.call_args.kwargs["style_issues"])
 
 
 def test_low_quality_long_draft_is_saved_without_rewrite_or_version_selection(tmp_path):
@@ -74,7 +74,7 @@ def test_low_quality_long_draft_is_saved_without_rewrite_or_version_selection(tm
     assert row["greeting_selection"] == "generated"
     assert "300" in row["greeting_style_issues"]
     assert "不提问" in row["greeting_style_issues"]
-    assert "建议精简" in row["greeting_style_issues"]
+    assert "精简" in row["greeting_style_issues"]
     assert not row["greeting_reviewed_at"]
     assert db.execute("SELECT count(*) FROM history WHERE action IN ('greeting_failed', 'sent')").fetchone()[0] == 0
     db.close()

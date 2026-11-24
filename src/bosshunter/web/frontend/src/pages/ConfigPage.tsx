@@ -6,6 +6,7 @@ import { Switch } from '@/components/ui/switch'
 import { Slider } from '@/components/ui/slider'
 import { TagsInput } from '@/components/ui/tags-input'
 import { CityMultiSelect, type CityOption } from '@/components/config/CityMultiSelect'
+import { DealBreakerPanel } from '@/components/config/DealBreakerPanel'
 import { ResumeUploadSection } from '@/components/config/ResumeUploadSection'
 import { SendWindowsInput, sendWindowsError } from '@/components/config/SendWindowsInput'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -60,6 +61,7 @@ export default function ConfigPage() {
   const windowError = config ? sendWindowsError(config.throttle?.send_windows ?? ['09:00-16:00']) : null
   const requestedSection = new URLSearchParams(window.location.search).get('section')
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => ({
+    deal_breakers: true,
     profile: true,
     search: true,
     ...(requestedSection ? { [requestedSection]: true } : {}),
@@ -282,8 +284,9 @@ export default function ConfigPage() {
     : (config.profile?.target_cities || [])
   const bossEstimateMaxPages = Math.max(Number(bossSearchEstimate.max_pages) || 1, 1)
   const bossTheoreticalPages = bossEstimateKeywords.length * bossEstimateCities.length * bossEstimateMaxPages
-  const bossDailySearchLimit = Math.max(Number(config.collection?.daily_search_page_limit) || 60, 1)
-  const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
+  const bossDailySearchLimit = Number(config.collection?.daily_search_page_limit ?? 60)
+  const bossSearchUnlimited = !Number.isFinite(bossDailySearchLimit) || bossDailySearchLimit <= 0
+  const bossTheoreticalExceedsLimit = !bossSearchUnlimited && bossTheoreticalPages > bossDailySearchLimit
   const guidePlatform = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[])
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
 
@@ -306,6 +309,17 @@ export default function ConfigPage() {
         </div>
 
         {windowError && <p className="text-xs text-danger">发送时间窗口有误，请展开「反监测设置」修正后保存：{windowError}</p>}
+
+        {/* 绝对不投：否决关键词 */}
+        <SectionCard title="绝对不投（否决关键词）" sectionKey="deal_breakers" expanded={expandedSections} toggle={toggleSection}>
+          <DealBreakerPanel
+            dealBreakers={config.profile?.deal_breakers || []}
+            jdBreakers={config.profile?.jd_deal_breakers || []}
+            onChangeTitle={(next) => updateConfig('profile.deal_breakers', next)}
+            onChangeJd={(next) => updateConfig('profile.jd_deal_breakers', next)}
+            dirty={dirty}
+          />
+        </SectionCard>
 
         {/* Profile Section */}
         <SectionCard title="个人信息" sectionKey="profile" expanded={expandedSections} toggle={toggleSection}>
@@ -398,13 +412,6 @@ export default function ConfigPage() {
               </div>
               <Switch aria-label="过滤面议/无法解析薪资" checked={config.profile?.allow_internship ? false : (config.profile?.filter_unparsed_salary ?? true)} disabled={config.profile?.allow_internship === true} onChange={v => updateConfig('profile.filter_unparsed_salary', v)} />
             </div>
-            <Field label="排除关键词">
-              <TagsInput value={config.profile?.deal_breakers || []} onChange={v => updateConfig('profile.deal_breakers', v)} placeholder="如：外包、996" />
-            </Field>
-            <Field label="JD 排除关键词">
-              <TagsInput value={config.profile?.jd_deal_breakers || []} onChange={v => updateConfig('profile.jd_deal_breakers', v)} placeholder="如：需频繁出差、纯销售" />
-              <p className="mt-1 text-xs text-muted">完整 JD 含这些词时会在 AI 评分前跳过。</p>
-            </Field>
             <Field label="屏蔽公司">
               <TagsInput value={config.profile?.blocked_companies || []} onChange={v => updateConfig('profile.blocked_companies', v)} placeholder="输入公司名称或关键词" />
               <p className="mt-1 text-xs text-muted">公司名包含这些词时不采集，也不会进入 AI 评分。</p>
@@ -671,6 +678,19 @@ export default function ConfigPage() {
               </div>
               <Switch checked={config.ai?.scoring_second_review ?? false} onChange={v => updateConfig('ai.scoring_second_review', v)} />
             </div>
+            <div className="flex items-center justify-between rounded-lg border border-card-border bg-surface p-3">
+              <div>
+                <label className="text-xs font-bold text-foreground">让 AI 输出过滤理由</label>
+                <p className="mt-1 text-xs text-muted">
+                  开启后评分 JSON 多一个 filter_reason 字段：被判为不通过的岗位会用一句话说明是硬性条件、职责证据还是薪资/城市冲突，可在「过滤分析」里查看。不额外调用模型。
+                </p>
+              </div>
+              <Switch
+                aria-label="让 AI 输出过滤理由"
+                checked={config.ai?.filter_reason ?? false}
+                onChange={v => updateConfig('ai.filter_reason', v)}
+              />
+            </div>
             {(config.profile?.ai_greeting_enabled ?? true) && <div className="rounded-2xl border border-primary/20 bg-surface-muted p-4">
               <div className="flex items-center justify-between gap-4">
                 <div>
@@ -710,16 +730,19 @@ export default function ConfigPage() {
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="BOSS 单日搜索页上限">
-                <Input type="number" value={config.collection?.daily_search_page_limit ?? 60} onChange={e => updateConfig('collection.daily_search_page_limit', Number(e.target.value))} min={1} max={200} />
+                <Input type="number" value={config.collection?.daily_search_page_limit ?? 60} onChange={e => updateConfig('collection.daily_search_page_limit', Number(e.target.value))} min={0} max={2000} />
+                <p className="mt-1 text-xs text-muted">填 0 表示不限制（采集想跑多久就跑多久）；只有投递受发送时间窗约束。</p>
                 {bossTheoreticalPages > 0 && (
                   <p className={`mt-1 text-xs ${bossTheoreticalExceedsLimit ? 'font-bold text-warning' : 'text-muted'}`}>
-                    当前搜索组合理论最多 {bossTheoreticalPages} 页；{bossTheoreticalExceedsLimit ? `超过本上限 ${bossDailySearchLimit} 页，会在设置处和执行时提示。` : '未超过本上限。'}
+                    {bossSearchUnlimited
+                      ? `当前搜索组合理论最多 ${bossTheoreticalPages} 页；已设为不限制页数。`
+                      : `当前搜索组合理论最多 ${bossTheoreticalPages} 页；${bossTheoreticalExceedsLimit ? `超过本上限 ${bossDailySearchLimit} 页，会在设置处和执行时提示。` : '未超过本上限。'}`}
                   </p>
                 )}
               </Field>
               <Field label="BOSS 单日详情页尝试上限">
-                <Input type="number" value={config.collection?.daily_detail_page_limit ?? 900} onChange={e => updateConfig('collection.daily_detail_page_limit', Number(e.target.value))} min={1} max={1000} />
-                <p className="mt-1 text-xs text-muted">只计算打开岗位详情的尝试；列表中跳过的重复、过滤岗位不占用详情额度。详情访问也计入下方总上限。</p>
+                <Input type="number" value={config.collection?.daily_detail_page_limit ?? 900} onChange={e => updateConfig('collection.daily_detail_page_limit', Number(e.target.value))} min={0} max={5000} />
+                <p className="mt-1 text-xs text-muted">填 0 表示不限制。只计算打开岗位详情的尝试；列表中跳过的重复、过滤岗位不占用详情额度。</p>
               </Field>
               <Field label="BOSS 连续页面失败停止阈值">
                 <Input type="number" value={config.collection?.max_consecutive_page_failures ?? 3} onChange={e => updateConfig('collection.max_consecutive_page_failures', Number(e.target.value))} min={1} max={10} />
@@ -749,8 +772,8 @@ export default function ConfigPage() {
             </div>
             <p className="text-xs text-muted">完成 BOSS 采集后，每次会在设定区间内随机等待一次再投递；默认为 5–15 分钟，单独采集不受影响。</p>
             <Field label="BOSS 单日页面访问总上限">
-              <Input type="number" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={1} max={2000} />
-              <p className="mt-1 text-xs text-muted">合计 BOSS 搜索页、详情页、自动投递和监测打开的页面；默认 1100 次，可容纳 60 次搜索与 900 次详情，另余 140 次供其他操作使用。其他平台不占用。</p>
+              <Input type="number" value={config.safety?.daily_platform_page_limit ?? 1100} onChange={e => updateConfig('safety.daily_platform_page_limit', Number(e.target.value))} min={0} max={20000} />
+              <p className="mt-1 text-xs text-muted">填 0 表示不限制。合计 BOSS 搜索页、详情页、自动投递和监测打开的页面；其他平台不占用。</p>
             </Field>
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="每日发送上限">
@@ -785,7 +808,7 @@ export default function ConfigPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="发送时间窗口">
                 <SendWindowsInput value={config.throttle?.send_windows ?? ['09:00-16:00']} onChange={v => updateConfig('throttle.send_windows', v)} />
-                <p className="mt-1 text-xs text-muted">当天最后一个窗口结束时自动停止。</p>
+                <p className="mt-1 text-xs text-muted">只限制投递：窗口外不会发送（顺延到下一个窗口）。采集、评分、生成招呼语不受时间窗口限制；全流程可在窗口外启动，截止时间顺延到下一个窗口结束。</p>
               </Field>
               <Field label="随机休息概率">
                 <Input type="number" value={config.throttle?.day_off_probability || 0.05} onChange={e => updateConfig('throttle.day_off_probability', Number(e.target.value))} step={0.01} min={0} max={1} />

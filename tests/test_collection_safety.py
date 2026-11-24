@@ -131,6 +131,21 @@ platforms:
             self.assertEqual(count_platform_access_today(db, platform="zhilian"), 1)
             db.close()
 
+    def test_zero_budgets_mean_unlimited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            config = {
+                "safety": {"daily_platform_page_limit": 0},
+                "collection": {"daily_search_page_limit": 0, "daily_detail_page_limit": 0},
+            }
+            guard = PlatformAccessGuard(db, config, "collection")
+            for _ in range(120):
+                guard.reserve("search_page", daily_limit=0)
+                guard.reserve("detail_page", daily_limit=0)
+            # No PlatformSafetyStop: 0 表示该额度不限制（采集不受时间约束）。
+            self.assertEqual(count_platform_access_today(db, platform="boss"), 240)
+            db.close()
+
     def test_risk_lock_survives_a_new_database_connection(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "bosshunter.db"

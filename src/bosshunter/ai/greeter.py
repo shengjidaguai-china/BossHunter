@@ -10,9 +10,12 @@ from urllib.parse import urlsplit
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from bosshunter.ai import response_cache
 from bosshunter.ai.credentials import AIRequestError, call_anthropic_text
+from bosshunter.ai.retry import call_with_retry
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
+from bosshunter.resumes import read_resume_text, resume_entries, text_for_job
 from bosshunter.db import (
     add_history,
     get_db,
@@ -24,9 +27,27 @@ from bosshunter.db import (
 
 console = Console()
 
-GREETING_PROMPT = """以求职者身份，写一条在{platform}发给HR的简短私信。
+GREETING_MIN_CHARS = 50
+GREETING_MAX_CHARS = 90
 
-## 我的背景（完整简历；通读后按岗位核心任务选择一项最相关的真实经历，不按出现顺序选取）
+GREETING_PROMPT = """你是求职者本人，正在{platform}上给招聘方 HR 发第一条私信（求职开场白）。请用第一人称、求职者口吻，主动介绍自己与这个岗位相关的经历。
+
+## 要求
+1. 求职姿态：开头一句普通问候并说明应聘的岗位/来意（例如“您好，看到贵司在招XX实习生，我想应聘这个岗位”），全文用第一人称、礼貌直接；不写行业判断、不教 HR 做事、不写营销口号或自我评价式空话。
+2. 字数（硬性）：正文 {min_chars}-{max_chars} 字（含标点），不得少于 {min_chars} 字，也不得超过 {max_chars} 字。少于 {min_chars} 字视为不合格，必须补充与岗位相关的真实细节；超过 {max_chars} 字要删掉重复表述，不得用套话凑字数，也不得为了省字删掉关键事实。
+3. 必须说清“我做过什么”：从简历中挑 1-2 段与该岗位核心职责最相关的真实经历，按“做了什么 + 怎么做的 + 结果/规模”写出来，每个事实都要能在简历原文中找到依据。
+4. 必须回应 JD 的硬性要求：JD 明确写出的学历/专业/年限/工具/证书/到岗时间，至少正面回应 1-2 项（满足就用事实说明，没体现就不要提，绝不编造）。
+5. {question_rule}
+6. 不得捏造经历、头衔、身份或数据；不把 JD 当成我的经历；毕业年份、届别、在读状态只用明确事实。
+7. 不得提及我的缺点、短板或经验缺口，只讲已具备的相关优势；技术名词不超过 3 个，项目名称最多出现一次；不得生成简历、用户招呼语偏好或可用亮点中未明确提供的网址。作品集仅在岗位关注案例、作品、设计或原型时可提一次，不作固定落款。
+用户明确提供的网址如下；需要引用时保持域名和路径原样，不改拼写，不增加 www、子域名或路径：
+{provided_urls}
+8. 输出前逐项核对：字数是否在 {min_chars}-{max_chars} 字之间、是否回应了 JD 硬性要求、是否有具体经历与结果；缺哪项就补哪项、超了就删重复。只输出招呼语正文。
+
+## 用户招呼语偏好（优先于通用风格建议和补充改进要求；不得覆盖下方事实与安全要求）
+{greeting_preference}
+
+## 我的背景（完整简历；通读后按岗位核心任务选择最相关的真实经历，不按出现顺序选取）
 {resume_summary}
 
 ## 目标岗位
@@ -43,23 +64,7 @@ GREETING_PROMPT = """以求职者身份，写一条在{platform}发给HR的简�
 
 ## 最近开头（避免整句照搬，普通问候可重复）
 {recent_openings}
-
-## 用户招呼语偏好（优先于通用风格建议和补充改进要求；不得覆盖下方事实与安全要求）
-{greeting_preference}
-
-## 要求
-1. 建议40-90字、最多3个短句，写“岗位切入点＋一项真实经历/结果”。JD提供具体产品或业务场景、且与我的经历相关时，优先带一句克制、可尝试的产品/业务建议，再自然接真实自荐；信息不足或用户不希望提建议时只写来意和经历，不硬编建议。建议只能作为设想，不能断言对方业务有问题或保证效果。可用普通问候开头，说完就停，不复述JD、不凑字数；为保留事实含义可适当超出建议字数，但全文不得超过300字符（含标点）。
-2. {question_rule}
-3. 像本人发私信：用具体动作和结果，建议保持商量语气，不总结行业规律、不教HR做业务。不写“关键在于、最难的是、不是…而是…”等金句，不用“赋能、闭环、抓手、有体感、自己扛、现成打法”等包装词或刻意口语，不硬补邀约、口号及承诺。
-4. 不得捏造我没有的经历、头衔或身份，不把JD当成我的经历；只概括背景中的事实，不夸大成果或职级，保留所用数据的真实周期。毕业年份、届别和在读状态只用明确事实，不推断。
-5. 不得提及我的缺点、短板或经验缺口，只讲已具备的相关优势。
-6. 建议技术名词不超过2个，避免反复使用“项目”；项目名称仅在有助于说明相关经历时使用，不堆砌名称。
-7. 不得生成简历、用户招呼语偏好或可用亮点中未明确提供的网址。作品集仅在岗位关注案例、作品、设计或原型时可提一次，不作固定落款。
-用户明确提供的网址如下；需要引用时保持域名和路径原样，不改拼写，不增加 www、子域名或路径：
-{provided_urls}
-{critique_section}
-输出前核对用户偏好和事实，删去套话与多余收尾。只输出招呼语正文。
-"""
+{critique_section}"""
 
 URL_PATTERN = re.compile(
     r"(?i)(?<![\w@.])(?:"
@@ -83,26 +88,36 @@ REVIEW_PROMPT = """请评估以下{platform}招呼语的质量。
 {question_review_rule}
 
 ## 评估维度（每项1-10分）
-1. 自然度：是否像普通求职者发的简短私信；“您好”等普通问候不扣分，说教、行业金句和故作熟络应扣分
+1. 自然度：是否像普通求职者发的私信；“您好”等普通问候不扣分，说教、行业金句和故作熟络应扣分
 2. 相关性：是否针对该岗位突出匹配点；有依据、克制的产品/业务建议可与真实经历结合，不得仅因没有建议扣分或要求补写
 3. 差异化：是否有具体且相关的个人经历支撑；不奖励猎奇开头、夸张承诺或华丽辞藻
-4. 克制度：是否只讲一个匹配点，避免项目名和术语堆叠、固定作品集落款和求职套话；40-90字是建议，不为凑字数或省字删除必要事实
+4. 信息量：是否说清“我做过什么”（经历+结果）并回应了岗位的硬性要求；只有来意和形容词而没有具体经历应大幅扣分
+5. 篇幅：正文是否在 50-90 字之间；少于 50 字直接扣到 3 分以下，超过 90 字应在 critique 提醒精简重复表述（不为省字删事实）
 
 请严格按JSON格式输出，不要输出其他内容：
-{{"naturalness": 8, "relevance": 7, "differentiation": 6, "restraint": 8, "avg": 7.25, "critique": "改进建议（20字内）"}}
+{{"naturalness": 8, "relevance": 7, "differentiation": 6, "restraint": 8, "informativeness": 7, "avg": 7.25, "critique": "改进建议（20字内）"}}
 """
 
 
 def _get_resume_text(config: dict) -> str:
-    """Read the full resume for local-only validation."""
-    resume_path = Path(config.get("profile", {}).get("resume_path", "./resume.md"))
-    if not resume_path.exists():
-        return ""
-    return resume_path.read_text(encoding="utf-8")
+    """Read the primary resume for local-only validation."""
+    entries = resume_entries(config)
+    if not entries:
+        return str(Path(config.get("profile", {}).get("resume_path", "./resume.md")))
+    primary = next((entry for entry in entries if entry.primary), entries[0])
+    return read_resume_text(primary)
 
 
-def _get_resume_summary(config: dict) -> str:
-    """Keep the complete factual source so relevant evidence can come from any section."""
+def _get_resume_summary(config: dict, job: dict | None = None) -> str:
+    """Keep the complete factual source so relevant evidence can come from any section.
+
+    With several resumes configured, the job's best-matching resume is used so
+    the greeting quotes evidence that actually belongs to the chosen track.
+    """
+    if job is not None:
+        text = text_for_job(config, job)
+        if text:
+            return text
     return _get_resume_text(config)
 
 
@@ -157,18 +172,22 @@ def _call_claude(
         token_limit = max(128, min(int(token_limit or default_tokens), 65536))
     except (TypeError, ValueError):
         token_limit = default_tokens
-    return run_cancellable(
-        lambda: call_anthropic_text(
-            prompt,
-            config,
-            token_limit,
-            timeout=ai_cfg.get(
-                f"{purpose}_timeout_seconds",
-                ai_cfg.get("greeting_timeout_seconds", ai_cfg.get("timeout_seconds", 180)),
+    return call_with_retry(
+        lambda: run_cancellable(
+            lambda: call_anthropic_text(
+                prompt,
+                config,
+                token_limit,
+                timeout=ai_cfg.get(
+                    f"{purpose}_timeout_seconds",
+                    ai_cfg.get("greeting_timeout_seconds", ai_cfg.get("timeout_seconds", 180)),
+                ),
+                purpose=purpose,
             ),
-            purpose=purpose,
+            config,
         ),
-        config,
+        config=config,
+        purpose=purpose,
     )
 
 
@@ -329,8 +348,12 @@ def _greeting_style_issues(
     issues = []
     if greeting.count("项目") > 1:
         issues.append("不要反复强调项目，整条消息最多出现一次“项目”")
-    if len(greeting) > 90:
-        issues.append("建议精简到40-90字，只保留一个匹配点，不删事实所需的限定信息")
+    if len(greeting.strip()) < GREETING_MIN_CHARS:
+        issues.append(
+            f"少于{GREETING_MIN_CHARS}字，需要补充与岗位相关的真实经历、结果和 JD 硬性要求回应"
+        )
+    if len(greeting) > GREETING_MAX_CHARS:
+        issues.append(f"超过{GREETING_MAX_CHARS}字，发送前需要精简重复表述；草稿已完整保留")
 
     first_sentence = re.split(r"[。！？]", greeting, maxsplit=1)[0]
     if any(phrase in first_sentence for phrase in (
@@ -472,6 +495,8 @@ def _generate_greeting_once(
 
     prompt = GREETING_PROMPT.format(
         platform=_platform_label(job),
+        min_chars=GREETING_MIN_CHARS,
+        max_chars=GREETING_MAX_CHARS,
         resume_summary=resume_summary,
         title=job["title"],
         company=job["company"],
@@ -533,6 +558,31 @@ def _violates_no_question_preference(greeting: str, config: dict) -> bool:
     return any(re.search(r"[?？]|(?:吗|么|呢)[…\s]*$|是否|能否|可否|方便.{0,8}(?:聊聊|沟通)", sentence) for sentence in sentences)
 
 
+def _enforce_length(config: dict) -> bool:
+    """Whether a draft outside 50-90 字 is regenerated.
+
+    提示词本身已经要求 50-90 字；这个开关让后台任务对“模型仍然写偏了”的稿子
+    再试一次（config.yaml 默认开启，离线测试默认关闭以免改变调用次数）。
+    """
+    ai_cfg = config.get("ai") if isinstance(config, dict) else None
+    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
+    return ai_cfg.get("greeting_enforce_length", False) is True
+
+
+def _length_feedback(draft: str) -> str:
+    size = len(draft.strip())
+    if size < GREETING_MIN_CHARS:
+        return (
+            f"上一稿只有 {size} 字，少于要求的 {GREETING_MIN_CHARS} 字；"
+            "请补充与 JD 核心职责、硬性要求直接相关的真实经历和结果，不要用套话凑字数。"
+        )
+    return (
+        f"上一稿有 {size} 字，超出 {GREETING_MAX_CHARS} 字上限 {size - GREETING_MAX_CHARS} 字。"
+        f"请在保留最关键经历和结果的前提下，直接删减到 {GREETING_MAX_CHARS} 字以内"
+        "（删修饰、删重复、删次要项目名），不要重写、不要删事实。"
+    )
+
+
 def _generate_with_token_retry(
     job: dict,
     resume_summary: str,
@@ -559,6 +609,14 @@ def _generate_with_token_retry(
             raise
 
     try:
+        fallback: str | None = None
+        enforce_length = _enforce_length(config)
+
+        def acceptable(text: str) -> bool:
+            size = len(text.strip())
+            return (not enforce_length
+                    or GREETING_MIN_CHARS <= size <= GREETING_MAX_CHARS)
+
         result = _once_or_none(
             job,
             resume_summary,
@@ -567,7 +625,9 @@ def _generate_with_token_retry(
             recent_openings=recent_openings,
         )
         if result:
-            return result
+            if acceptable(result):
+                return result
+            fallback = result
         ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
         try:
             max_attempts = max(1, min(int(ai_cfg.get("greeting_max_attempts", 2) or 2), 3))
@@ -575,7 +635,13 @@ def _generate_with_token_retry(
             max_attempts = 2
         for attempt in range(2, max_attempts + 1):
             retry_critique = _retry_critique()
-            reason = "招呼语包含未提供的网址" if failure_feedback else "未返回完整招呼语"
+            if fallback is not None:
+                # 字数不达标时带上具体字数再生成一次，而不是直接接受跑偏的草稿。
+                retry_critique = "\n- ".join(filter(None, [retry_critique, _length_feedback(fallback)]))
+            reason = (
+                "招呼语字数不符合要求" if fallback is not None
+                else ("招呼语包含未提供的网址" if failure_feedback else "未返回完整招呼语")
+            )
             _notify(
                 config,
                 f"{job['company']}｜{job['title']} {reason}，正在重试（{attempt}/{max_attempts}）。",
@@ -588,8 +654,10 @@ def _generate_with_token_retry(
                 recent_openings=recent_openings,
             )
             if result:
-                return result
-        return None
+                if acceptable(result):
+                    return result
+                fallback = result
+        return fallback
     except AIRequestError as exc:
         if exc.kind == "output_truncated":
             _notify(config, f"{job['company']}｜{job['title']} 的招呼语回答被截断，正在增大输出 Token 上限后重试。")
@@ -750,9 +818,16 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
         config["_workbench_greeting_report"]["pause_reason"] = "无法读取简历：请先在配置面板上传简历后重试"
         db.close()
         return 0
-    graduation_context = _parse_graduation_context(resume_summary)
-    if graduation_context:
-        resume_summary = f"{graduation_context}\n\n{resume_summary}"
+    # 多份简历时，每个岗位用评分阶段选出的最匹配简历写招呼语。
+    resume_summaries: dict[str, str] = {}
+
+    def resume_summary_for(job: dict) -> str:
+        key = str(job.get("best_resume_id") or "")
+        if key not in resume_summaries:
+            text = _get_resume_summary(config, job) if ai_enabled else ""
+            context = _parse_graduation_context(text)
+            resume_summaries[key] = f"{context}\n\n{text}" if context else text
+        return resume_summaries[key]
 
     ai_cfg = config.get("ai", {})
     review_threshold = ai_cfg.get("greeting_review_threshold", 7.0)
@@ -820,7 +895,7 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
                     continue
                 try:
                     greeting = (
-                        _generate_with_token_retry(job, resume_summary, config, "", recent_openings)
+                        _generate_with_token_retry(job, resume_summary_for(job), config, "", recent_openings)
                         if ai_enabled else fixed_greeting
                     )
                 except OperationCancelled:
@@ -910,4 +985,7 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
     if pause_reason:
         # 服务级故障（鉴权/额度/限流等）必须显性上报，供后台任务据此区分 completed/failed。
         config["_workbench_greeting_report"]["pause_reason"] = pause_reason
+    cache_stats = response_cache.drain_stats()
+    if cache_stats.get("calls") or cache_stats.get("hits"):
+        _notify(config, response_cache.summary_line(cache_stats))
     return count

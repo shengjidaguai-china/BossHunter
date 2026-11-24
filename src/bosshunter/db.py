@@ -133,6 +133,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             action TEXT NOT NULL,
             detail TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            read_at TIMESTAMP,
             FOREIGN KEY (job_id) REFERENCES jobs(id)
         );
 
@@ -171,8 +172,10 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     _migrate_v1_3(conn)
     _migrate_v1_4(conn)
     _migrate_v1_5(conn)
+    _migrate_multi_resume(conn)
     _migrate_outsourcing(conn)
     _migrate_platform_access_events(conn)
+    _migrate_history_read(conn)
     _init_scoring_runs(conn)
     _init_collection_runs(conn)
     _init_collect_progress(conn)
@@ -1215,6 +1218,44 @@ def _migrate_v1_5(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_multi_resume(conn: sqlite3.Connection) -> None:
+    """Record which resume in the library matched each job, and how well."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    additions = {
+        "best_resume_id": "TEXT NULL",
+        "resume_fit_json": "TEXT NOT NULL DEFAULT '[]'",
+        "filter_reason": "TEXT NULL",
+    }
+    for name, definition in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+    conn.commit()
+
+
+def update_job_filter_reason(conn: sqlite3.Connection, job_id: str, reason: str | None) -> None:
+    """Store (or clear) the one-line reason a job was filtered out."""
+    conn.execute(
+        "UPDATE jobs SET filter_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+        ((reason or "").strip()[:500] or None, job_id),
+    )
+    conn.commit()
+
+
+def update_job_resume_fit(
+    conn: sqlite3.Connection,
+    job_id: str,
+    best_resume_id: str | None,
+    resume_fit: list[dict] | None,
+) -> None:
+    """Persist the best-matching resume and the per-resume fit list for one job."""
+    payload = json.dumps(resume_fit or [], ensure_ascii=False)
+    conn.execute(
+        "UPDATE jobs SET best_resume_id = ?, resume_fit_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (best_resume_id or None, payload, job_id),
+    )
+    conn.commit()
+
+
 def _migrate_outsourcing(conn: sqlite3.Connection) -> None:
     """Add outsourcing columns, independently of main's numbered migrations.
 
@@ -1280,6 +1321,15 @@ def _migrate_platform_access_events(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_platform_access_platform_stage_action "
         "ON platform_access_events(platform, stage, action, created_at)"
     )
+    conn.commit()
+
+
+def _migrate_history_read(conn: sqlite3.Connection) -> None:
+    """Add read_at column to history so recent dashboard activity can be dismissed."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(history)").fetchall()}
+    if "read_at" not in cols:
+        conn.execute("ALTER TABLE history ADD COLUMN read_at TIMESTAMP")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_read_at ON history(read_at)")
     conn.commit()
 
 
@@ -1550,10 +1600,16 @@ def get_top_companies(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_recent_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
+def get_recent_history(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    *,
+    unread_only: bool = False,
+) -> list[dict]:
     """Get recent history entries with job info."""
-    rows = conn.execute("""
-        SELECT h.id, h.job_id, h.action, h.detail, h.created_at, j.company, j.title,
+    unread_clause = "AND h.read_at IS NULL" if unread_only else ""
+    rows = conn.execute(f"""
+        SELECT h.id, h.job_id, h.action, h.detail, h.created_at, h.read_at, j.company, j.title,
                j.resume_path, j.url, j.source_platform,
                CASE
                  WHEN h.action = 'resume_failed'
@@ -1573,10 +1629,26 @@ def get_recent_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
         FROM history h
         JOIN jobs j ON h.job_id = j.id
         WHERE j.deleted_at IS NULL
+          {unread_clause}
         ORDER BY h.created_at DESC, h.id DESC
         LIMIT ?
     """, (limit,)).fetchall()
     return [dict(row) for row in rows]
+
+
+def mark_history_read(conn: sqlite3.Connection, max_id: int | None = None) -> int:
+    """Mark unread history entries as read up to max_id (or all if omitted)."""
+    if max_id is not None:
+        cursor = conn.execute(
+            "UPDATE history SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL AND id <= ?",
+            (int(max_id),),
+        )
+    else:
+        cursor = conn.execute(
+            "UPDATE history SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL"
+        )
+    conn.commit()
+    return int(cursor.rowcount or 0)
 
 
 def get_recent_monitor_replies(conn: sqlite3.Connection) -> list[dict]:

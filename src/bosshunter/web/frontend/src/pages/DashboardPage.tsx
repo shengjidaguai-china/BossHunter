@@ -5,6 +5,7 @@ import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJob
 import { Button } from '@/components/ui/button'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 import { JobsTable } from '@/components/dashboard/JobsTable'
+import { FilterInsightsPanel } from '@/components/dashboard/FilterInsightsPanel'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { TaskScoringProgress } from '@/components/dashboard/ScoringProgress'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
@@ -14,6 +15,7 @@ import { TrendChart } from '@/components/dashboard/TrendChart'
 import { TopCompanies } from '@/components/dashboard/TopCompanies'
 import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
 import { RecentActivity } from '@/components/dashboard/RecentActivity'
+import { CollapsibleToggleButton, useMediaQuery } from '@/components/dashboard/CollapsibleControls'
 import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
@@ -440,6 +442,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const [activityData, setActivityData] = useState<ActivityData[]>([])
   const [topCompanies, setTopCompanies] = useState<TopCompany[]>([])
   const [recentActivity, setRecentActivity] = useState<HistoryItem[]>([])
+  const [markingRecentRead, setMarkingRecentRead] = useState(false)
+  const recentReadWatermarkRef = useRef(0)
+  const [hrResumeCollapsed, setHrResumeCollapsed] = useState(false)
+  const [pendingGreetingsCollapsed, setPendingGreetingsCollapsed] = useState(false)
+  const [todayCollapsed, setTodayCollapsed] = useState(false)
+  const isLargeTodayGrid = useMediaQuery('(min-width: 1024px)')
+  const todayRowSize = isLargeTodayGrid ? 2 : 1
   const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[]>([])
   const [preflightMode, setPreflightMode] = useState<WorkbenchMode>('full')
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
@@ -512,7 +521,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
       await Promise.allSettled([
         fetchOverview('/api/activity?days=7', setActivityData),
         fetchOverview('/api/top-companies?limit=5', setTopCompanies),
-        fetchOverview('/api/history?limit=3', setRecentActivity),
+        fetchOverview<HistoryItem[]>('/api/history?limit=10&unread_only=1', data => {
+          const list = Array.isArray(data) ? data : []
+          setRecentActivity(list.filter(item => (Number(item.id) || 0) > recentReadWatermarkRef.current))
+        }),
       ])
     }
     void fetchVisualizationData()
@@ -526,6 +538,37 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const pendingGreetingJobs = workbench.pending_greetings
   const reviewedGreetingJobs = pendingGreetingJobs.filter(job => job.greeting_selection !== 'pending')
   const pendingGreetingReviewCount = pendingGreetingJobs.length - reviewedGreetingJobs.length
+  const canCollapseHrResume = workbench.needs_resume.length > 1
+  const isHrResumeCollapsed = canCollapseHrResume && hrResumeCollapsed
+  const canCollapsePendingGreetings = pendingGreetingJobs.length > 1
+  const isPendingGreetingsCollapsed = canCollapsePendingGreetings && pendingGreetingsCollapsed
+  const canCollapseToday = filteredTodayJobs.length > todayRowSize
+  const isTodayCollapsed = canCollapseToday && todayCollapsed
+
+  const markAllRecentActivityRead = useCallback(async () => {
+    if (!recentActivity.length || markingRecentRead) return
+    setMarkingRecentRead(true)
+    try {
+      const maxId = Math.max(...recentActivity.map(item => Number(item.id) || 0))
+      const res = await fetch('/api/history/read-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(maxId > 0 ? { max_id: maxId } : {}),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '标记已读失败')
+      }
+      if (maxId > recentReadWatermarkRef.current) {
+        recentReadWatermarkRef.current = maxId
+      }
+      setRecentActivity([])
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '标记已读失败')
+    } finally {
+      setMarkingRecentRead(false)
+    }
+  }, [recentActivity, markingRecentRead])
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
@@ -1118,7 +1161,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             <TopCompanies data={topCompanies} />
           </div>
           <div className="mt-3">
-            <RecentActivity data={recentActivity} />
+            <RecentActivity
+              data={recentActivity}
+              onMarkAllRead={markAllRecentActivityRead}
+              markingRead={markingRecentRead}
+            />
           </div>
         </section>
       ) : (
@@ -1130,29 +1177,50 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <PipelineFlow />
         </section>
       )}
-      <section className="rounded-xl border border-card-border bg-card px-3 py-2">
-        <details className="group">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-1 text-sm [&::-webkit-details-marker]:hidden">
-            <span className="font-semibold">HR 简历待办 <span className="ml-2 text-xs font-normal text-muted">{workbench.needs_resume.length ? `${workbench.needs_resume.length} 项待处理` : '暂无待办'}</span></span>
-            <ChevronDown className="h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="mt-2 flex items-center justify-between gap-2 border-t border-card-border pt-2">
-            <p className="text-xs text-muted">下载后手动发给 HR，再标记已发送。</p>
-            <Button variant="ghost" size="sm" onClick={() => { window.location.href = '/monitor' }}>查看全部</Button>
+      <section className="rounded-xl border border-card-border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">
+              HR 简历待办 <span className="ml-2 text-xs font-normal text-muted">{workbench.needs_resume.length ? `${workbench.needs_resume.length} 项待处理` : '暂无待办'}</span>
+            </h3>
+            <p className="mt-1 text-xs text-muted">下载后手动发给 HR，再标记已发送。</p>
           </div>
-          <div className="divide-y divide-card-border">
-            {workbench.needs_resume.slice(0, 4).map(job => (
-              <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span className="flex min-w-0 flex-wrap items-center gap-2 break-words text-sm"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></span>
-                <div className="flex max-w-full flex-wrap items-center gap-1">
-                  <Button variant="ghost" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />跳转岗位链接</Button>
-                  <Button variant="ghost" size="sm" onClick={() => downloadResume(job)}><Download className="mr-1 h-3.5 w-3.5" />下载简历</Button>
-                  <Button variant="secondary" size="sm" onClick={() => markResumeSent(job)}>标记已发送</Button>
-                </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button type="button" variant="ghost" size="sm" onClick={() => { window.location.href = '/monitor' }}>查看全部</Button>
+            {canCollapseHrResume && (
+              <CollapsibleToggleButton
+                sectionName="HR 简历待办"
+                collapsed={isHrResumeCollapsed}
+                controlsId="hr-resume-overflow"
+                onToggle={() => setHrResumeCollapsed(value => !value)}
+              />
+            )}
+          </div>
+        </div>
+        {workbench.needs_resume.length > 0 && (() => {
+          const renderHrResumeRow = (job: Job) => (
+            <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+              <span className="flex min-w-0 flex-wrap items-center gap-2 break-words text-sm"><span>{job.company}｜{job.title}</span><OutsourcingBadge job={job} /></span>
+              <div className="flex max-w-full flex-wrap items-center gap-1">
+                <Button variant="ghost" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-1 h-3.5 w-3.5" />跳转岗位链接</Button>
+                <Button variant="ghost" size="sm" onClick={() => downloadResume(job)}><Download className="mr-1 h-3.5 w-3.5" />下载简历</Button>
+                <Button variant="secondary" size="sm" onClick={() => markResumeSent(job)}>标记已发送</Button>
               </div>
-            ))}
-          </div>
-        </details>
+            </div>
+          )
+          return (
+            <div className="mt-2 border-t border-card-border">
+              {renderHrResumeRow(workbench.needs_resume[0])}
+              {canCollapseHrResume && (
+                <div id="hr-resume-overflow" className="collapsible-overflow" hidden={isHrResumeCollapsed}>
+                  <div className="divide-y divide-card-border border-t border-card-border">
+                    {workbench.needs_resume.slice(1).map(renderHrResumeRow)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })()}
       </section>
 
       {workbench.send_errors.length > 0 && (
@@ -1194,45 +1262,63 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </section>
       )}
 
-      {pendingGreetingJobs.length > 0 && (
-        <section className="rounded-xl border border-card-border bg-card p-3">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold">待发送招呼语 <span className="ml-1 text-xs font-normal text-muted">{pendingGreetingJobs.length} 条</span></h3>
-              <p className="mt-1 text-xs text-muted">选择只保存版本，发送需另行确认。</p>
+      {pendingGreetingJobs.length > 0 && (() => {
+        const renderPendingGreetingRow = (job: Job) => (
+          <GreetingReviewCard
+            key={job.id}
+            job={job}
+            busy={sendingGreetingIds.has(job.id) || Boolean(job.greeting_activity)}
+            onBusyChange={onGreetingBusyChange}
+            onSelect={(selection, greeting) => selectGreeting(job, selection, greeting)}
+            onSend={() => sendReadyGreetings([job.id])}
+            onReject={() => rejectSelectedJobs([job.id])}
+            onDetail={() => openJobDetail(job)}
+          />
+        )
+        return (
+          <section className="rounded-xl border border-card-border bg-card p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold">待发送招呼语 <span className="ml-1 text-xs font-normal text-muted">{pendingGreetingJobs.length} 条</span></h3>
+                <p className="mt-1 text-xs text-muted">选择只保存版本，发送需另行确认。</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {pendingGreetingReviewCount > 0 && (
+                  <span className="rounded-full bg-warning-soft px-2 py-1 text-xs font-medium text-warning">
+                    {pendingGreetingReviewCount} 个待选择
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id) || Boolean(job.greeting_activity))}
+                  onClick={() => sendReadyGreetings(reviewedGreetingJobs.map(job => job.id))}
+                >
+                  发送已确认 {reviewedGreetingJobs.length} 个
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(pendingGreetingJobs.map(job => job.id))}>放弃全部</Button>
+                {canCollapsePendingGreetings && (
+                  <CollapsibleToggleButton
+                    sectionName="待发送招呼语"
+                    collapsed={isPendingGreetingsCollapsed}
+                    controlsId="pending-greetings-overflow"
+                    onToggle={() => setPendingGreetingsCollapsed(value => !value)}
+                  />
+                )}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {pendingGreetingReviewCount > 0 && (
-                <span className="rounded-full bg-warning-soft px-2 py-1 text-xs font-medium text-warning">
-                  {pendingGreetingReviewCount} 个待选择
-                </span>
+            <div className="border-t border-card-border">
+              {renderPendingGreetingRow(pendingGreetingJobs[0])}
+              {canCollapsePendingGreetings && (
+                <div id="pending-greetings-overflow" className="collapsible-overflow" hidden={isPendingGreetingsCollapsed}>
+                  <div className="divide-y divide-card-border border-t border-card-border">
+                    {pendingGreetingJobs.slice(1).map(renderPendingGreetingRow)}
+                  </div>
+                </div>
               )}
-              <Button
-                size="sm"
-                disabled={reviewedGreetingJobs.length === 0 || reviewedGreetingJobs.some(job => sendingGreetingIds.has(job.id) || busyGreetingIds.has(job.id) || Boolean(job.greeting_activity))}
-                onClick={() => sendReadyGreetings(reviewedGreetingJobs.map(job => job.id))}
-              >
-                发送已确认 {reviewedGreetingJobs.length} 个
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(pendingGreetingJobs.map(job => job.id))}>放弃全部</Button>
             </div>
-          </div>
-          <div className="divide-y divide-card-border border-t border-card-border">
-            {pendingGreetingJobs.map(job => (
-              <GreetingReviewCard
-                key={job.id}
-                job={job}
-                busy={sendingGreetingIds.has(job.id) || Boolean(job.greeting_activity)}
-                onBusyChange={onGreetingBusyChange}
-                onSelect={(selection, greeting) => selectGreeting(job, selection, greeting)}
-                onSend={() => sendReadyGreetings([job.id])}
-                onReject={() => rejectSelectedJobs([job.id])}
-                onDetail={() => openJobDetail(job)}
-              />
-            ))}
-          </div>
-        </section>
-      )}
+          </section>
+        )
+      })()}
 
       <section className="rounded-2xl border border-card-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -1240,7 +1326,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             <h3 className="text-lg font-black">今日待确认</h3>
             <p className="mt-0.5 text-xs text-muted">选中岗位，确认后投递。</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="secondary" size="sm" disabled={!filteredTodayJobs.length} onClick={() => setSelected(filteredTodayJobs.map(job => job.id))}>全选</Button>
             <Button variant="secondary" size="sm" disabled={!selected.length} onClick={() => setSelected([])}>清空</Button>
             <Button variant="secondary" size="sm" disabled={generatingGreetings || greetTaskRunning || !actionableSelected.length} onClick={() => generateGreetings(actionableSelected)}>
@@ -1248,9 +1334,17 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             </Button>
             <Button variant="secondary" size="sm" disabled={!actionableSelected.length} onClick={() => rejectSelectedJobs(actionableSelected)}>放弃已选 {actionableSelected.length} 个</Button>
             <Button size="sm" disabled={!actionableSelected.length} onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
+            {canCollapseToday && (
+              <CollapsibleToggleButton
+                sectionName="今日待确认"
+                collapsed={isTodayCollapsed}
+                controlsId="today-jobs-overflow"
+                onToggle={() => setTodayCollapsed(value => !value)}
+              />
+            )}
           </div>
         </div>
-        <details className="group mb-3 rounded-xl border border-card-border bg-surface">
+        <details className="group mb-3 rounded-xl border border-card-border bg-surface" hidden={isTodayCollapsed}>
           <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs [&::-webkit-details-marker]:hidden">
             <span className="flex items-center gap-2 font-bold">
               <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
@@ -1274,20 +1368,32 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             />
           </div>
         </details>
-        {filteredTodayJobs.length ? (
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {filteredTodayJobs.map(job => (
-              <JobActionCard
-                key={job.id}
-                job={job}
-                selected={selected.includes(job.id)}
-                onToggle={() => toggleJob(job.id)}
-                onDetail={() => openJobDetail(job)}
-                onReject={() => rejectSelectedJobs([job.id])}
-              />
-            ))}
-          </div>
-        ) : todayJobs.length ? (
+        {filteredTodayJobs.length ? (() => {
+          const renderTodayJobCard = (job: Job) => (
+            <JobActionCard
+              key={job.id}
+              job={job}
+              selected={selected.includes(job.id)}
+              onToggle={() => toggleJob(job.id)}
+              onDetail={() => openJobDetail(job)}
+              onReject={() => rejectSelectedJobs([job.id])}
+            />
+          )
+          return (
+            <div>
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {filteredTodayJobs.slice(0, todayRowSize).map(renderTodayJobCard)}
+              </div>
+              {canCollapseToday && (
+                <div id="today-jobs-overflow" className="collapsible-overflow" hidden={isTodayCollapsed}>
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {filteredTodayJobs.slice(todayRowSize).map(renderTodayJobCard)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })() : todayJobs.length ? (
           <div className="rounded-2xl border border-dashed border-card-border bg-surface p-5 text-center text-sm text-muted">
             <p>没有符合当前条件的岗位</p>
             <Button className="mt-3" variant="secondary" size="sm" onClick={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}>重置筛选</Button>
@@ -2154,6 +2260,26 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '取消选择本页' : '选择本页'}
         </Button>
+        <label className="flex items-center gap-1 rounded-lg border border-card-border bg-card px-2 py-1.5">
+          <span className="text-muted">排序</span>
+          <select
+            aria-label="岗位排序"
+            value={`${sortBy}:${sortOrder}`}
+            onChange={event => {
+              const [nextKey, nextOrder] = event.target.value.split(':')
+              setSortBy(nextKey as JobSortKey)
+              setSortOrder(nextOrder as JobSortOrder)
+              setPage(0)
+            }}
+            className="bg-transparent text-xs font-bold outline-none"
+          >
+            <option value="score:desc">评分从高到低</option>
+            <option value="score:asc">评分从低到高</option>
+            <option value="created_at:desc">最新采集在前</option>
+            <option value="created_at:asc">最早采集在前</option>
+            <option value="salary:desc">薪资从高到低</option>
+          </select>
+        </label>
         <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
@@ -2166,6 +2292,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>评分选项</Button>
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
+      <FilterInsightsPanel onRestored={() => refreshJobs()} />
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
       <div className="mb-4">
         <TaskScoringProgress task={deliveryWorkbench.task || deliveryWorkbench.last_task} />

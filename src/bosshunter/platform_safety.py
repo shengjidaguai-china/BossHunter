@@ -34,20 +34,25 @@ class PlatformAccessGuard:
             raise PlatformSafetyStop("persistent_risk_lock")
 
     def check_available(self, action: str, *, daily_limit: int | None = None) -> None:
-        """Check original access limits without consuming a page attempt."""
+        """Check original access limits without consuming a page attempt.
+
+        ``0``（或负数）表示该额度不限制：采集/评分想跑多久就跑多久，
+        只有投递受发送时间窗约束。
+        """
         self.ensure_unlocked()
         safety_cfg = self.config.get("safety", {})
-        global_limit = _positive_int(safety_cfg.get("daily_platform_page_limit", 1100), 1100)
-        if count_platform_access_today(self.conn, platform=self.platform) >= global_limit:
+        global_limit = _limit(safety_cfg.get("daily_platform_page_limit", 1100), 1100)
+        if global_limit is not None and count_platform_access_today(self.conn, platform=self.platform) >= global_limit:
             raise PlatformSafetyStop("daily_platform_page_limit")
-        if daily_limit is not None:
+        stage_limit = _limit(daily_limit, None) if daily_limit is not None else None
+        if stage_limit is not None:
             stage_count = count_platform_access_today(
                 self.conn,
                 platform=self.platform,
                 stage=self.stage,
                 action=action,
             )
-            if stage_count >= max(int(daily_limit), 1):
+            if stage_count >= stage_limit:
                 raise PlatformSafetyStop(f"daily_{action}_limit")
 
     def reserve(self, action: str, *, daily_limit: int | None = None) -> None:
@@ -97,3 +102,14 @@ def _positive_int(value: object, default: int) -> int:
         return max(int(value), 1)
     except (TypeError, ValueError):
         return default
+
+
+def _limit(value: object, default: int | None) -> int | None:
+    """Return a positive page budget; ``0`` or a negative value means unlimited."""
+    try:
+        parsed: int | None = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        parsed = default
+    if parsed is None:
+        return None
+    return None if parsed <= 0 else parsed
