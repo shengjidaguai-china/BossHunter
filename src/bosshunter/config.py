@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -338,8 +339,18 @@ def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
             temporary.flush()
             os.fsync(temporary.fileno())
         os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, path)
-        temporary_path = None
+        # Windows can briefly lock the freshly written temp file (antivirus,
+        # indexer, concurrent reader), which makes os.replace fail with
+        # WinError 5. Retry a few times before surfacing the error.
+        for attempt in range(6):
+            try:
+                os.replace(temporary_path, path)
+                temporary_path = None
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         if temporary_path is not None:
             try:
