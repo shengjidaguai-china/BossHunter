@@ -1511,6 +1511,17 @@ def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[s
     """).fetchone()["cnt"]
     approved = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status IN ('approved', 'sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent')").fetchone()["cnt"]
     sent = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status IN ('sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent')").fetchone()["cnt"]
+    if today:
+        # 今日投递按实际发送事件计算。jobs.created_at 是采集时间，用它会把
+        # “昨天采集、今天投递”的岗位漏掉，导致今日已投递一直是 0。
+        sent = conn.execute("""
+            SELECT COUNT(DISTINCT h.job_id) as cnt
+            FROM history h
+            JOIN jobs j ON j.id = h.job_id
+            WHERE j.deleted_at IS NULL
+              AND h.action IN ('sent', 'manual_sent')
+              AND datetime(h.created_at, 'localtime') >= datetime('now', 'localtime', 'start of day')
+        """).fetchone()["cnt"]
     replied = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status IN ('replied', 'resume_sent', 'needs_resume')").fetchone()["cnt"]
     resume_sent = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status = 'resume_sent'").fetchone()["cnt"]
     needs_resume = conn.execute(f"SELECT COUNT(*) as cnt FROM jobs WHERE {scope} AND status = 'needs_resume'").fetchone()["cnt"]
