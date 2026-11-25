@@ -82,6 +82,7 @@ DEFAULTS: dict[str, Any] = {
         "salary_max": 0,
         "salary_ceil_ratio": 1.5,
         "filter_unparsed_salary": True,
+        "hr_active_max_days": 0,
         "allow_internship": False,
         "deal_breakers": [],
         "jd_deal_breakers": [],
