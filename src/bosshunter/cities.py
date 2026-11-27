@@ -159,7 +159,10 @@ def get_city_map(
 	*,
 	cache_path: Path | str | None = None,
 ) -> dict[str, str]:
-	return {str(city["name"]): str(city["code"]) for city in load_cities(base_dir, cache_path=cache_path)}
+	mapping = {str(city["name"]): str(city["code"]) for city in load_cities(base_dir, cache_path=cache_path)}
+	# BOSS直聘的全国搜索编码不在官方城市快照里，刷新城市缓存后仍需保留。
+	mapping.setdefault("全国", "100010000")
+	return mapping
 
 
 def get_city_code(

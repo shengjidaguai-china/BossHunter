@@ -4,6 +4,7 @@ from bosshunter.ai.prefilter import quick_score
 from bosshunter.job_filters import (
     matching_blocked_company,
     matching_deal_breaker,
+    parse_hr_active_days,
     parse_monthly_salary_k,
 )
 
@@ -36,6 +37,55 @@ class JobFilterTests(unittest.TestCase):
 
         self.assertEqual(score, 0)
         self.assertIn("某公司", reason)
+
+    def test_parse_hr_active_days(self):
+        cases = {
+            "刚刚活跃": 0,
+            "今日活跃": 0,
+            "3日内活跃": 3,
+            "本周活跃": 7,
+            "2周内活跃": 14,
+            "本月活跃": 30,
+            "2月内活跃": 60,
+            "近半年活跃": 180,
+            "半年前活跃": 181,
+            "刚刚kanzhun活跃": 0,
+            "2直聘月内活跃": 60,
+            "半年前kanzhun活跃": 181,
+            "": None,
+            "未知": None,
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(parse_hr_active_days(value), expected)
+
+    def test_quick_score_filters_stale_hr_activity(self):
+        score, reason = quick_score(
+            {"title": "Java 开发", "company": "某科技", "salary": "15-25K", "hr_active": "半年前活跃"},
+            {"profile": {"hr_active_max_days": 30}},
+        )
+
+        self.assertEqual(score, 0)
+        self.assertIn("HR 活跃度过旧", reason)
+
+    def test_quick_score_keeps_recent_or_unknown_hr_activity(self):
+        config = {"profile": {"hr_active_max_days": 30}}
+        recent = quick_score(
+            {"title": "Java 开发", "company": "某科技", "salary": "15-25K", "hr_active": "本周活跃"},
+            config,
+        )
+        unknown = quick_score(
+            {"title": "Java 开发", "company": "某科技", "salary": "15-25K", "hr_active": ""},
+            config,
+        )
+        unlimited = quick_score(
+            {"title": "Java 开发", "company": "某科技", "salary": "15-25K", "hr_active": "半年前活跃"},
+            {"profile": {"hr_active_max_days": 0}},
+        )
+
+        self.assertEqual(recent[0], 100)
+        self.assertEqual(unknown[0], 100)
+        self.assertEqual(unlimited[0], 100)
 
 
 class DealBreakerTests(unittest.TestCase):

@@ -528,6 +528,22 @@ export default function ConfigPage() {
                         />
                         <p className="mt-1 text-xs text-muted">只接受数字编码；无效内容会被安全忽略。</p>
                       </Field>
+                      <Field label="HR 活跃度（本地过滤）">
+                        <Select
+                          aria-label="HR 活跃度过滤"
+                          value={String(config.profile?.hr_active_max_days ?? 0)}
+                          onChange={event => updateConfig('profile.hr_active_max_days', Number(event.target.value))}
+                        >
+                          <option value="0">不限（保留所有活跃度）</option>
+                          <option value="7">7 天内（刚刚 / 今日 / 本周）</option>
+                          <option value="14">14 天内（含 2 周内）</option>
+                          <option value="30">30 天内（含本月）</option>
+                          <option value="60">60 天内（含 2 月内）</option>
+                          <option value="90">90 天内（含 3 月内）</option>
+                          <option value="180">180 天内（含近半年）</option>
+                        </Select>
+                        <p className="mt-1 text-xs text-muted">BOSS 搜索本身没有活跃度参数：系统读取详情页的 HR 活跃时间后本地过滤，超过所选天数的岗位不会入库，也不参与 AI 评分。未显示活跃度的岗位会保留。</p>
+                      </Field>
                     </div>}
                   </div>}
                 </div>

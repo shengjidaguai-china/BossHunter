@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ import yaml
 
 # BOSS直聘城市编码映射
 CITY_CODES: dict[str, str] = {
+    # BOSS直聘全国搜索（站点城市选择器未展示，但搜索接口支持该编码）
+    "全国": "100010000",
     "北京": "101010100",
     "上海": "101020100",
     "深圳": "101280600",
@@ -79,6 +82,7 @@ DEFAULTS: dict[str, Any] = {
         "salary_max": 0,
         "salary_ceil_ratio": 1.5,
         "filter_unparsed_salary": True,
+        "hr_active_max_days": 0,
         "allow_internship": False,
         "deal_breakers": [],
         "jd_deal_breakers": [],
@@ -338,8 +342,18 @@ def _write_yaml_atomic(path: Path, data: dict[str, Any]) -> None:
             temporary.flush()
             os.fsync(temporary.fileno())
         os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, path)
-        temporary_path = None
+        # Windows can briefly lock the freshly written temp file (antivirus,
+        # indexer, concurrent reader), which makes os.replace fail with
+        # WinError 5. Retry a few times before surfacing the error.
+        for attempt in range(6):
+            try:
+                os.replace(temporary_path, path)
+                temporary_path = None
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         if temporary_path is not None:
             try:

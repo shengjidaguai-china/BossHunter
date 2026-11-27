@@ -344,7 +344,7 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                 </div>
                 {draft.enabled && <div className="mt-4 space-y-3">
                   <label className="block text-xs font-bold text-muted">关键词（逗号或换行分隔）<Input value={draft.keywords} onChange={event => updateDraft(platform, 'keywords', event.target.value)} placeholder="AI 产品经理, 产品运营" /></label>
-                  <label className="block text-xs font-bold text-muted">城市（逗号或换行分隔）<Input list={platform !== 'boss' ? `${platform}-city-options` : undefined} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : '北京'} /></label>
+                  <label className="block text-xs font-bold text-muted">城市（逗号或换行分隔）<Input list={`${platform}-city-options`} value={draft.cities} onChange={event => updateDraft(platform, 'cities', event.target.value)} placeholder={platform === '51job' ? '上海' : platform === 'boss' ? '北京 或 全国' : '北京'} /></label>
                   {platform !== 'boss' ? <>
                     <datalist id={`${platform}-city-options`}>{platformCities.map(city => <option key={city.code} value={city.name} />)}</datalist>
                     <div className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">
@@ -356,7 +356,10 @@ export function CollectJobsDialog({ open, mode = 'collect', activeTask, onClose,
                         </span>)}
                       </div>}
                     </div>
-                  </> : <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编码由系统内置匹配，无需填写。</p>}
+                  </> : <>
+                    <datalist id={`${platform}-city-options`}><option value="全国" /></datalist>
+                    <p className="rounded-xl border border-card-border bg-card px-3 py-2 text-xs text-muted">BOSS 城市编码由系统内置匹配，无需填写；城市填 <span className="font-bold text-foreground">全国</span> 可按关键词搜索全国岗位。</p>
+                  </>}
                   <div className="grid grid-cols-2 gap-2">
                     <label className="text-xs font-bold text-muted">最大页数<Input type="number" min={1} max={10} value={draft.maxPages} onChange={event => updateDraft(platform, 'maxPages', event.target.value)} /></label>
                     <label className="text-xs font-bold text-muted">排序<Select value={draft.sort} onChange={event => updateDraft(platform, 'sort', event.target.value)}><option value="default">默认</option>{platform !== '51job' && <option value="newest">最新</option>}</Select></label>

@@ -585,6 +585,34 @@ class SharedProcessorTests(TestCase):
         self.assertEqual(result["platforms"]["boss"]["filtered"], 1)
         self.assertEqual(result["platforms"]["boss"]["new"], 0)
 
+    def test_save_filters_stale_hr_activity(self):
+        events = []
+        c = _candidate("boss", "x", "正常岗位")
+        c = JobCandidate(**{**c.__dict__, "hr_active": "半年前活跃"})
+        registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", events, [c])})
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CollectionOrchestrator(
+                {"profile": {"hr_active_max_days": 30}},
+                db_path=Path(tmp) / "test.db", registry=registry,
+            ).run(_options())
+        self.assertEqual(result["platforms"]["boss"]["filtered"], 1)
+        self.assertEqual(result["platforms"]["boss"]["new"], 0)
+
+    def test_save_keeps_unknown_or_recent_hr_activity(self):
+        events = []
+        candidates = [
+            JobCandidate(**{**_candidate("boss", "recent").__dict__, "hr_active": "刚刚活跃"}),
+            JobCandidate(**{**_candidate("boss", "unknown").__dict__, "hr_active": ""}),
+        ]
+        registry = CollectorRegistry({"boss": lambda: _FakeCollector("boss", events, candidates)})
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CollectionOrchestrator(
+                {"profile": {"hr_active_max_days": 30}},
+                db_path=Path(tmp) / "test.db", registry=registry,
+            ).run(_options())
+        self.assertEqual(result["platforms"]["boss"]["filtered"], 0)
+        self.assertEqual(result["platforms"]["boss"]["new"], 2)
+
 
 class OrchestrationFlowTests(TestCase):
     """CollectionOrchestrator.run 编排流程。"""

@@ -28,7 +28,12 @@ from bosshunter.collection_run_store import (
 )
 from bosshunter.db import get_db, insert_job_if_new, job_identity_exists, recompute_outsourcing
 from bosshunter.employment import internship_config_error
-from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.job_filters import (
+    hr_active_limit_days,
+    matching_blocked_company,
+    matching_deal_breaker,
+    parse_hr_active_days,
+)
 from bosshunter.outsourcing import load_rules
 
 
@@ -347,6 +352,16 @@ class _SharedProcessor:
     def save(self, candidate: JobCandidate) -> bool:
         self.last_receipt = {"sequence": self.last_receipt["sequence"] + 1, "inserted": False}
         profile = self.config.get("profile", {}) if isinstance(self.config.get("profile"), dict) else {}
+        hr_active_limit = hr_active_limit_days(profile)
+        if hr_active_limit > 0:
+            inactive_days = parse_hr_active_days(candidate.hr_active)
+            if inactive_days is not None and inactive_days > hr_active_limit:
+                self.event(
+                    message=f"HR 活跃度过旧：{candidate.hr_active or '未知'}（超过 {hr_active_limit} 天）",
+                    increment_filtered=True,
+                    filtered_candidate=candidate,
+                )
+                return True
         if matched := matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers") or []):
             self.event(message=f"JD 命中排除词：{matched}", increment_filtered=True, filtered_candidate=candidate)
             return True

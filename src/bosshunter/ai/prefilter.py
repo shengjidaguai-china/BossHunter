@@ -3,7 +3,12 @@
 import re
 from bosshunter.employment import internship_rejection
 
-from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.job_filters import (
+    hr_active_limit_days,
+    matching_blocked_company,
+    matching_deal_breaker,
+    parse_hr_active_days,
+)
 
 
 _INTERNSHIP_KEYWORDS = ("实习", "intern", "internship", "管培")
@@ -39,6 +44,12 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
     jd_breaker = matching_deal_breaker(jd, jd_deal_breakers)
     if jd_breaker:
         return 0, f"触发JD排除词: {jd_breaker}"
+
+    hr_active_limit = hr_active_limit_days(profile)
+    if hr_active_limit > 0:
+        inactive_days = parse_hr_active_days(str(job.get("hr_active") or ""))
+        if inactive_days is not None and inactive_days > hr_active_limit:
+            return 0, f"HR 活跃度过旧: {job.get('hr_active')}（超过 {hr_active_limit} 天）"
 
     if not profile.get("allow_internship", False) and _contains_internship_signal(job):
         return 0, "实习/管培岗位"

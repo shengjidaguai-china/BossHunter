@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bosshunter.db import (
+    add_history,
     get_db,
     get_funnel_stats,
     get_jobs_pending_confirmation,
@@ -784,6 +785,27 @@ class JobSelectionTests(unittest.TestCase):
                 db.close()
 
         self.assertEqual(stats["AI评分"], 2)
+
+    def test_funnel_today_counts_sends_by_send_event_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                insert_job(db, _job("collected-earlier"))
+                db.execute(
+                    "UPDATE jobs SET created_at = datetime('now', '-3 days') WHERE id = ?",
+                    ("collected-earlier",),
+                )
+                db.commit()
+                update_job_status(db, "collected-earlier", "sent")
+                add_history(db, "collected-earlier", "sent", "greeting sent")
+                today_stats = get_funnel_stats(db, today=True)
+                total_stats = get_funnel_stats(db)
+            finally:
+                db.close()
+
+        self.assertEqual(today_stats["采集总数"], 0)
+        self.assertEqual(today_stats["发送"], 1)
+        self.assertEqual(total_stats["发送"], 1)
 
     def test_ready_to_send_requires_a_non_empty_greeting(self):
         with tempfile.TemporaryDirectory() as tmp:

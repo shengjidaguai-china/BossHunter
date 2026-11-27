@@ -4,6 +4,12 @@
   "fetched_at": "2026-08-10T20:00:26+08:00",
   "cities": [
     {
+      "name": "全国",
+      "code": "100010000",
+      "first_char": "Q",
+      "hot": true
+    },
+    {
       "name": "北京",
       "code": "101010100",
       "first_char": "B",
