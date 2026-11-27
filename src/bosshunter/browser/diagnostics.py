@@ -60,17 +60,23 @@ def inspect_zhilian_page(target: dict[str, Any] | None) -> dict[str, str]:
 def run_browser_diagnostics(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Collect Browser Runtime readiness state."""
     node = check_node_available()
-    runtime_ready = ensure_runtime(config)
+    startup_failed = False
+    try:
+        ensure_runtime(config)
+    except OSError:
+        startup_failed = True
     runtime_url = get_runtime_url(config)
     health = runtime_health(config)
+    runtime_ready = bool(health and health.get("runtime") == "bosshunter")
     targets = runtime_targets(config) if runtime_ready else None
     if runtime_ready:
         # `/targets` establishes the CDP connection. Refresh health afterwards
         # so browser product/version information is available to diagnostics.
         health = runtime_health(config) or health
-    boss_tab = find_boss_tab() if runtime_ready else None
-    zhilian_tab = find_zhilian_tab() if runtime_ready else None
-    zhilian_page = inspect_zhilian_page(zhilian_tab) if runtime_ready and zhilian_tab else None
+    chrome_ready = isinstance(targets, list)
+    boss_tab = find_boss_tab() if chrome_ready else None
+    zhilian_tab = find_zhilian_tab() if chrome_ready else None
+    zhilian_page = inspect_zhilian_page(zhilian_tab) if zhilian_tab else None
     browser_product, browser_name = _browser_identity(health)
 
     errors: list[str] = []
@@ -79,6 +85,8 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None) -> dict[str, A
     if not runtime_ready:
         if health and health.get("runtime") != "bosshunter":
             errors.append("Runtime port is occupied by a non-BossHunter service.")
+        elif startup_failed:
+            errors.append("BossHunter Browser Runtime process could not be started.")
         else:
             errors.append("BossHunter Browser Runtime is not ready.")
     if runtime_ready and targets is None:
@@ -87,7 +95,7 @@ def run_browser_diagnostics(config: dict[str, Any] | None = None) -> dict[str, A
     return {
         "node": node,
         "runtime": runtime_ready,
-        "chrome": isinstance(targets, list),
+        "chrome": chrome_ready,
         "targets": targets or [],
         "boss_tab": boss_tab,
         "zhilian_tab": zhilian_tab,
@@ -144,13 +152,17 @@ def print_browser_diagnostics(config: dict[str, Any] | None = None, console: Con
         out.print(f"[red]✗[/red] BossHunter CDP Runtime 未就绪: {result['runtime_url']}")
         if any("non-BossHunter" in error for error in result["errors"]):
             out.print("  端口已被非 BossHunter 服务占用，请停止旧的 CDP Proxy 或在 config.yaml 中修改 browser.proxy_port。")
+        elif any("could not be started" in error for error in result["errors"]):
+            out.print("  浏览器运行组件进程启动失败，请检查 Node.js 可执行文件及运行权限后重试。")
 
     if result["chrome"]:
         out.print("[green]✓[/green] 已连接 Chrome")
     elif any("non-BossHunter" in error for error in result["errors"]):
         out.print("[yellow]![/yellow] 暂未检测 Chrome：Browser Runtime 端口被占用，无法启动内置 Runtime。")
+    elif not result["runtime"]:
+        out.print("[yellow]![/yellow] 暂未检测 Chrome：请先解决 Browser Runtime 连接问题。")
     else:
-        out.print("[red]✗[/red] 未发现 Chrome 调试端口。")
+        out.print("[red]✗[/red] Browser Runtime 已启动，但未能连接 Chrome 远程调试。")
         out.print("  请打开 Chrome，访问 chrome://inspect/#remote-debugging，勾选 Allow remote debugging。")
         out.print("  或使用: chrome.exe --remote-debugging-port=9222")
 
