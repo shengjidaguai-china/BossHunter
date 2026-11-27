@@ -19,7 +19,8 @@
         {"key": "deal_breakers", "label": "职位名排除词", "type": "tags", "description": "职位名含这些词时自动跳过"},
         {"key": "jd_deal_breakers", "label": "JD 排除词", "type": "tags", "description": "完整 JD 含这些词时自动跳过"},
         {"key": "blocked_companies", "label": "屏蔽公司", "type": "tags", "description": "公司名含这些词时自动跳过"},
-        {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "开启时自动关闭无法解析薪资过滤，避免日薪实习被误过滤；关闭时过滤实习、intern、管培岗位"}
+        {"key": "allow_internship", "label": "接受实习/管培岗位", "type": "switch", "default": false, "description": "开启时自动关闭无法解析薪资过滤，避免日薪实习被误过滤；关闭时过滤实习、intern、管培岗位"},
+        {"key": "min_hr_active", "label": "招聘者最低活跃度", "type": "select", "options": ["", "online", "just_now", "today", "week", "month"], "default": "", "description": "在 AI 评分前跳过低于该活跃度门槛的招聘者；无活跃度字段的平台岗位默认保留"}
       ]
     },
     {

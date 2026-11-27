@@ -552,4 +552,94 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     expect(await screen.findByText('AI 额度不足')).toBeTruthy()
     expect(screen.getByText('确认开始评分')).toBeTruthy()
   })
+
+  it('supports single-row scoring, score-selected, and selecting all filtered jobs across pages', async () => {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench') return jsonResponse(baseWorkbench())
+      if (url.startsWith('/api/jobs/search') && url.includes('ids_only=1')) {
+        return jsonResponse({ ids: ['j1', 'j2', 'j3'], total: 3 })
+      }
+      if (url.startsWith('/api/jobs/search')) {
+        return jsonResponse({
+          items: [
+            { id: 'j1', company: '测试一', title: '前端工程师', city: '深圳', score: 0, status: 'pending', salary: '15-20K', hr_active: '在线', created_at: '' },
+          ],
+          total: 3,
+          all_total: 10,
+        })
+      }
+      if (url === '/api/scoring/preview' && init?.method === 'POST') {
+        return jsonResponse({ eligible_jobs: 3, skipped_jobs: 0, first_attempt_requests: 3, max_attempts_per_job: 2, max_possible_requests: 6, note: '' })
+      }
+      if (url === '/api/scoring/start' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body))
+        return jsonResponse({ run: { remaining_job_ids: body.options.job_ids } })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<DashboardPage view="jobs" />)
+    const rowScoreBtn = await screen.findByRole('button', { name: 'AI 评分 测试一 前端工程师' })
+    fireEvent.click(rowScoreBtn)
+    await waitFor(() => {
+      const startCalls = fn.mock.calls.filter(([url, init]) => String(url) === '/api/scoring/start' && init?.method === 'POST')
+      expect(startCalls).toHaveLength(1)
+      expect(JSON.parse(String(startCalls[0][1]?.body)).options).toMatchObject({ scope: 'selected', job_ids: ['j1'], force_rescore: false })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '全选筛选结果 (3)' }))
+    expect(await screen.findByText('已全选当前筛选结果 3 条岗位。')).toBeTruthy()
+    expect(screen.getByText('已选择 3 条')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI 评分已选 (3)' }))
+    await waitFor(() => {
+      const startCalls = fn.mock.calls.filter(([url, init]) => String(url) === '/api/scoring/start' && init?.method === 'POST')
+      expect(startCalls).toHaveLength(2)
+      expect(JSON.parse(String(startCalls[1][1]?.body)).options).toMatchObject({ scope: 'selected', job_ids: ['j1', 'j2', 'j3'], force_rescore: false })
+    })
+  })
+
+  it('supports single-row and batch greeting generation in the jobs pool', async () => {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workbench') return jsonResponse(baseWorkbench())
+      if (url.startsWith('/api/jobs/search')) {
+        return jsonResponse({
+          items: [
+            { id: 'r1', company: '测试公司A', title: '全栈工程师', city: '深圳', score: 85, status: 'ready', salary: '15-20K', hr_active: '在线', greeting: '', created_at: '' },
+            { id: 'p1', company: '测试公司B', title: '后端工程师', city: '深圳', score: 0, status: 'pending', salary: '15-20K', hr_active: '在线', greeting: '', created_at: '' },
+          ],
+          total: 2,
+          all_total: 2,
+        })
+      }
+      if (url === '/api/workbench/greetings' && init?.method === 'POST') {
+        return jsonResponse({ success: true, task: buildTask({ mode: 'greet', status: 'running' }) })
+      }
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fn)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<DashboardPage view="jobs" />)
+    const rowGreetBtn = await screen.findByRole('button', { name: '写招呼语 测试公司A 全栈工程师' })
+    expect(screen.queryByRole('button', { name: '写招呼语 测试公司B 后端工程师' })).toBeNull()
+    fireEvent.click(rowGreetBtn)
+    await waitFor(() => {
+      const greetCalls = fn.mock.calls.filter(([url, init]) => String(url) === '/api/workbench/greetings' && init?.method === 'POST')
+      expect(greetCalls).toHaveLength(1)
+      expect(JSON.parse(String(greetCalls[0][1]?.body))).toEqual({ job_ids: ['r1'] })
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 测试公司A 全栈工程师' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成打招呼用语 (1)' }))
+    await waitFor(() => {
+      const greetCalls = fn.mock.calls.filter(([url, init]) => String(url) === '/api/workbench/greetings' && init?.method === 'POST')
+      expect(greetCalls).toHaveLength(2)
+      expect(JSON.parse(String(greetCalls[1][1]?.body))).toEqual({ job_ids: ['r1'] })
+    })
+  })
 })

@@ -1,7 +1,7 @@
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
-import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
+import { buildJobSearchParams, useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 import { JobsTable } from '@/components/dashboard/JobsTable'
@@ -1748,6 +1748,11 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [showRecycleBin, setShowRecycleBin] = useState(false)
   const [showScoreDialog, setShowScoreDialog] = useState(false)
   const [quickScoring, setQuickScoring] = useState(false)
+  const [scoringJobId, setScoringJobId] = useState<string | null>(null)
+  const [generatingGreetings, setGeneratingGreetings] = useState(false)
+  const [greetingJobId, setGreetingJobId] = useState<string | null>(null)
+  const startedGreetTaskIdRef = useRef<string | null>(null)
+  const [selectingAllFiltered, setSelectingAllFiltered] = useState(false)
   const [sortBy, setSortBy] = useState<JobSortKey>('created_at')
   const [sortOrder, setSortOrder] = useState<JobSortOrder>('desc')
   const [recycleJobs, setRecycleJobs] = useState<Job[]>([])
@@ -1760,6 +1765,27 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
     : deliveryWorkbench.last_task?.mode === 'deliver' ? deliveryWorkbench.last_task : null
+  const greetTask = deliveryWorkbench.task?.mode === 'greet'
+    ? deliveryWorkbench.task
+    : deliveryWorkbench.last_task?.mode === 'greet' ? deliveryWorkbench.last_task : null
+  const greetTaskRunning = deliveryWorkbench.task != null && deliveryWorkbench.task.mode === 'greet'
+    && (deliveryWorkbench.task.status === 'running' || deliveryWorkbench.task.status === 'stopping')
+
+  useEffect(() => {
+    const startedId = startedGreetTaskIdRef.current
+    if (!startedId) return
+    const finished = deliveryWorkbench.task?.id === startedId
+      ? deliveryWorkbench.task
+      : deliveryWorkbench.last_task?.id === startedId ? deliveryWorkbench.last_task : null
+    if (!finished || !TERMINAL_TASK_STATUSES.includes(finished.status)) return
+    startedGreetTaskIdRef.current = null
+    if (finished.status === 'completed') {
+      setNotice(describeGreetTaskOutcome(finished))
+    } else if (finished.error) {
+      setNotice(taskErrorFeedback(finished.error).title)
+    }
+    refreshJobs()
+  }, [deliveryWorkbench.task, deliveryWorkbench.last_task, refreshJobs])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -1790,7 +1816,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
 
   useEffect(() => {
     setPage(0)
-  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType])
+  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, filters.hrActive])
 
   const toggleSelected = (jobId: string) => {
     setSelectedIds(previous => previous.includes(jobId) ? previous.filter(id => id !== jobId) : [...previous, jobId])
@@ -1811,7 +1837,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       return
     }
     setSortBy(nextSortBy)
-    setSortOrder(nextSortBy === 'score' || nextSortBy === 'created_at' ? 'desc' : 'asc')
+    setSortOrder(nextSortBy === 'score' || nextSortBy === 'created_at' || nextSortBy === 'hr_active' ? 'desc' : 'asc')
   }
 
   const loadRecycleBin = async () => {
@@ -2031,6 +2057,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
             city: filters.city,
             education: filters.education,
             recruitment_type: filters.recruitmentType,
+            hr_active: filters.hrActive,
           } : {},
         }),
       })
@@ -2097,6 +2124,121 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
     }
   }
 
+  const scoreSingleJob = async (job: Job) => {
+    if (scoringJobId) return
+    const isPrefilterOrFailure = !job.score_reason || ['预筛不通过:', 'AI评分失败:', 'AI 评分失败:', '评分失败:'].some(prefix => job.score_reason.startsWith(prefix))
+    const forceRescore = job.status !== 'pending' && !isPrefilterOrFailure
+    if (!window.confirm(`确认对“${job.company} ${job.title}”${forceRescore ? '重新' : ''}启动 AI 评分吗？将消耗 AI 请求额度。`)) return
+    setScoringJobId(job.id)
+    try {
+      const result = await startScoring({ scope: 'selected', limit: null, job_ids: [job.id], force_rescore: forceRescore })
+      if (!result.ok) setNotice(result.error || '启动单条 AI 评分失败')
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '启动单条 AI 评分失败')
+    } finally {
+      setScoringJobId(null)
+    }
+  }
+
+  const scoreSelectedJobs = async () => {
+    if (!selectedIds.length || quickScoring) return
+    setQuickScoring(true)
+    try {
+      const previewRes = await fetch('/api/scoring/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ options: { scope: 'selected', limit: null, job_ids: selectedIds, force_rescore: false } }),
+      })
+      const previewData = await previewRes.json().catch(() => ({}))
+      if (!previewRes.ok) throw new Error(previewData.error || '获取已选岗位评分预览失败')
+      if (!previewData.eligible_jobs) {
+        setNotice('所选岗位均已完成 AI 评分或已进入投递链路；如需重评，可点击单行「重评」或在「评分选项」中选择重评。')
+        return
+      }
+      if (!window.confirm(`已选 ${selectedIds.length} 个岗位，其中 ${previewData.eligible_jobs} 个符合待评分条件（跳过 ${previewData.skipped_jobs} 个），最多发出 ${previewData.max_possible_requests} 次 AI 请求，确认开始？`)) {
+        return
+      }
+      const result = await startScoring({ scope: 'selected', limit: null, job_ids: selectedIds, force_rescore: false })
+      if (!result.ok) setNotice(result.error || '启动已选 AI 评分失败')
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '启动已选 AI 评分失败')
+    } finally {
+      setQuickScoring(false)
+    }
+  }
+
+  const selectAllFiltered = async () => {
+    if (!total || selectingAllFiltered || hasInvalidSalaryRange(filters)) return
+    setSelectingAllFiltered(true)
+    try {
+      const params = buildJobSearchParams(filters, sortBy, sortOrder, { idsOnly: true })
+      const res = await fetch(`/api/jobs/search?${params.toString()}`, { cache: 'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !Array.isArray(data.ids)) throw new Error(data.error || '获取筛选岗位列表失败')
+      const ids = data.ids.map(String)
+      setSelectedIds(ids)
+      setNotice(`已全选当前筛选结果 ${ids.length} 条岗位。`)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '全选筛选结果失败')
+    } finally {
+      setSelectingAllFiltered(false)
+    }
+  }
+
+  const startGreetingTask = async (jobIds: string[], regenerate = false) => {
+    const res = await fetch('/api/workbench/greetings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_ids: jobIds, ...(regenerate ? { regenerate: true } : {}) }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      if (data.code === 'greeting_status_blocked') {
+        throw new Error('只有状态为「待确认 / 已批准 / 发送失败」的岗位才能生成打招呼语；请先完成 AI 评分或将岗位状态修改为「待确认」。')
+      }
+      throw new Error(data.error || '生成打招呼语失败')
+    }
+    startedGreetTaskIdRef.current = data.task?.id ?? null
+    await refreshWorkbench()
+    setNotice(`已开始为 ${jobIds.length} 个岗位生成打招呼语（仅保存预览，不会自动发送）。`)
+  }
+
+  const generateSingleGreeting = async (job: Job) => {
+    if (greetingJobId || generatingGreetings || greetTaskRunning) return
+    const regenerate = Boolean((job.greeting || '').trim())
+    if (!window.confirm(`确认对“${job.company} ${job.title}”${regenerate ? '重新' : ''}生成打招呼语吗？（仅保存预览，不会自动发送给 HR）`)) return
+    setGreetingJobId(job.id)
+    try {
+      await startGreetingTask([job.id], regenerate)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '生成打招呼语失败')
+    } finally {
+      setGreetingJobId(null)
+    }
+  }
+
+  const generateSelectedGreetings = async () => {
+    if (!selectedIds.length || generatingGreetings || greetTaskRunning) return
+    const itemsById = new Map(items.map(item => [item.id, item]))
+    const knownSelected = selectedIds.every(id => itemsById.has(id))
+    const targetIds = knownSelected
+      ? selectedIds.filter(id => ['ready', 'approved', 'error'].includes(itemsById.get(id)?.status || ''))
+      : selectedIds
+    if (knownSelected && !targetIds.length) {
+      setNotice('所选岗位均不是「待确认 / 已批准 / 发送失败」状态；请先 AI 评分或将状态改为「待确认」后再生成打招呼语。')
+      return
+    }
+    if (!window.confirm(`确认对 ${targetIds.length} 个岗位生成打招呼语吗？（仅保存预览，可在工作台「待发送招呼语」或岗位详情中查看/编辑，不会自动发送）`)) return
+    setGeneratingGreetings(true)
+    try {
+      await startGreetingTask(targetIds, false)
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '生成打招呼语失败')
+    } finally {
+      setGeneratingGreetings(false)
+    }
+  }
+
   if (showRecycleBin) {
     return (
       <div className="space-y-3">
@@ -2154,11 +2296,20 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '取消选择本页' : '选择本页'}
         </Button>
+        <Button variant="secondary" size="sm" disabled={!total || selectingAllFiltered || hasInvalidSalaryRange(filters)} onClick={() => void selectAllFiltered()}>
+          {selectingAllFiltered ? '全选中…' : `全选筛选结果 (${total})`}
+        </Button>
         <span className="rounded-full bg-secondary px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
         <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
           <Send className="mr-1 h-4 w-4" />BOSS 一键投递已选
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => void scoreSelectedJobs()} disabled={quickScoring || !selectedIds.length}>
+          AI 评分已选 ({selectedIds.length})
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => void generateSelectedGreetings()} disabled={generatingGreetings || greetTaskRunning || !selectedIds.length}>
+          {generatingGreetings || greetTaskRunning ? '生成招呼语中…' : `生成打招呼用语 (${selectedIds.length})`}
         </Button>
         <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total}>
           {quickScoring ? '启动评分中…' : '一键 AI 评分'}
@@ -2192,6 +2343,12 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
           </div>
         </div>
       )}
+      {greetTask && (greetTask.status === 'running' || greetTask.status === 'stopping') && (
+        <div className="mb-4 rounded-2xl border border-card-border bg-surface p-3 text-xs">
+          <div className="font-bold text-primary">招呼语生成中</div>
+          <div className="mt-1 text-muted">{greetTask.logs?.[greetTask.logs.length - 1] || '正在为所选岗位生成打招呼语…'}</div>
+        </div>
+      )}
       {error && <div className="mb-4 rounded-xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">{error}</div>}
       <JobsTable
         jobs={items}
@@ -2205,6 +2362,10 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         onMarkManuallySent={job => void markManuallySent(job)}
         onStatusChange={changeJobStatus}
         onBlockCompany={job => void blockCompany(job)}
+        onScoreJob={job => void scoreSingleJob(job)}
+        scoringJobId={scoringJobId}
+        onGenerateGreeting={job => void generateSingleGreeting(job)}
+        greetingJobId={greetingJobId}
         blockedCompanies={blockedCompanies}
         blockingJobId={blockingJobId}
         loading={loading}

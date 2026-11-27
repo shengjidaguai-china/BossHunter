@@ -5,7 +5,7 @@ import { Select } from '@/components/ui/select'
 import { MultiSelect } from '@/components/ui/multi-select'
 import { cn } from '@/lib/utils'
 import { STATUS_LABELS } from '@/lib/status'
-import { hasActiveJobFilters, type JobFilters } from '@/lib/jobFilters'
+import { hasActiveJobFilters, HR_ACTIVE_OPTIONS, type JobFilters } from '@/lib/jobFilters'
 
 interface JobFilterBarProps {
   filters: JobFilters
@@ -102,6 +102,7 @@ export function JobFilterBar({
         <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.recruitmentType} onChange={value => updateMulti('recruitmentType', value)} placeholder="招聘类型：全部" options={[
           { value: 'campus', label: '校招' }, { value: 'experienced', label: '社招' }, { value: 'unknown', label: '未识别' },
         ]} />
+        <MultiSelect className={cn(controlClass, compact && 'xl:order-1')} compact={compact} value={filters.hrActive} onChange={value => updateMulti('hrActive', value)} placeholder="招聘者活跃：全部" options={HR_ACTIVE_OPTIONS} />
         <div className={cn("flex min-w-0 items-center gap-2", compact ? "col-span-2 justify-end xl:col-span-1" : "min-h-9 flex-wrap justify-between rounded-md border border-card-border bg-card px-3 py-1")}>
           {!compact && <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>}
           <Button

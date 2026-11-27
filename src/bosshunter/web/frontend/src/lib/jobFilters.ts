@@ -1,6 +1,67 @@
 import { useEffect, useState } from 'react'
 import type { Job } from '@/hooks/useDashboard'
 
+export type HrActiveTier = 'online' | 'just_now' | 'today' | 'week' | 'month' | 'older' | 'unknown'
+
+export const HR_ACTIVE_OPTIONS: { value: HrActiveTier; label: string }[] = [
+  { value: 'online', label: '在线' },
+  { value: 'just_now', label: '刚刚活跃' },
+  { value: 'today', label: '今日活跃' },
+  { value: 'week', label: '本周内活跃' },
+  { value: 'month', label: '本月内活跃' },
+  { value: 'older', label: '一月以上' },
+  { value: 'unknown', label: '活跃度未知' },
+]
+
+const CN_DIGITS: Record<string, number> = {
+  零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+}
+
+function parseCnOrArabicInt(token: string): number | null {
+  const cleaned = token.trim()
+  if (!cleaned) return null
+  if (/^\d+$/.test(cleaned)) return Number(cleaned)
+  if (cleaned === '十') return 10
+  if (cleaned.includes('十')) {
+    const [tensPart, onesPart] = cleaned.split('十')
+    const tens = tensPart === '' ? 1 : CN_DIGITS[tensPart]
+    const ones = onesPart === '' ? 0 : CN_DIGITS[onesPart]
+    if (tens === undefined || ones === undefined) return null
+    return tens * 10 + ones
+  }
+  if (cleaned.length === 1 && cleaned in CN_DIGITS) return CN_DIGITS[cleaned]
+  return null
+}
+
+export function classifyHrActive(hrActive?: string | null): HrActiveTier {
+  const text = (hrActive || '').trim()
+  if (!text) return 'unknown'
+  if (text === '在线') return 'online'
+  if (text === '刚刚活跃') return 'just_now'
+  if (text === '今日活跃') return 'today'
+  if (text === '本周活跃') return 'week'
+  if (text === '本月活跃') return 'month'
+  if (text === '半年前活跃' || text === '年前活跃') return 'older'
+
+  const match = text.match(/^([0-9一二两三四五六七八九十]+)\s*(日|天|周|个?月)内活跃$/)
+  if (!match) return 'unknown'
+  const amount = parseCnOrArabicInt(match[1])
+  const unit = match[2]
+  if (amount === null || amount <= 0) return 'unknown'
+  if (unit === '日' || unit === '天') {
+    if (amount <= 1) return 'today'
+    if (amount <= 7) return 'week'
+    if (amount <= 31) return 'month'
+    return 'older'
+  }
+  if (unit === '周') {
+    if (amount <= 1) return 'week'
+    if (amount <= 4) return 'month'
+    return 'older'
+  }
+  return amount <= 1 ? 'month' : 'older'
+}
+
 export interface JobFilters {
   query: string
   minScore: string
@@ -12,6 +73,7 @@ export interface JobFilters {
   city: string[]
   education: string[]
   recruitmentType: string[]
+  hrActive: string[]
 }
 
 export const EMPTY_JOB_FILTERS: JobFilters = {
@@ -25,6 +87,7 @@ export const EMPTY_JOB_FILTERS: JobFilters = {
   city: [],
   education: [],
   recruitmentType: [],
+  hrActive: [],
 }
 
 export function useDebouncedValue<T>(value: T, delay: number) {
@@ -113,6 +176,7 @@ export function filterJobs(jobs: Job[], filters: JobFilters) {
     if (filters.city.length > 0 && !filters.city.includes(jobCityBaseName(job.city))) return false
     if (filters.recruitmentType.length > 0 && !filters.recruitmentType.includes(job.recruitment_type || 'unknown')) return false
     if (filters.education.length > 0 && !filters.education.some(value => value === 'unknown' ? !(job.education || '').trim() : (job.education || '').includes(value))) return false
+    if (filters.hrActive.length > 0 && !filters.hrActive.includes(classifyHrActive(job.hr_active))) return false
     if (salaryEnabled) {
       const salaryRange = parseMonthlySalaryK(job.salary || '')
       if (!salaryRange) return false

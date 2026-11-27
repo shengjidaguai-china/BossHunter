@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { OutsourcingBadge } from '@/components/jobs/OutsourcingBadge'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Ban, CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, ChevronDown, ChevronUp, ExternalLink, MessageSquare, Sparkles, Trash2 } from 'lucide-react'
 import { getStatusLabel } from '@/lib/status'
 import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 import type { Job } from '@/hooks/useDashboard'
@@ -21,6 +21,10 @@ interface JobsTableProps {
   onMarkManuallySent?: (job: Job) => void
   onStatusChange?: (job: Job, status: string) => void
   onBlockCompany?: (job: Job) => void
+  onScoreJob?: (job: Job) => void
+  scoringJobId?: string | null
+  onGenerateGreeting?: (job: Job) => void
+  greetingJobId?: string | null
   blockedCompanies?: string[]
   blockingJobId?: string | null
   loading?: boolean
@@ -70,11 +74,11 @@ function statusVariant(status: string) {
   return variants.has(status) ? status : 'default'
 }
 
-export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, onBlockCompany, blockedCompanies = [], blockingJobId = null, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
+export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onStatusChange, onBlockCompany, onScoreJob, scoringJobId = null, onGenerateGreeting, greetingJobId = null, blockedCompanies = [], blockingJobId = null, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pageInput, setPageInput] = useState(String(page + 1))
   const totalPages = Math.ceil(total / pageSize)
-  const hasActions = Boolean(onSoftDelete || onMarkManuallySent || onStatusChange || onBlockCompany)
+  const hasActions = Boolean(onSoftDelete || onMarkManuallySent || onStatusChange || onBlockCompany || onScoreJob || onGenerateGreeting)
 
   useEffect(() => {
     setPageInput(String(page + 1))
@@ -227,6 +231,39 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                                 <CheckCircle2 className="h-3.5 w-3.5" />{alreadySent ? '已发送' : '我已发送'}
                               </button>
                             )}
+                            {onScoreJob && ['pending', 'scored', 'ready', 'filtered'].includes(job.status) && (() => {
+                              const isPrefilterOrFailure = !job.score_reason || ['预筛不通过:', 'AI评分失败:', 'AI 评分失败:', '评分失败:'].some(prefix => job.score_reason.startsWith(prefix))
+                              const isRescore = job.status !== 'pending' && !isPrefilterOrFailure
+                              return (
+                                <button
+                                  type="button"
+                                  disabled={Boolean(scoringJobId)}
+                                  onClick={() => onScoreJob(job)}
+                                  aria-label={`${isRescore ? '重评' : 'AI 评分'} ${job.company} ${job.title}`}
+                                  title={isRescore ? '重新调用 AI 评分并刷新匹配度' : '单独对这条岗位运行 AI 评分'}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <Sparkles className="h-3.5 w-3.5" />{scoringJobId === job.id ? '启动中…' : isRescore ? '重评' : 'AI 评分'}
+                                </button>
+                              )
+                            })()}
+                            {onGenerateGreeting && ['ready', 'approved', 'error'].includes(job.status) && (() => {
+                              const hasGreeting = Boolean((job.greeting || '').trim())
+                              const reviewed = Boolean(job.greeting_reviewed_at)
+                              const busy = Boolean(greetingJobId) || Boolean(job.greeting_activity)
+                              return (
+                                <button
+                                  type="button"
+                                  disabled={busy || (hasGreeting && reviewed)}
+                                  onClick={() => onGenerateGreeting(job)}
+                                  aria-label={`${hasGreeting ? '重写招呼语' : '写招呼语'} ${job.company} ${job.title}`}
+                                  title={hasGreeting && reviewed ? '招呼语已人工确认，请在详情弹窗中手动编辑' : hasGreeting ? '重新生成这条岗位的打招呼语' : '生成这条岗位的打招呼语（仅保存预览，不发送）'}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <MessageSquare className="h-3.5 w-3.5" />{greetingJobId === job.id ? '生成中…' : hasGreeting ? '重写招呼语' : '写招呼语'}
+                                </button>
+                              )
+                            })()}
                             {onSoftDelete && (
                               <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-2 text-muted hover:bg-danger-soft hover:text-danger" aria-label={`将 ${job.company} ${job.title} 移入回收站`}>
                                 <Trash2 className="h-4 w-4" />

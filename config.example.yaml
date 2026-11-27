@@ -20,6 +20,7 @@ profile:
   deal_breakers: ["外包", "996"]
   jd_deal_breakers: []  # 示例：需要排除完整 JD 中的词时再填写
   blocked_companies: [] # 示例：不希望采集的公司名称或关键词
+  min_hr_active: ""  # 可选：online / just_now / today / week / month；留空不限制
   # 可选：个人亮点（用于招呼语生成）
   extra_highlights:
     - "你的核心竞争力描述"

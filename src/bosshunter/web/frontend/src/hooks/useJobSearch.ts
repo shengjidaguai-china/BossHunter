@@ -14,6 +14,32 @@ interface JobSearchResponse {
 export type JobSortKey = 'salary' | 'education' | 'score' | 'status' | 'hr_active' | 'created_at'
 export type JobSortOrder = 'asc' | 'desc'
 
+export function buildJobSearchParams(
+  filters: JobFilters,
+  sortBy: JobSortKey = 'created_at',
+  sortOrder: JobSortOrder = 'desc',
+  options?: { limit?: number; offset?: number; idsOnly?: boolean },
+): URLSearchParams {
+  const params = new URLSearchParams()
+  if (options?.limit !== undefined) params.set('limit', String(options.limit))
+  if (options?.offset !== undefined) params.set('offset', String(options.offset))
+  if (options?.idsOnly) params.set('ids_only', '1')
+  if (filters.query.trim()) params.set('q', filters.query.trim())
+  if (filters.minScore) params.set('min_score', filters.minScore)
+  if (filters.salaryMin) params.set('salary_min', filters.salaryMin)
+  if (filters.salaryMax) params.set('salary_max', filters.salaryMax)
+  filters.status.forEach(value => params.append('status', value))
+  if (filters.createdWithin) params.set('created_within', filters.createdWithin)
+  filters.sourcePlatform.forEach(value => params.append('source_platform', value))
+  filters.city.forEach(value => params.append('city', value))
+  filters.education.forEach(value => params.append('education', value))
+  filters.recruitmentType.forEach(value => params.append('recruitment_type', value))
+  filters.hrActive.forEach(value => params.append('hr_active', value))
+  params.set('sort_by', sortBy)
+  params.set('sort_order', sortOrder)
+  return params
+}
+
 export function useJobSearch(
   filters: JobFilters,
   page: number,
@@ -41,22 +67,12 @@ export function useJobSearch(
       return
     }
 
-    const params = new URLSearchParams({
-      limit: String(pageSize),
-      offset: String(page * pageSize),
-    })
-    if (debouncedQuery.trim()) params.set('q', debouncedQuery.trim())
-    if (filters.minScore) params.set('min_score', filters.minScore)
-    if (filters.salaryMin) params.set('salary_min', filters.salaryMin)
-    if (filters.salaryMax) params.set('salary_max', filters.salaryMax)
-    filters.status.forEach(value => params.append('status', value))
-    if (filters.createdWithin) params.set('created_within', filters.createdWithin)
-    filters.sourcePlatform.forEach(value => params.append('source_platform', value))
-    filters.city.forEach(value => params.append('city', value))
-    filters.education.forEach(value => params.append('education', value))
-    filters.recruitmentType.forEach(value => params.append('recruitment_type', value))
-    params.set('sort_by', sortBy)
-    params.set('sort_order', sortOrder)
+    const params = buildJobSearchParams(
+      { ...filters, query: debouncedQuery },
+      sortBy,
+      sortOrder,
+      { limit: pageSize, offset: page * pageSize },
+    )
 
     let disposed = false
     let activeController: AbortController | null = null
@@ -102,7 +118,7 @@ export function useJobSearch(
       window.removeEventListener('focus', refreshOnFocus)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, page, pageSize, sortBy, sortOrder, revision])
+  }, [debouncedQuery, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.city, filters.education, filters.recruitmentType, filters.hrActive, page, pageSize, sortBy, sortOrder, revision])
 
   return { items, total, allTotal, cityOptions, loading, error, lastRefreshedAt, refresh }
 }

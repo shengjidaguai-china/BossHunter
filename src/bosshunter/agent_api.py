@@ -12,10 +12,13 @@ import re
 from typing import Any
 
 
+from bosshunter.job_filters import MIN_HR_ACTIVE_LEVELS
+
+
 AGENT_API_VERSION = "v1"
 PLATFORMS = ("boss", "zhilian", "51job", "liepin")
 _TEXT_LIST_FIELDS = ("keywords", "cities", "deal_breakers", "jd_deal_breakers", "blocked_companies")
-_OPTIONAL_TEXT_FIELDS = ("education", "recruitment_type")
+_OPTIONAL_TEXT_FIELDS = ("education", "recruitment_type", "min_hr_active")
 _ALLOWED_FIELDS = frozenset(
     (*_TEXT_LIST_FIELDS, *_OPTIONAL_TEXT_FIELDS, "salary", "allow_internship", "score_threshold", "platform_order", "max_pages")
 )
@@ -119,6 +122,7 @@ def agent_preferences(config: dict[str, Any]) -> dict[str, Any]:
         "blocked_companies": _string_list(profile.get("blocked_companies")),
         "education": str(profile.get("education") or ""),
         "recruitment_type": str(profile.get("recruitment_type") or ""),
+        "min_hr_active": str(profile.get("min_hr_active") or ""),
         "allow_internship": bool(profile.get("allow_internship", False)),
         "score_threshold": _number(scoring.get("threshold"), 71),
         "platform_order": platform_order,
@@ -152,7 +156,10 @@ def apply_preferences(config: dict[str, Any], preferences: Any) -> tuple[dict[st
 
     for field in _OPTIONAL_TEXT_FIELDS:
         if field in preferences:
-            profile[field] = _validated_optional_text(field, preferences[field])
+            cleaned_text = _validated_optional_text(field, preferences[field])
+            if field == "min_hr_active" and cleaned_text and cleaned_text not in MIN_HR_ACTIVE_LEVELS:
+                raise AgentRequestError("min_hr_active 参数无效")
+            profile[field] = cleaned_text
 
     if "cities" in preferences:
         cities = list(search["cities"])
