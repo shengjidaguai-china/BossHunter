@@ -10,7 +10,13 @@ import sqlite3
 from typing import Any, Iterable
 
 from bosshunter.cities import get_city_code
-from bosshunter.job_filters import city_match_clause, job_keyword_match_clause, parse_monthly_salary_k
+from bosshunter.job_filters import (
+	HR_ACTIVE_TIERS,
+	city_match_clause,
+	classify_hr_active,
+	job_keyword_match_clause,
+	parse_monthly_salary_k,
+)
 
 
 MAX_EXPORT_JOB_IDS = 1000
@@ -150,11 +156,17 @@ def _filtered_rows(conn: sqlite3.Connection, filters: dict[str, Any] | None = No
 		conditions.append(f"created_at >= datetime('now', '-{days} days')")
 	elif created_within:
 		raise ValueError("created_within 参数无效")
+	hr_actives = values("hr_active")
+	if hr_actives and any(value not in HR_ACTIVE_TIERS for value in hr_actives):
+		raise ValueError("hr_active 参数无效")
 	query = "SELECT * FROM jobs"
 	if conditions:
 		query += " WHERE " + " AND ".join(conditions)
 	query += " ORDER BY created_at DESC, score DESC"
 	rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+	if hr_actives:
+		allowed_hr_actives = set(hr_actives)
+		rows = [row for row in rows if classify_hr_active(row.get("hr_active")) in allowed_hr_actives]
 
 	salary_min = filters.get("salary_min")
 	salary_max = filters.get("salary_max")

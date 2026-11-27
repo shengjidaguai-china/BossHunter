@@ -2,6 +2,8 @@ import unittest
 
 from bosshunter.ai.prefilter import quick_score
 from bosshunter.job_filters import (
+    classify_hr_active,
+    hr_active_rank_score,
     matching_blocked_company,
     matching_deal_breaker,
     parse_monthly_salary_k,
@@ -110,6 +112,70 @@ class SalaryParseEdgeCaseTests(unittest.TestCase):
 
     def test_lowercase_k(self):
         self.assertEqual(parse_monthly_salary_k("10-15k"), (10.0, 15.0))
+
+
+class HrActiveFilterTests(unittest.TestCase):
+    def test_classify_hr_active_tiers(self):
+        cases = [
+            ("在线", "online"),
+            ("刚刚活跃", "just_now"),
+            ("今日活跃", "today"),
+            ("1日内活跃", "today"),
+            ("本周活跃", "week"),
+            ("3日内活跃", "week"),
+            ("两天内活跃", "week"),
+            ("1周内活跃", "week"),
+            ("本月活跃", "month"),
+            ("十天内活跃", "month"),
+            ("2周内活跃", "month"),
+            ("1个月内活跃", "month"),
+            ("2月内活跃", "older"),
+            ("3个月内活跃", "older"),
+            ("4月内活跃", "older"),
+            ("半年前活跃", "older"),
+            ("", "unknown"),
+            ("   ", "unknown"),
+            (None, "unknown"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(classify_hr_active(raw), expected)
+
+    def test_hr_active_rank_score_orders_by_recency(self):
+        ordered = [
+            "在线",
+            "刚刚活跃",
+            "今日活跃",
+            "3日内活跃",
+            "本周活跃",
+            "2周内活跃",
+            "本月活跃",
+            "2月内活跃",
+            "4月内活跃",
+            "半年前活跃",
+            "",
+        ]
+        scores = [hr_active_rank_score(label) for label in ordered]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_quick_score_respects_min_hr_active_and_preserves_unknown(self):
+        base_job = {"title": "全栈工程师", "company": "示例公司", "salary": "15-25K"}
+        cfg_week = {"profile": {"min_hr_active": "week", "salary_min": 0}}
+
+        for passing in ("在线", "刚刚活跃", "今日活跃", "3日内活跃", "本周活跃", "", None):
+            with self.subTest(passing=passing):
+                score, _ = quick_score({**base_job, "hr_active": passing}, cfg_week)
+                self.assertEqual(score, 100)
+
+        for blocked in ("2周内活跃", "本月活跃", "2月内活跃", "半年前活跃"):
+            with self.subTest(blocked=blocked):
+                score, reason = quick_score({**base_job, "hr_active": blocked}, cfg_week)
+                self.assertEqual(score, 0)
+                self.assertIn("招聘者活跃度低于要求", reason)
+
+        # Default (empty min_hr_active) keeps older recruiters.
+        score, _ = quick_score({**base_job, "hr_active": "半年前活跃"}, {"profile": {"salary_min": 0}})
+        self.assertEqual(score, 100)
 
 
 if __name__ == "__main__":

@@ -141,3 +141,27 @@ it('points the guide at the platform switch when no search platform is enabled',
   expect(document.querySelector('[data-tour="search-keywords"]')?.contains(bossSwitch)).toBe(true)
   expect(document.querySelector('[data-tour="search-city"]')?.contains(bossSwitch)).toBe(true)
 })
+
+it('saves and restores minimum recruiter activity preference', async () => {
+  let saved: Record<string, any> = { profile: { min_hr_active: '' } }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  const page = render(<ConfigPage />)
+  const select = await screen.findByLabelText('招聘者最低活跃度') as HTMLSelectElement
+  expect(select.value).toBe('')
+  fireEvent.change(select, { target: { value: 'week' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('配置已保存')
+  expect(saved.profile.min_hr_active).toBe('week')
+  page.unmount()
+  render(<ConfigPage />)
+  expect(((await screen.findByLabelText('招聘者最低活跃度')) as HTMLSelectElement).value).toBe('week')
+})

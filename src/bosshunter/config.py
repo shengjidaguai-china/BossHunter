@@ -83,6 +83,7 @@ DEFAULTS: dict[str, Any] = {
         "deal_breakers": [],
         "jd_deal_breakers": [],
         "blocked_companies": [],
+        "min_hr_active": "",
     },
     "search": {
         "keywords": [],

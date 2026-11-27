@@ -18,7 +18,7 @@ afterEach(() => {
 
 describe('automatic job refresh', () => {
   it('updates scores, statuses and counts in place while preserving the query and page', async () => {
-    const filters = { ...EMPTY_JOB_FILTERS, status: ['pending'] }
+    const filters = { ...EMPTY_JOB_FILTERS, status: ['pending'], hrActive: ['online', 'week'] }
     let finishRefresh!: (value: Response) => void
     const fetchMock = vi.fn().mockResolvedValueOnce(response(0))
       .mockImplementationOnce(() => new Promise<Response>(resolve => { finishRefresh = resolve }))
@@ -41,6 +41,7 @@ describe('automatic job refresh', () => {
     const url = new URL(fetchMock.mock.calls[1][0], 'http://localhost')
     expect(url.searchParams.get('offset')).toBe('30')
     expect(url.searchParams.getAll('status')).toEqual(['pending'])
+    expect(url.searchParams.getAll('hr_active')).toEqual(['online', 'week'])
     expect(url.searchParams.get('sort_by')).toBe('score')
   })
 

@@ -3,7 +3,11 @@
 import re
 from bosshunter.employment import internship_rejection
 
-from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
+from bosshunter.job_filters import (
+    hr_active_filter_result,
+    matching_blocked_company,
+    matching_deal_breaker,
+)
 
 
 _INTERNSHIP_KEYWORDS = ("实习", "intern", "internship", "管培")
@@ -42,6 +46,10 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
 
     if not profile.get("allow_internship", False) and _contains_internship_signal(job):
         return 0, "实习/管培岗位"
+
+    hr_score, hr_reason = hr_active_filter_result(job.get("hr_active"), profile)
+    if hr_score == 0:
+        return 0, hr_reason
 
     return salary_filter_result(str(job.get("salary") or ""), profile)
 

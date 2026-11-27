@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EMPTY_JOB_FILTERS, filterJobs, hasActiveJobFilters, type JobFilters } from './jobFilters'
+import { classifyHrActive, EMPTY_JOB_FILTERS, filterJobs, hasActiveJobFilters, type JobFilters } from './jobFilters'
 import type { Job } from '@/hooks/useDashboard'
 
 function job(overrides: Partial<Job>): Job {
@@ -45,5 +45,24 @@ describe('job multi-select filters', () => {
   it('does not count empty multi-selects as active filters', () => {
     expect(hasActiveJobFilters(EMPTY_JOB_FILTERS)).toBe(false)
     expect(hasActiveJobFilters({ ...EMPTY_JOB_FILTERS, status: ['ready'] })).toBe(true)
+  })
+
+  it('classifies and filters recruiter activity tiers', () => {
+    expect(classifyHrActive('在线')).toBe('online')
+    expect(classifyHrActive('刚刚活跃')).toBe('just_now')
+    expect(classifyHrActive('今日活跃')).toBe('today')
+    expect(classifyHrActive('3日内活跃')).toBe('week')
+    expect(classifyHrActive('2周内活跃')).toBe('month')
+    expect(classifyHrActive('半年前活跃')).toBe('older')
+    expect(classifyHrActive('')).toBe('unknown')
+
+    const filters: JobFilters = { ...EMPTY_JOB_FILTERS, hrActive: ['online', 'week', 'unknown'] }
+    expect(filterJobs([
+      job({ id: 'online', hr_active: '在线' }),
+      job({ id: 'week', hr_active: '3日内活跃' }),
+      job({ id: 'month', hr_active: '2周内活跃' }),
+      job({ id: 'old', hr_active: '半年前活跃' }),
+      job({ id: 'unknown', hr_active: '' }),
+    ], filters).map(item => item.id)).toEqual(['online', 'week', 'unknown'])
   })
 })

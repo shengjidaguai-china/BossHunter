@@ -91,8 +91,12 @@ from bosshunter.collection_run_store import (
 	mark_orphaned_collection_runs_stopped,
 )
 from bosshunter.job_filters import (
+	HR_ACTIVE_TIERS,
+	MIN_HR_ACTIVE_LEVELS,
 	city_base_name,
 	city_match_clause,
+	classify_hr_active,
+	hr_active_rank_score,
 	job_keyword_match_clause,
 	matching_blocked_company,
 	parse_monthly_salary_k,
@@ -1234,6 +1238,9 @@ def api_job_search():
 		education_filters = _query_values("education")
 		if any(value not in {"博士", "硕士", "本科", "大专", "不限", "其他", "unknown"} for value in education_filters):
 			raise ValueError("education 参数无效")
+		hr_active_filters = _query_values("hr_active")
+		if any(value not in HR_ACTIVE_TIERS for value in hr_active_filters):
+			raise ValueError("hr_active 参数无效")
 		sort_by = request.params.get("sort_by", "created_at").strip()
 		if sort_by not in {"salary", "education", "score", "status", "hr_active", "created_at"}:
 			raise ValueError("sort_by 参数无效")
@@ -1335,7 +1342,20 @@ def api_job_search():
 					continue
 				filtered_rows.append(row)
 			rows = filtered_rows
+		if hr_active_filters:
+			allowed_hr_active = set(hr_active_filters)
+			rows = [row for row in rows if classify_hr_active(row.get("hr_active")) in allowed_hr_active]
+		if sort_by == "hr_active":
+			rows.sort(
+				key=lambda row: hr_active_rank_score(row.get("hr_active")),
+				reverse=(sort_order == "desc"),
+			)
 		total = len(rows)
+		if request.params.get("ids_only", "").strip().lower() in {"1", "true", "yes"}:
+			return _json_response({
+				"ids": [str(row["id"]) for row in rows],
+				"total": total,
+			})
 		return _json_response({
 			"items": [_serialize_job(row, config=config) for row in rows[offset:offset + limit]],
 			"total": total,
@@ -2675,6 +2695,9 @@ def api_config_post():
 		profile = data.get("profile", {})
 		if profile.get("salary_min", 0) > profile.get("salary_max", 0) and profile.get("salary_max", 0) > 0:
 			return _json_response({"error": "salary_min must be <= salary_max"}, 400)
+		min_hr_active = str(profile.get("min_hr_active") or "").strip()
+		if min_hr_active and min_hr_active not in MIN_HR_ACTIVE_LEVELS:
+			return _json_response({"error": "min_hr_active 参数无效"}, 400)
 
 		from bosshunter.ai.greeter import greeting_config_error
 		if error := greeting_config_error(data):

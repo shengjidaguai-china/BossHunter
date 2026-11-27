@@ -416,6 +416,21 @@ export default function ConfigPage() {
                 if (v) updateConfig('profile.filter_unparsed_salary', false)
               }} />
             </div>
+            <Field label="招聘者最低活跃度">
+              <Select
+                aria-label="招聘者最低活跃度"
+                value={config.profile?.min_hr_active || ''}
+                onChange={e => updateConfig('profile.min_hr_active', e.target.value)}
+              >
+                <option value="">不限制（默认保留全部）</option>
+                <option value="month">本月内活跃及以上</option>
+                <option value="week">本周内活跃及以上</option>
+                <option value="today">今日活跃及以上</option>
+                <option value="just_now">刚刚活跃 / 在线</option>
+                <option value="online">仅当前在线</option>
+              </Select>
+              <p className="mt-1 text-xs text-muted">在 AI 评分前跳过低于该活跃度门槛的招聘者；智联、51job 等无活跃度字段的平台岗位默认保留。</p>
+            </Field>
           </div>
         </SectionCard>
 
