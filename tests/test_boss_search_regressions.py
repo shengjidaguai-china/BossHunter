@@ -1,6 +1,7 @@
 """Regressions reproduced against BOSS's September 2026 search page."""
 
 import json
+from contextlib import ExitStack, closing
 import tempfile
 from pathlib import Path
 from unittest import TestCase
@@ -98,7 +99,7 @@ class BossSearchRegressionTests(TestCase):
 
     def test_visible_salary_survives_prefilter_and_is_saved_as_digits(self):
         browser = SearchBrowser([[card("new-job")]])
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as cleanup:
             path = Path(tmp) / "jobs.db"
             config = {"profile": {"salary_min": 13, "salary_max": 25,
                                   "salary_ceil_ratio": 1, "filter_unparsed_salary": True}}
@@ -109,7 +110,7 @@ class BossSearchRegressionTests(TestCase):
                 }},
             })
             self.assertEqual(result["collected_job_ids"], ["new-job"])
-            with get_db(path) as conn:
+            with closing(get_db(path)) as conn:
                 row = conn.execute("SELECT salary FROM jobs WHERE id='new-job'").fetchone()
                 self.assertEqual(row["salary"], "25-50K·15薪")
         self.assertEqual(decode_boss_text("\ue031\ue032\ue033\ue034\ue035\ue036\ue037\ue038\ue039\ue03a"), "0123456789")
@@ -165,9 +166,9 @@ class BossSearchRegressionTests(TestCase):
     def test_scroll_appends_only_new_ids_and_keeps_search_open_during_details(self):
         browser = SearchBrowser([[card("a")], [card("a"), card("b")],
                                  [card("a"), card("b"), card("c")]])
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as cleanup:
             conn = get_db(Path(tmp) / "jobs.db")
-            self.addCleanup(conn.close)
+            cleanup.callback(conn.close)
             result = self.collector(browser, conn).collect(
                 PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=3), self.hooks())
             self.assertEqual(result.status, "completed")
@@ -212,16 +213,16 @@ class BossSearchRegressionTests(TestCase):
 
     def test_scroll_respects_daily_limit_before_loading_more(self):
         browser = SearchBrowser([[card("a")], [card("a"), card("b")]])
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as cleanup:
             conn = get_db(Path(tmp) / "jobs.db")
-            self.addCleanup(conn.close)
+            cleanup.callback(conn.close)
             result = self.collector(browser, conn, collection={"daily_search_page_limit": 1}).collect(
                 PlatformCollectionRequest("boss", ["AI"], ["北京"], {}, max_pages=3), self.hooks())
             self.assertEqual(result.reason_code, "daily_search_page_limit")
             self.assertEqual(browser.scrolls, 0)
             self.assertEqual(len(self.seen), 1)
 
-    def test_stalled_run_remains_resumable_and_saves_only_remaining_new_jobs(self):
+    def test_stalled_city_is_terminal_but_a_new_run_can_find_new_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "jobs.db"
             browser = SearchBrowser([[card("a")]])
@@ -231,10 +232,13 @@ class BossSearchRegressionTests(TestCase):
             }}}
             first = CollectionOrchestrator({}, db_path=path, registry=registry).run(options)
             saved = get_collection_run(path, first["run_id"])
-            self.assertTrue(saved["can_resume"])
+            self.assertFalse(saved["can_resume"])
             self.assertEqual(saved["boss_checkpoint"]["pages"], {boss_combo_key("北京", "AI"): 1})
+            self.assertEqual(saved["boss_checkpoint"]["cities"]["北京"]["status"], "yielded_no_ids")
+            with self.assertRaises(ValueError):
+                CollectionOrchestrator({}, db_path=path, registry=registry).run({"resume_run_id": first["run_id"]})
             browser = SearchBrowser([[card("a")], [card("a"), card("b")]])
-            resumed = CollectionOrchestrator({}, db_path=path, registry=registry).run({"resume_run_id": first["run_id"]})
-            self.assertEqual(resumed["collected_job_ids"], ["a", "b"])
-            self.assertEqual(resumed["platforms"]["boss"]["seen"], 2)
-            self.assertFalse(get_collection_run(path, first["run_id"])["can_resume"])
+            fresh = CollectionOrchestrator({}, db_path=path, registry=registry).run(options)
+            self.assertEqual(fresh["collected_job_ids"], ["b"])
+            self.assertEqual(fresh["platforms"]["boss"]["seen"], 2)
+            self.assertFalse(get_collection_run(path, fresh["run_id"])["can_resume"])

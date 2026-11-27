@@ -34,6 +34,7 @@ search:
   sort: newest
 
 collection:
+  # Continuous collection is opt-in per Web task; limits and risk checks still apply.
   default_order: [boss]
   auto_score_default: false
   # 以下页面额度只统计 BOSS 直聘；智联和 51job 不占用。
@@ -50,6 +51,11 @@ platforms:
   boss:
     enabled: true
     search:
+      city_yield_policy:
+        enabled: true
+        warmup_minutes: 10
+        window_minutes: 5
+        min_new_jobs: 5
       keywords: ["关键词1", "关键词2"]
       cities: ["北京"]
       city_codes: {}

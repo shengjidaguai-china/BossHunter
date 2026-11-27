@@ -280,6 +280,10 @@ def _is_thinking_compatibility_error(exc: Exception, response: object | None = N
     parameter_markers = (
         "thinking",
         "budget_tokens",
+        # Some gateways translate thinking=disabled into reasoning_effort=none.
+        # Models that require reasoning reject that value instead of "thinking".
+        "reasoning_effort",
+        "reasoning effort",
         "unknown field",
         "unknown parameter",
         "extra inputs",

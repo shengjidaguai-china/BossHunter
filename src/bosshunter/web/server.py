@@ -90,7 +90,13 @@ from bosshunter.collection_run_store import (
 	list_collection_runs,
 	mark_orphaned_collection_runs_stopped,
 )
-from bosshunter.job_filters import city_base_name, city_match_clause, matching_blocked_company, parse_monthly_salary_k
+from bosshunter.job_filters import (
+	city_base_name,
+	city_match_clause,
+	job_keyword_match_clause,
+	matching_blocked_company,
+	parse_monthly_salary_k,
+)
 from bosshunter.job_export import InvalidJobSelectionError, export_jobs, export_row_count
 from bosshunter.scoring_run_store import (
 	create_scoring_run,
@@ -439,6 +445,27 @@ def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 	collect_config["_workbench_collect_progress"] = lambda state: _record_collect_progress(task, state)
 	collect_config["_workbench_log"] = lambda message: _log(task, message)
 	collect_config["_workbench_score_progress"] = lambda state: _record_score_progress(task, state)
+	options = config.get("_collection_options", {})
+	if config.get("_continuous_session_id") or options.get("continuous_collection", {}).get("enabled"):
+		if task.mode != "collect":
+			raise ValueError("持续采集仅支持单独采集，不能用于全流程")
+		from bosshunter.collection.session import CollectionSession
+		from bosshunter.collection_session_store import get_session, request_session_action
+		session = CollectionSession(collect_config, db_path=DATA_DIR / "bosshunter.db", task_id=task.id,
+		                            session_id=config.get("_continuous_session_id"))
+		def persist_stop():
+			saved = get_session(DATA_DIR / "bosshunter.db", session.id)
+			if saved and saved["status"] == "running":
+				request_session_action(DATA_DIR / "bosshunter.db", session.id, "stop")
+		task.context["persist_stop"] = persist_stop
+		result = session.run(options)
+		task.progress.update(session_id=result["id"], session=result["state"], collected_job_ids=result["collected_job_ids"])
+		_log(task, f"持续采集结束：累计新增 {len(result['collected_job_ids'])}，原因 {result['state'].get('reason_code', '')}")
+		if result["status"] == "stopped":
+			task.stop_requested.set()
+		elif result["status"] == "failed":
+			raise RuntimeError(f"持续采集失败：{result['state'].get('reason_code', 'session_error')}")
+		return
 	if "_collection_options" not in config:
 		# Preserve the old private executor seam used by legacy callers. New Web
 		# collection tasks always inject normalized options before starting.
@@ -494,8 +521,12 @@ def _stop_or_log_boss_collection_reason(task: WorkbenchTask, stop_reason: str) -
 		"blocked": "BOSS 账号或请求拦截",
 		"rate_limit": "BOSS 频率限制",
 		"login_required": "BOSS 登录状态失效",
-		"consecutive_page_failures": "BOSS 连续页面失败",
 	}
+	if stop_reason in {"consecutive_page_failures", "timing_gap", "persistence_error"}:
+		task.stop_reason = f"BOSS 采集技术中断：{stop_reason}，请检查后继续；未写入账号风险锁"
+		task.stop_requested.set()
+		_log(task, task.stop_reason)
+		return
 	if stop_reason in limit_labels:
 		_log(task, f"为了账户安全，已达到{limit_labels[stop_reason]}，仅停止 BOSS 访问；智联和 51job 不占用该额度")
 	elif stop_reason in risk_labels:
@@ -561,6 +592,14 @@ def _execute_score(task: WorkbenchTask, config: dict) -> None:
 	except Exception as exc:
 		update_scoring_run(db_path, run_id, status="failed", error=str(exc)[:1000])
 		raise
+	finally:
+		latest = get_scoring_run(db_path, run_id)
+		if latest and latest.get("status") == "stopping":
+			# Release references only after the scorer has finished writing.
+			update_scoring_run(db_path, run_id, status="stopped", pause_reason="用户结束独立评分，已完成结果和剩余清单保留")
+		elif latest and latest.get("status") in {"pending", "running"}:
+			# Early returns (e.g. no eligible jobs) must also settle the record.
+			update_scoring_run(db_path, run_id, status="paused", pause_reason="评分已退出，可继续或结束剩余任务")
 
 
 def _queue_monitor_delivery(
@@ -1210,9 +1249,9 @@ def api_job_search():
 	keyword = (request.query.getunicode("q") or "").strip()
 	status_filters = _query_values("status")
 	if keyword:
-		conditions.append("(title LIKE ? OR company LIKE ? OR jd LIKE ? OR score_reason LIKE ?)")
-		keyword_param = f"%{keyword}%"
-		params.extend([keyword_param] * 4)
+		keyword_clause, keyword_params = job_keyword_match_clause(keyword)
+		conditions.append(keyword_clause)
+		params.extend(keyword_params)
 	if minimum_score is not None:
 		conditions.append("score >= ?")
 		params.append(minimum_score)
@@ -1566,6 +1605,12 @@ def api_scoring_preview():
 
 @app.route("/api/scoring/start", method="POST")
 def api_scoring_start():
+	with job_mutation_lock:
+		return _api_scoring_start()
+
+
+def _api_scoring_start():
+	_settle_ended_scoring_runs()
 	run_id = str(uuid4())
 	db_path = DATA_DIR / "bosshunter.db"
 	try:
@@ -1580,8 +1625,8 @@ def api_scoring_start():
 		messages = _preflight_messages("rescore", config)
 		if messages:
 			return _json_response({"error": "请先处理评分启动检查", "messages": messages}, 400)
-		active_runs = [run for run in list_scoring_runs(db_path, limit=100) if run.get("status") in {"running", "paused"}]
-		running_runs = [run for run in active_runs if run.get("status") == "running"]
+		active_runs = [run for run in list_scoring_runs(db_path, limit=None) if run.get("status") in {"pending", "running", "stopping", "paused"}]
+		running_runs = [run for run in active_runs if run.get("status") != "paused"]
 		paused_runs = [run for run in active_runs if run.get("status") == "paused"]
 		if running_runs:
 			return _json_response({"error": "已有独立评分任务正在运行，请等待其结束或先停止该任务"}, 409)
@@ -1613,12 +1658,11 @@ def api_scoring_start():
 		}
 		create_scoring_run(db_path, run_id=run_id, options=stored_options, job_ids=job_ids)
 		runtime_options = {"job_ids": job_ids, "force_rescore": options["force_rescore"]}
-		with job_mutation_lock:
-			update_scoring_run(db_path, run_id, status="running")
-			task = task_runner.start("score", _task_config({
-				"_score_run_id": run_id,
-				"_score_options": runtime_options,
-			}))
+		update_scoring_run(db_path, run_id, status="running")
+		task = task_runner.start("score", _task_config({
+			"_score_run_id": run_id,
+			"_score_options": runtime_options,
+		}))
 		update_scoring_run(db_path, run_id, task_id=str(task["id"]))
 		return _json_response({"run": get_scoring_run(db_path, run_id), "task": task})
 	except TaskAlreadyRunningError as exc:
@@ -1631,13 +1675,30 @@ def api_scoring_start():
 		return _json_response({"error": "启动评分失败"}, 500)
 
 
+def _settle_ended_scoring_runs():
+	"""Close an end request that raced with the worker's final callback."""
+	db_path = DATA_DIR / "bosshunter.db"
+	active = task_runner.status().get("active")
+	for run in list_scoring_runs(db_path, limit=None, status="stopping"):
+		if active and (active.get("id") == run.get("task_id") or active.get("mode") == "score"):
+			continue
+		update_scoring_run(db_path, run["id"], status="stopped", pause_reason="评分处理已退出，历史结果和剩余清单保留")
+
+
 @app.route("/api/scoring/runs")
 def api_scoring_runs():
-	return _json_response(list_scoring_runs(DATA_DIR / "bosshunter.db"))
+	with job_mutation_lock:
+		_settle_ended_scoring_runs()
+		return _json_response(list_scoring_runs(DATA_DIR / "bosshunter.db"))
 
 
 @app.route("/api/scoring/runs/<run_id>/pause", method="POST")
 def api_scoring_pause(run_id):
+	with job_mutation_lock:
+		return _api_scoring_pause(run_id)
+
+
+def _api_scoring_pause(run_id):
 	db_path = DATA_DIR / "bosshunter.db"
 	run = get_scoring_run(db_path, run_id)
 	if not run:
@@ -1656,6 +1717,11 @@ def api_scoring_pause(run_id):
 
 @app.route("/api/scoring/runs/<run_id>/resume", method="POST")
 def api_scoring_resume(run_id):
+	with job_mutation_lock:
+		return _api_scoring_resume(run_id)
+
+
+def _api_scoring_resume(run_id):
 	db_path = DATA_DIR / "bosshunter.db"
 	run = get_scoring_run(db_path, run_id)
 	if not run:
@@ -1686,12 +1752,11 @@ def api_scoring_resume(run_id):
 		completed = update_scoring_run(db_path, run_id, status="completed", remaining_job_ids=[])
 		return _json_response(completed)
 	try:
-		with job_mutation_lock:
-			update_scoring_run(db_path, run_id, status="running", remaining_job_ids=remaining)
-			task = task_runner.start("score", _task_config({
-				"_score_run_id": run_id,
-				"_score_options": {"job_ids": remaining, "force_rescore": force_rescore},
-			}))
+		update_scoring_run(db_path, run_id, status="running", remaining_job_ids=remaining)
+		task = task_runner.start("score", _task_config({
+			"_score_run_id": run_id,
+			"_score_options": {"job_ids": remaining, "force_rescore": force_rescore},
+		}))
 		update_scoring_run(db_path, run_id, task_id=str(task["id"]))
 		return _json_response({"run": get_scoring_run(db_path, run_id), "task": task})
 	except TaskAlreadyRunningError as exc:
@@ -1701,16 +1766,32 @@ def api_scoring_resume(run_id):
 
 @app.route("/api/scoring/runs/<run_id>/end", method="POST")
 def api_scoring_end(run_id):
+	with job_mutation_lock:
+		return _end_scoring_run(run_id)
+
+
+def _end_scoring_run(run_id):
 	db_path = DATA_DIR / "bosshunter.db"
 	run = get_scoring_run(db_path, run_id)
 	if not run:
 		return _json_response({"error": "评分任务不存在"}, 404)
-	if run.get("status") == "running" and run.get("task_id"):
+	if run.get("status") in {"completed", "completed_with_errors", "failed", "stopped"}:
+		return _json_response(run)
+	# Paused checkpoints may be emitted while the worker is still unwinding.
+	active = task_runner.status().get("active")
+	if active and active.get("id") == run.get("task_id"):
+		update_scoring_run(db_path, run_id, status="stopping")
 		try:
-			task_runner.stop(str(run["task_id"]), "用户结束独立评分")
+			task_runner.stop(str(active["id"]), "用户结束独立评分")
 		except KeyError:
 			pass
-	ended = update_scoring_run(db_path, run_id, status="stopped", remaining_job_ids=[])
+		latest = get_scoring_run(db_path, run_id)
+		if latest and latest.get("status") == "stopping":
+			# _execute_score finalizes this after it has stopped writing.
+			return _json_response(latest, 202)
+		return _json_response(latest)
+	# Keep the checkpoint as an audit trail; status alone releases references.
+	ended = update_scoring_run(db_path, run_id, status="stopped", pause_reason="用户结束失效或暂停的独立评分，历史结果保留")
 	return _json_response(ended)
 
 
@@ -1748,6 +1829,8 @@ def api_workbench_task_start():
 		elif mode == "full":
 			try:
 				collection_options = normalize_collection_options(base_config, options)
+				if collection_options.get("continuous_collection", {}).get("enabled"):
+					raise ValueError("持续采集不能用于完整流程")
 			except ValueError as exc:
 				return _json_response({"error": str(exc)}, 400)
 			collection_only = [
@@ -1801,6 +1884,22 @@ def api_collection_runs():
 		limit = int(request.params.get("limit", 20))
 		return _json_response(list_collection_runs(DATA_DIR / "bosshunter.db", limit=limit))
 	except (TypeError, ValueError) as exc:
+		return _json_response({"error": str(exc)}, 400)
+
+
+@app.route("/api/collection/sessions")
+def api_collection_sessions():
+	from bosshunter.collection_session_store import list_sessions
+	return _json_response(list_sessions(DATA_DIR / "bosshunter.db"))
+
+
+@app.route("/api/collection/sessions/<session_id>/<action>", method="POST")
+def api_collection_session_action(session_id, action):
+	from bosshunter.collection_session_store import request_session_action
+	try:
+		request_session_action(DATA_DIR / "bosshunter.db", session_id, action)
+		return _json_response({"ok": True})
+	except ValueError as exc:
 		return _json_response({"error": str(exc)}, 400)
 
 
@@ -3170,6 +3269,7 @@ def api_jobs_soft_delete():
 			conflict = _active_task_mutation_error()
 			if conflict is not None:
 				return conflict
+			_settle_ended_scoring_runs()
 			result = soft_delete_jobs(
 				db,
 				job_ids,
@@ -3470,6 +3570,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8686, open_browser: bool = T
 			"前端资源未构建：请在 src/bosshunter/web/frontend 下执行 "
 			"`npm ci && npm run build`（或安装官方发布的 wheel）后重试。"
 		)
+	from bosshunter.collection_session_store import list_sessions
+	for session in list_sessions(DATA_DIR / "bosshunter.db", active_only=True):
+		if task_runner.status()["active"]:
+			break
+		if session["options"].get("continuous_collection", {}).get("enabled") and session["options"].get("platform_order") == ["boss"]:
+			task_runner.start("collect", {**load_config(CONFIG_PATH), "_collection_options": session["options"], "_continuous_session_id": session["id"]})
 
 	if open_browser:
 		import webbrowser

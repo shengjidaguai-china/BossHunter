@@ -486,6 +486,10 @@ export default function ConfigPage() {
                         </Select>
                       </Field>
                     </div>
+                    {platform === 'boss' && <div className="space-y-3 border-t border-card-border pt-3">
+                      <label className="flex items-center justify-between text-sm font-bold">城市低产切换<Switch checked={search.city_yield_policy?.enabled ?? true} onChange={enabled => updatePlatformSearch('boss', 'city_yield_policy', { warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, enabled })} /></label>
+                      <div className="grid gap-3 sm:grid-cols-3">{([{ key: 'warmup_minutes', label: '首次检查（分钟）', initial: 10, max: 60 }, { key: 'window_minutes', label: '检查间隔（分钟）', initial: 5, max: 30 }, { key: 'min_new_jobs', label: '窗口最低新增', initial: 5, max: 1000 }]).map(field => <Field key={field.key} label={field.label}><Input type="number" min={1} max={field.max} value={search.city_yield_policy?.[field.key] ?? field.initial} onChange={event => updatePlatformSearch('boss', 'city_yield_policy', { enabled: true, warmup_minutes: 10, window_minutes: 5, min_new_jobs: 5, ...search.city_yield_policy, [field.key]: Number(event.target.value) })} /></Field>)}</div>
+                    </div>}
                     {platform === 'boss' && <div className="space-y-3 rounded-xl border border-card-border bg-card p-3">
                       <p className="text-xs font-black text-foreground">BOSS 搜索筛选（可选）</p>
                       <div className="grid gap-3 md:grid-cols-2">

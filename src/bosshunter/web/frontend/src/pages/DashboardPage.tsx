@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/button'
 import { START_ONBOARDING_EVENT } from '@/components/onboarding/OnboardingTour'
 import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
+import { TaskScoringProgress } from '@/components/dashboard/ScoringProgress'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
+import { CollectionSessionsPanel } from '@/components/dashboard/CollectionSessionsPanel'
 import { TrendChart } from '@/components/dashboard/TrendChart'
 import { TopCompanies } from '@/components/dashboard/TopCompanies'
 import { PipelineFlow } from '@/components/dashboard/PipelineFlow'
@@ -63,6 +65,11 @@ const TASK_STAGE_LABELS = [
 ]
 
 function currentTaskStage(task: WorkbenchTask) {
+  const session = task.progress?.session
+  if (session) {
+    const phase = ({ collecting: '采集中', waiting_round: '轮间休息', waiting_quota: '等待每日额度', waiting_risk: '风险冷却', waiting_retry: '等待技术恢复', waiting_user: '等待人工处理', finished: '会话已结束' } as Record<string, string>)[session.phase] || session.phase
+    return `第 ${session.round} 轮 · ${phase}${session.reason_code ? ` · ${session.reason_code}` : ''}${session.next_wake_at ? ` · 最早恢复 ${new Date(session.next_wake_at).toLocaleString()}` : ''}`
+  }
   if (task.progress?.outcome === 'scoring' && ['running', 'stopping'].includes(task.status)) {
     const completed = task.metrics?.ai_completed
     const total = task.metrics?.ai_total
@@ -928,6 +935,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
           <PreflightPanel checks={preflightChecks} checking={Boolean(modePending) || preflightRunning} onRetry={retryPreflight} />
         )}
         {error && <CompactNotice message={error} danger />}
+        <CollectionSessionsPanel />
         {visibleTask && (
           <div className="mt-3 border-t border-card-border pt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -974,6 +982,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 )}
                 {visibleTask.deadline_at && <span className="text-muted">截止 {new Date(visibleTask.deadline_at).toLocaleString('zh-CN', { hour12: false })}</span>}
               </div>
+              <TaskScoringProgress task={visibleTask} />
               {(hasStageDetails || detailMetrics.length > 0) && (
                 <details className="group mt-2 border-t border-card-border/60 pt-2 text-xs">
                   <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
@@ -995,6 +1004,15 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </div>
               )}
             </div>
+            {visibleTask.progress?.session && <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-card-border pt-3 text-xs text-muted">
+              <span>会话截止 {new Date(visibleTask.progress.session.deadline_at).toLocaleString()}</span>
+              {visibleTask.progress.session.manual_pending_reason && <span className="text-warning">待处理：{visibleTask.progress.session.manual_pending_reason}</span>}
+              {activeTask && visibleTask.progress.session.phase === 'waiting_user' && <Button size="sm" variant="secondary" onClick={() => {
+                void fetch(`/api/collection/sessions/${visibleTask.progress?.session_id}/continue`, { method: 'POST' })
+                  .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); setNotice('已请求继续，将重新检查登录、风控和额度。') })
+                  .catch(error => setNotice(error instanceof Error ? error.message : '继续失败'))
+              }}><RefreshCw className="mr-1 h-3.5 w-3.5" />处理后继续</Button>}
+            </div>}
             {visibleTask.progress?.platforms && <CollectionProgressPanel progress={visibleTask.progress} />}
             {visibleTask.error && visibleTaskError && (
               <div className="mt-3 rounded-2xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger">
@@ -1320,6 +1338,8 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
               <span className="text-muted">{state.status === 'queued' ? '等待前序平台完成' : `${state.city || '城市未开始'} · ${state.keyword || '关键词未开始'} · 第 ${state.page || 0}/${state.max_pages || 0} 页`}</span>
             </div>
             <p className="text-muted">扫描 {state.seen || 0} · 新增 {state.new} · 重复 {state.duplicate || 0} · 过滤 {state.filtered || 0} · 解析失败 {state.parse_failed || 0} · 保存失败 {state.save_failed || 0}</p>
+            {platform === 'boss' && state.next_check_ms !== undefined && <p className="text-muted">本城新增 {state.city_new_total || 0} · 最近判定窗口 {state.last_window_new ?? '待检查'} · 下次检查剩余 {Math.max(0, Math.ceil(((state.next_check_ms || 0) - (state.city_elapsed_ms || 0)) / 1000))} 秒</p>}
+            {state.city_results && <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted">{Object.entries(state.city_results).map(([city, result]) => <span key={city}>{city}：新增 {result.new_total || 0} · {({ running: '采集中', completed_scope: '范围完成', low_yield: '低产切换', yielded_no_ids: '无新 ID 切换', partial: '部分完成', interrupted: '中断' } as Record<string, string>)[result.status] || result.status}</span>)}</div>}
             {Number(state.filtered) > 0 && (
               <details className="mt-2 rounded-lg border border-card-border bg-secondary/40 p-2" open>
                 <summary className="cursor-pointer font-medium">过滤记录 · {state.filtered} 条</summary>
@@ -1735,8 +1755,8 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [recycleLoading, setRecycleLoading] = useState(false)
   const [permanentDeleteIds, setPermanentDeleteIds] = useState<string[]>([])
   const [permanentDeleteAcknowledged, setPermanentDeleteAcknowledged] = useState(false)
-  const { items, total, allTotal, cityOptions, loading, error, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
-  const { workbench: deliveryWorkbench } = useDashboard('workbench')
+  const { items, total, allTotal, cityOptions, loading, error, lastRefreshedAt: jobsRefreshedAt, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
+  const { workbench: deliveryWorkbench, error: progressError, refresh: refreshWorkbench } = useDashboard('workbench')
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
     : deliveryWorkbench.last_task?.mode === 'deliver' ? deliveryWorkbench.last_task : null
@@ -2060,6 +2080,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
       return { ok: false, error: [data.error || '启动评分失败', checks].filter(Boolean).join('：') }
     }
     setNotice(`独立评分已启动，共 ${data.run?.remaining_job_ids?.length || 0} 个岗位。`)
+    await refreshWorkbench()
     return { ok: true }
   }
 
@@ -2146,6 +2167,14 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
+      <div className="mb-4">
+        <TaskScoringProgress task={deliveryWorkbench.task || deliveryWorkbench.last_task} />
+        <p className="mt-2 text-xs text-muted">
+          岗位与评分进度每 5 秒自动刷新；每完成一个岗位后更新评分计数。
+          {jobsRefreshedAt && ` 岗位更新于 ${jobsRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })}`}
+        </p>
+        {progressError && <p role="alert" className="mt-2 text-xs text-danger">{progressError}</p>}
+      </div>
       {deliveryTask && (
         <div className="mb-4 rounded-2xl border border-card-border bg-surface p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">

@@ -660,12 +660,35 @@ class PassesCollectorFiltersTests(TestCase):
 class FetchPageTests(TestCase):
     """_fetch_page — API 页面获取与分析。"""
 
-    def test_none_evaluate_returns_l3_empty(self):
-        collector = Job51Collector(browser=Job51Browser(evaluate=Mock(return_value=None)))
+    def test_none_evaluate_returns_l3_empty_after_recovery_attempts(self):
+        evaluate, sleep = Mock(return_value=None), Mock()
+        collector = Job51Collector(browser=Job51Browser(evaluate=evaluate), sleep=sleep)
         result = collector._fetch_page("host", "kw", "020000", 1)
         self.assertFalse(result["ok"])
         self.assertEqual(result["level"], 3)
         self.assertEqual(result["signal"], "empty_result")
+        self.assertEqual(evaluate.call_count, 5)                       # first try + four recovery attempts
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [8, 20, 60, 180])
+
+    def test_a_stalled_call_that_recovers_is_not_a_risk_stop(self):
+        body = _ok_body([{"jobName": "AI"}], total=100)
+        raw = json.dumps({"http_status": 200, "content_type": "application/json", "body": body})
+        evaluate, sleep = Mock(side_effect=[None, raw]), Mock()
+        collector = Job51Collector(browser=Job51Browser(evaluate=evaluate), sleep=sleep)
+        result = collector._fetch_page("host", "kw", "020000", 1)
+        self.assertTrue(result["ok"])
+        sleep.assert_called_once_with(8)
+
+    def test_persistent_silence_slows_the_rhythm_before_giving_up(self):
+        from bosshunter.collection.platforms.job51 import _ApiRateLimiter
+
+        limiter = _ApiRateLimiter(total_requests=10)
+        gap, per_min = limiter._gap_range, limiter._per_min_limit
+        collector = Job51Collector(browser=Job51Browser(evaluate=Mock(return_value=None)), sleep=Mock())
+        collector._limiter = limiter
+        collector._fetch_page("host", "kw", "020000", 1)
+        self.assertEqual(limiter._gap_range, tuple(v * 4 for v in gap))      # slowed twice
+        self.assertLess(limiter._per_min_limit, per_min)
 
     def test_error_wrapper_returns_l3_fetch_error(self):
         raw = json.dumps({"error": "NetworkError"})

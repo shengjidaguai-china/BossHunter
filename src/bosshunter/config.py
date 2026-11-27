@@ -114,6 +114,7 @@ DEFAULTS: dict[str, Any] = {
                 "max_pages": 3,
                 "sort": "default",
                 "filters": {},
+                "city_yield_policy": {"enabled": True, "warmup_minutes": 10, "window_minutes": 5, "min_new_jobs": 5},
             },
         },
         "zhilian": {

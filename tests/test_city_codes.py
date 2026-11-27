@@ -16,6 +16,15 @@ class CityCodeTests(unittest.TestCase):
         self.assertEqual(_resolve_city_code("北京", config), "custom-code")
         self.assertEqual(_resolve_city_code("自定义城市", config), "123")
 
+    def test_collector_and_legacy_use_the_complete_offline_catalog(self):
+        from bosshunter.collection.models import PlatformCollectionRequest
+        from bosshunter.collection.platforms.boss import BossCollector
+        from bosshunter.scraper.jobs import _resolve_city_code
+
+        request = PlatformCollectionRequest("boss", ["AI"], ["温州市"], {})
+        self.assertEqual(BossCollector.resolve_city_code("温州市", request), "101210700")
+        self.assertEqual(_resolve_city_code("温州市", {}), "101210700")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+_new_tab_patcher = patch("bosshunter.ai.resume.new_tab", return_value=None)
+
+
+def setUpModule():
+    # generate_tailored_resume also renders a PNG preview via new_tab();
+    # without this the tests open real tabs in the developer's Chrome.
+    _new_tab_patcher.start()
+
+
+def tearDownModule():
+    _new_tab_patcher.stop()
+
 
 class ResumeArtifactTests(unittest.TestCase):
     def test_prompt_forbids_resume_tailoring_artifacts(self):

@@ -34,6 +34,8 @@ class AiPreflightTests(unittest.TestCase):
 
 		self.assertEqual(checks[0]["status"], "pass")
 		self.assertIn("连接正常", checks[0]["message"])
+		self.assertIn("仅检测模型列表接口", checks[0]["detail"])
+		self.assertIn("未发送生成请求", checks[0]["detail"])
 		http_get.assert_called_once()
 		self.assertFalse(http_get.call_args.kwargs["trust_env"])
 

@@ -9,6 +9,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from bosshunter.throttle import SendWindowChecker
+from bosshunter.browser.ownership import browser_execution
+from contextlib import nullcontext
 
 
 MODE_LABELS = {
@@ -159,6 +161,12 @@ class WorkbenchTaskRunner:
                 raise KeyError(task_id)
             if task.status in TERMINAL_STATUSES:
                 return task.snapshot()
+            persist_stop = task.context.get("persist_stop")
+            if callable(persist_stop):
+                try:
+                    persist_stop()
+                finally:
+                    task.stop_requested.set()
             task.stop_requested.set()
             task.status = "stopping"
             task.stop_reason = reason
@@ -182,7 +190,8 @@ class WorkbenchTaskRunner:
         try:
             executor = self._executors.get(task.mode)
             if executor:
-                executor(task, config)
+                with browser_execution() if task.mode in {"full", "collect", "monitor", "deliver"} else nullcontext():
+                    executor(task, config)
             with self._lock:
                 if task.stop_requested.is_set():
                     task.status = "stopped"

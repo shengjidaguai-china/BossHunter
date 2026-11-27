@@ -25,7 +25,9 @@ def _client() -> RuntimeClient:
 
 
 def _ready() -> bool:
-    return ensure_runtime()
+    from bosshunter.browser.ownership import browser_execution
+    with browser_execution():
+        return ensure_runtime()
 
 
 def check_chrome_connection() -> dict | None:

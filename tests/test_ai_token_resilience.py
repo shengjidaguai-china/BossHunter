@@ -468,6 +468,7 @@ class ScorerTokenResilienceTests(unittest.TestCase):
         db = MagicMock()
         job = _job("invalid-json")
         progress_updates: list[dict] = []
+        checkpoints: list[tuple[dict, dict]] = []
 
         with (
             patch("bosshunter.ai.scorer.get_db", return_value=db),
@@ -490,13 +491,20 @@ class ScorerTokenResilienceTests(unittest.TestCase):
                     "ai": {"scoring_max_attempts": 2},
                     "scoring": {"threshold": 70},
                     "_workbench_score_progress": progress_updates.append,
+                    "_workbench_score_checkpoint": lambda state: checkpoints.append((state, progress_updates[-1].copy())),
                 }
             )
 
         self.assertEqual((scored, filtered), (1, 0))
         self.assertEqual(call_ai.call_count, 2)
+        self.assertEqual(progress_updates[0], {
+            "completed": 0, "total": 1, "scored": 0, "filtered": 0, "failed": 0,
+        })
         self.assertEqual(progress_updates[-1]["completed"], 1)
         self.assertEqual(progress_updates[-1]["scored"], 1)
+        for state, metrics in checkpoints:
+            self.assertEqual(metrics["completed"], metrics["total"] - len(state["remaining_job_ids"]))
+
 
     def test_context_limit_retry_preserves_full_resume_and_jd(self):
         db = MagicMock()

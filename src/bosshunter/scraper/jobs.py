@@ -14,10 +14,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from bosshunter.browser import close_tab, evaluate, navigate, new_tab, scroll, wait_for_load
 from bosshunter.cancellation import get_stop_event
+from bosshunter.cities import get_city_code
 from bosshunter.collection.base import CollectorHooks
+from bosshunter.collection.city_yield import normalize_city_policy
 from bosshunter.collection.models import JobCandidate, PlatformCollectionRequest
 from bosshunter.collection.platforms.boss import BossBrowser, BossCollector, generate_boss_job_id
-from bosshunter.config import CITY_CODES
 from bosshunter.db import get_db, insert_job, job_exists, recompute_outsourcing
 from bosshunter.job_filters import matching_blocked_company, matching_deal_breaker
 from bosshunter.outsourcing import load_rules
@@ -37,8 +38,7 @@ def _resolve_city_code(city: str, config: dict) -> str | None:
     custom = custom_codes.get(city)
     if custom not in (None, ""):
         return str(custom)
-    builtin = CITY_CODES.get(city)
-    return str(builtin) if builtin else None
+    return get_city_code(city)
 
 
 def _positive_int(value: object, default: int) -> int:
@@ -60,6 +60,7 @@ def _legacy_request(config: dict, keywords: list[str]) -> PlatformCollectionRequ
         max_pages=min(_positive_int(search_config.get("max_pages", 3), 3), 10),
         sort=str(search_config.get("sort") or "default"),
         filters=search_config.get("filters") if isinstance(search_config.get("filters"), dict) else {},
+        city_yield_policy=normalize_city_policy(search_config.get("city_yield_policy")),
     )
 
 
@@ -93,6 +94,11 @@ def _scrape_jobs_impl(
     profile = config.get("profile", {}) if isinstance(config.get("profile"), dict) else {}
     outsourcing_rules = load_rules(config)
     recompute_outsourcing(db, outsourcing_rules)
+    receipt = {"sequence": 0, "inserted": False}
+    city_context = {}
+
+    def bind_city(city, tracker):
+        city_context.update(city=city, tracker=tracker)
 
     def emit() -> None:
         if callable(progress_callback):
@@ -116,6 +122,7 @@ def _scrape_jobs_impl(
         return True
 
     def save(candidate: JobCandidate) -> bool:
+        receipt.update(sequence=receipt["sequence"] + 1, inserted=False)
         if matching_deal_breaker(candidate.jd, profile.get("jd_deal_breakers", [])):
             counts["filtered"] += 1
             emit()
@@ -129,6 +136,8 @@ def _scrape_jobs_impl(
         if inserted is False:
             counts["duplicate"] += 1
         else:
+            receipt.update(inserted=True, job_id=candidate.storage_id, search_city=city_context["city"],
+                           event_elapsed_ms=city_context["tracker"].elapsed_ms())
             counts["new"] += 1
             report_state["new_count"] = counts["new"]
             if collected_job_ids is not None:
@@ -169,6 +178,9 @@ def _scrape_jobs_impl(
                 on_candidate=save,
                 on_parse_failed=parse_failed,
                 on_event=event,
+                last_save_receipt=lambda: receipt,
+                on_city_start=bind_city,
+                can_checkpoint=lambda: counts["save_failed"] == 0,
             ),
         )
         if result.reason_code:
@@ -188,7 +200,9 @@ def scrape_jobs(
     collected_job_ids: list[str] | None = None,
 ) -> int:
     try:
-        return _scrape_jobs_impl(config, keywords, limit, collected_job_ids=collected_job_ids)
+        from bosshunter.browser.ownership import browser_execution
+        with browser_execution():
+            return _scrape_jobs_impl(config, keywords, limit, collected_job_ids=collected_job_ids)
     except PlatformSafetyStop as exc:
         report = config.setdefault("_workbench_collect_report", {})
         report["stop_reason"] = exc.reason

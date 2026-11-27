@@ -36,6 +36,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 			checks = [_check("collection_options", "采集参数", "error", str(exc), "请在岗位采集窗口修正平台、关键词、城市或目标数量。", "config")]
 		else:
 			checks = _configuration_checks(mode, config, collection_options)
+			checks.extend(_collection_city_checks(collection_options))
 	else:
 		checks = _configuration_checks(mode, config, options)
 	if mode not in VALID_MODES:
@@ -90,6 +91,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 				)
 			)
 		else:
+			checks.extend(_collection_city_checks(full_options))
 			checks.append(
 				_check(
 					"full_flow_platform",
@@ -100,6 +102,17 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 				)
 			)
 	return checks
+
+
+def _collection_city_checks(options: dict) -> list[dict[str, str]]:
+	boss = options.get("platforms", {}).get("boss", {})
+	unresolved = [city for city in boss.get("cities", []) if not boss.get("city_codes", {}).get(city)]
+	if not unresolved:
+		return []
+	return [_check(
+		"boss_cities", "BOSS 搜索地区", "warning", f"将跳过未识别地区：{'、'.join(unresolved)}",
+		"其他有效城市继续采集；原配置保留。省份不会自动替换成省会；如需该地区，请填写具体城市或提供已确认的 BOSS 地区编码。", "config",
+	)]
 
 
 def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, str]]:
@@ -275,7 +288,8 @@ def _check_ai_connection(config: dict, required: bool) -> list[dict[str, str]]:
 			"AI 接口连接",
 			"pass",
 			"AI 接口连接正常",
-			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。",
+			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}；Base URL 来源：{base_url_source or '官方默认'}。"
+			"本次仅检测模型列表接口，未发送生成请求；评分等任务的参数兼容性需在实际调用时验证。",
 		)
 	]
 
