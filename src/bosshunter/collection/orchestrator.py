@@ -20,6 +20,7 @@ from bosshunter.collection.models import (
 from bosshunter.collection.platforms.boss import BossCollector, normalize_boss_search_filters
 from bosshunter.collection.platforms.job51 import Job51Collector, get_51job_city_code
 from bosshunter.collection.platforms.liepin import LiepinCollector, get_liepin_city_code
+from bosshunter.collection.platforms.shixiseng_browser import BrowserShixisengCollector
 from bosshunter.collection.platforms.zhilian import ZhilianCollector, get_zhilian_city_code
 from bosshunter.collection.registry import CollectorRegistry
 from bosshunter.collection_run_store import (
@@ -32,12 +33,13 @@ from bosshunter.job_filters import matching_blocked_company, matching_deal_break
 from bosshunter.outsourcing import load_rules
 
 
-SUPPORTED_PLATFORMS = {"boss", "zhilian", "51job", "liepin"}
+SUPPORTED_PLATFORMS = {"boss", "zhilian", "51job", "liepin", "shixiseng"}
 SORT_OPTIONS = {
     "boss": {"default", "newest"},
     "zhilian": {"default", "newest"},
     "51job": {"default"},
     "liepin": {"default", "newest"},
+    "shixiseng": {"default"},
 }
 
 
@@ -77,12 +79,12 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
         and (legacy_search.get("keywords") or legacy_search.get("cities"))
     ):
         boss_search = dict(legacy_search)
-    zhilian_search = configured_platforms.get("zhilian", {}).get("search", {}) if isinstance(configured_platforms.get("zhilian"), dict) else {}
-    job51_search = configured_platforms.get("51job", {}).get("search", {}) if isinstance(configured_platforms.get("51job"), dict) else {}
-    liepin_search = configured_platforms.get("liepin", {}).get("search", {}) if isinstance(configured_platforms.get("liepin"), dict) else {}
-
     platforms: dict[str, Any] = {}
-    for platform, fallback in (("boss", boss_search), ("zhilian", zhilian_search), ("51job", job51_search), ("liepin", liepin_search)):
+    for platform in SORT_OPTIONS:
+        platform_config = configured_platforms.get(platform)
+        fallback = platform_config.get("search", {}) if isinstance(platform_config, dict) else {}
+        if platform == "boss":
+            fallback = boss_search
         value = raw_platforms.get(platform) if isinstance(raw_platforms.get(platform), dict) else {}
         search = value.get("search") if isinstance(value.get("search"), dict) else value
         if not isinstance(search, dict):
@@ -136,6 +138,8 @@ def normalize_collection_options(config: dict[str, Any], raw_options: dict[str, 
     if "continuous_collection" in supplied:
         options["continuous_collection"] = supplied["continuous_collection"]
     normalized = validate_collection_options(options)
+    if "shixiseng" in normalized["platform_order"] and config.get("profile", {}).get("allow_internship") is not True:
+        raise ValueError("采集实习僧岗位前，请在个人配置中开启‘接受实习/管培岗位’。")
     if "boss" in normalized["platform_order"]:
         effective = {"profile": config.get("profile", {}), "platforms": {
             "boss": {"search": {"filters": normalized["platforms"]["boss"]["filters"]}},
@@ -156,7 +160,7 @@ def validate_collection_options(options: dict[str, Any]) -> dict[str, Any]:
     if len(order) != len(set(order)):
         raise ValueError("采集平台顺序不能重复")
     if any(platform not in SUPPORTED_PLATFORMS for platform in order):
-        raise ValueError("采集平台只支持 boss、zhilian、51job 或 liepin")
+        raise ValueError("采集平台只支持 boss、zhilian、51job、liepin 或 shixiseng")
     if not isinstance(platforms, dict) or set(platforms) != set(order):
         raise ValueError("平台顺序与平台配置不一致")
     if not isinstance(options.get("auto_score", False), bool):
@@ -369,6 +373,7 @@ class _SharedProcessor:
                     self.last_receipt["recorded"] = True
             else:
                 inserted = insert_job_if_new(self.conn, candidate.as_job_record(), rules=self.outsourcing_rules)
+                self.last_receipt.update(inserted=inserted, job_id=candidate.storage_id)
         except Exception as exc:
             self.progress.save_failed += 1
             reason = f"保存岗位失败：{type(exc).__name__}"
@@ -510,6 +515,8 @@ class CollectionOrchestrator:
                         if platform == "zhilian" and self._uses_default_registry
                         else LiepinCollector(config=self.config, safety_conn=conn)
                         if platform == "liepin" and self._uses_default_registry
+                        else BrowserShixisengCollector(self.config, conn)
+                        if platform == "shixiseng" and self._uses_default_registry
                         else self.registry.get(platform)
                     )
                     result = collector.collect(request, hooks)

@@ -90,7 +90,7 @@ def test_manual_sent_rejects_boss_and_does_not_partially_update_external_jobs():
 
     assert captured.value.blocked == [{
         "job_id": "boss",
-        "reasons": ["仅智联招聘、前程无忧和猎聘支持手动标记已发送"],
+        "reasons": ["仅智联招聘、前程无忧、猎聘和实习僧支持手动标记已发送"],
     }]
     assert statuses == {"boss": "pending", "external": "pending"}
 

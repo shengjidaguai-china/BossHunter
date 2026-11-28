@@ -18,7 +18,7 @@ import type { ActivityData, TopCompany } from '@/hooks/useDashboard'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
 import { parseHistoryDetail } from '@/lib/historyDetail'
-import { PLATFORM_LABELS } from '@/lib/platforms'
+import { isShixisengJobUrl, PLATFORM_LABELS } from '@/lib/platforms'
 import {
   EMPTY_JOB_FILTERS,
   filterJobs,
@@ -246,6 +246,7 @@ function jobSubtitle(job: Job) {
 
 function safeExternalUrl(value: string | undefined, platform: string) {
 	if (!value) return ''
+	if (platform === 'shixiseng') return isShixisengJobUrl(value) ? value : ''
 	try {
 		const url = new URL(value)
 		if (url.protocol !== 'https:') return ''
@@ -1924,7 +1925,7 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   }
 
   const markManuallySent = async (job: Job) => {
-    if (job.source_platform !== 'zhilian' && job.source_platform !== '51job' && job.source_platform !== 'liepin') return
+    if (job.source_platform !== 'zhilian' && job.source_platform !== '51job' && job.source_platform !== 'liepin' && job.source_platform !== 'shixiseng') return
     const platformLabel = PLATFORM_LABELS[job.source_platform]
     if (!window.confirm(`请确认：你已经在${platformLabel}完成了这个岗位的投递。此操作只更新 BossHunter 本地记录，不会向平台发送任何内容。`)) return
     try {

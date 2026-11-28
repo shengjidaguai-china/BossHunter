@@ -9,7 +9,7 @@ from typing import Any, Literal
 from bosshunter.collection.text import clean_job_description
 
 
-PlatformId = Literal["boss", "zhilian", "51job", "liepin"]
+PlatformId = Literal["boss", "zhilian", "51job", "liepin", "shixiseng"]
 
 
 def classify_recruitment_type(title: str = "", experience: str = "", jd: str = "") -> str:

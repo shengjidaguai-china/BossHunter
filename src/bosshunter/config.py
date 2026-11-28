@@ -137,6 +137,10 @@ DEFAULTS: dict[str, Any] = {
                 "sort": "default",
             },
         },
+        "shixiseng": {
+            "enabled": False,
+            "search": {"keywords": [], "cities": [], "city_codes": {}, "max_pages": 1, "sort": "default"},
+        },
         "liepin": {
             "enabled": False,
             "search": {

@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Ban, CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Trash2 } from 'lucide-react'
 import { getStatusLabel } from '@/lib/status'
-import { PLATFORM_SHORT_LABELS } from '@/lib/platforms'
+import { isShixisengJobUrl, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
 import type { Job } from '@/hooks/useDashboard'
 import type { JobSortKey, JobSortOrder } from '@/hooks/useJobSearch'
 import { InterviewPreparation } from '@/components/jobs/InterviewPreparation'
@@ -31,6 +31,7 @@ interface JobsTableProps {
 
 function safeJobUrl(job: Job): string | null {
   const platform = job.source_platform || 'boss'
+  if (platform === 'shixiseng') return job.url && isShixisengJobUrl(job.url) ? job.url : null
   if (platform !== 'boss' && platform !== 'zhilian' && platform !== '51job' && platform !== 'liepin') return null
   try {
     const parsed = platform === 'boss'
@@ -147,7 +148,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
             <tbody>
               {jobs.map(job => {
                 const isExpanded = expanded === job.id
-                const isExternalPlatform = job.source_platform === 'zhilian' || job.source_platform === '51job' || job.source_platform === 'liepin'
+                const isExternalPlatform = job.source_platform === 'zhilian' || job.source_platform === '51job' || job.source_platform === 'liepin' || job.source_platform === 'shixiseng'
                 const jobUrl = safeJobUrl(job)
                 const alreadySent = ['sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent'].includes(job.status)
                 const company = (job.company || '').trim()
@@ -181,7 +182,10 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       </td>
                       <td className="max-w-[220px] truncate px-4 py-3 font-bold text-foreground">{job.title}</td>
                       <td className="px-4 py-3 text-muted">{job.city || '未识别'}</td>
-                      <td className="px-4 py-3 text-muted">{job.salary || '-'}</td>
+                      <td className="px-4 py-3 text-muted">
+                        {job.salary || (job.source_platform === 'shixiseng' ? '未知' : '-')}
+                        {job.source_platform === 'shixiseng' && /[/／]\s*(?:天|日|周|小时|时)$/.test(job.salary || '') && <span className="block text-xs">非月薪</span>}
+                      </td>
                       <td className="px-4 py-3 text-xs">
                         <div className="font-bold text-foreground">{job.education || '学历未识别'}</div>
                         <div className="mt-1 text-muted">职位类型：{job.employment_type === 'internship' ? '实习' : job.employment_type === 'full_time' ? '全职' : job.employment_type === 'part_time' ? '兼职' : '待核实'}</div>
@@ -275,7 +279,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-card p-4">
                               <p className="mb-2 text-xs font-black text-primary">JD摘要</p>
-                              <p className="line-clamp-6 leading-6 text-muted">{job.jd || '无'}</p>
+                              <p className="line-clamp-6 leading-6 text-muted">{job.jd || (job.source_platform === 'shixiseng' ? '未知' : '无')}</p>
                             </div>
                             <div className="rounded-2xl border border-card-border bg-card p-4">
                               <p className="mb-2 text-xs font-black text-primary">招呼语</p>

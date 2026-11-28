@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { CollectJobsDialog } from './CollectJobsDialog'
 
 beforeEach(() => {
@@ -34,8 +34,28 @@ it('full workflow hides continuous collection and submits the existing scoring b
   render(<CollectJobsDialog open mode="full" activeTask={null} onClose={vi.fn()} onStart={start} />)
   await screen.findByDisplayValue('AI')
   expect(screen.queryByRole('switch', { name: '持续采集' })).toBeNull()
+  expect((screen.getByRole('checkbox', { name: '实习僧' }) as HTMLInputElement).disabled).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: '开始全流程' }))
   await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
   expect(start.mock.calls[0][0].auto_score).toBe(true)
   expect(start.mock.calls[0][0].continuous_collection).toBeUndefined()
+})
+
+it('submits Shixiseng city names without requiring a platform city code', async () => {
+  const start = vi.fn(async (_options: Record<string, unknown>) => ({ ok: true }))
+  render(<CollectJobsDialog open activeTask={null} onClose={vi.fn()} onStart={start} />)
+  await screen.findByDisplayValue('AI')
+  fireEvent.click(screen.getByRole('checkbox', { name: 'BOSS 直聘' }))
+  const platform = screen.getByRole('checkbox', { name: '实习僧' })
+  fireEvent.click(platform)
+  const card = within(platform.closest('section')!)
+  fireEvent.change(card.getByLabelText('关键词（逗号或换行分隔）'), { target: { value: 'Python' } })
+  fireEvent.change(card.getByLabelText('城市（逗号或换行分隔）'), { target: { value: '全国,上海' } })
+  fireEvent.click(screen.getByRole('button', { name: '重新采集' }))
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+  expect(start.mock.calls[0][0]).toMatchObject({
+    platform_order: ['shixiseng'], platforms: {
+      shixiseng: { keywords: ['Python'], cities: ['全国', '上海'], city_codes: {}, max_pages: 1, sort: 'default' },
+    },
+  })
 })

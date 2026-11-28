@@ -12,6 +12,13 @@ _ANONYMOUS_COMPANY_PATTERN = re.compile(
 )
 
 
+def has_shixiseng_nonmonthly_pay(job: dict) -> bool:
+    """Recognize the pay units preserved by the Shixiseng collector."""
+    return job.get("source_platform") == "shixiseng" and bool(
+        re.search(r"[/／]\s*(?:天|日|周|小时|时)$", str(job.get("salary") or "").strip())
+    )
+
+
 def quick_score(job: dict, config: dict) -> tuple[int, str]:
     """Apply hard filters before LLM scoring."""
     reason = internship_rejection(job, config)
@@ -43,6 +50,8 @@ def quick_score(job: dict, config: dict) -> tuple[int, str]:
     if not profile.get("allow_internship", False) and _contains_internship_signal(job):
         return 0, "实习/管培岗位"
 
+    if has_shixiseng_nonmonthly_pay(job):
+        return 100, "岗位使用非月薪单位，月薪门槛不适用"
     return salary_filter_result(str(job.get("salary") or ""), profile)
 
 

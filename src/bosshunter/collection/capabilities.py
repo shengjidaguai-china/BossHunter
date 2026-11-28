@@ -8,6 +8,7 @@ PLATFORM_CAPABILITIES: dict[str, frozenset[str]] = {
     "zhilian": frozenset({"collect", "score", "greet"}),
     "51job": frozenset({"collect", "score", "greet"}),
     "liepin": frozenset({"collect", "score", "greet"}),
+    "shixiseng": frozenset({"collect", "score"}),
 }
 
 

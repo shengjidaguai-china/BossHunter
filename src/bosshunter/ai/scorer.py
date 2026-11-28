@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from bosshunter.ai.credentials import AIRequestError, call_anthropic_text, get_ai_api_key
-from bosshunter.ai.prefilter import _parse_salary_range_k, quick_score
+from bosshunter.ai.prefilter import _parse_salary_range_k, has_shixiseng_nonmonthly_pay, quick_score
 from bosshunter.cancellation import OperationCancelled, run_cancellable
 from bosshunter.collection.text import clean_job_description
 from bosshunter.db import (
@@ -240,7 +240,11 @@ def _build_scoring_prompt(job: dict, resume: str, config: dict | None = None) ->
         salary_min=_format_salary_k(salary_min),
         salary_max=_format_salary_k(salary_max),
         salary_ceil=_format_salary_k(salary_ceil),
-        salary_fit=_salary_fit_summary(job.get("salary") or "", salary_min, salary_max, salary_ceil),
+        salary_fit=(
+            "岗位使用非月薪单位，保留原薪资表达，不能套用月薪门槛。"
+            if has_shixiseng_nonmonthly_pay(job)
+            else _salary_fit_summary(job.get("salary") or "", salary_min, salary_max, salary_ceil)
+        ),
         jd=clean_job_description(job.get("jd", "")),
     )
 

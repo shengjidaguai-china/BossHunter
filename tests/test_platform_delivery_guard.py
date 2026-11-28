@@ -44,6 +44,7 @@ class PlatformDeliveryGuardTests(TestCase):
         for platform, job_id, url in (
             ("zhilian", "zhilian:zl-1", "https://www.zhaopin.com/jobdetail/zl-1.htm"),
             ("51job", "51job:job-1", "https://jobs.51job.com/shanghai/job-1.html"),
+            ("shixiseng", "shixiseng:inn_sample", "https://www.shixiseng.com/intern/inn_sample"),
         ):
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
                 base_dir = Path(tmp)

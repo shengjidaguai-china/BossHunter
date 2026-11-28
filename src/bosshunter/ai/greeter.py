@@ -686,7 +686,8 @@ def generate_greetings(config: dict, job_ids: list[str] | None = None, db_path=N
     allowed_jobs = [
         job
         for job in jobs
-        if str(job.get("status") or "approved") in GREETING_ALLOWED_STATUSES
+        if job.get("source_platform") != "shixiseng"
+        and str(job.get("status") or "approved") in GREETING_ALLOWED_STATUSES
     ]
     conflict_ids = [
         str(job["id"])
