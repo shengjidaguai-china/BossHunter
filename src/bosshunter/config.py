@@ -95,6 +95,7 @@ DEFAULTS: dict[str, Any] = {
     "collection": {
         "default_order": ["boss"],
         "auto_score_default": False,
+        "ego_task_space_id": None,
         "daily_search_page_limit": 60,
         "daily_detail_page_limit": 900,
         "max_consecutive_page_failures": 3,
@@ -151,6 +152,14 @@ DEFAULTS: dict[str, Any] = {
     "scoring": {
         "threshold": 71,
         "max_candidates": 20,
+    },
+    "delivery": {
+        "ego_task_space_id": None,
+        "cross_platform_dedup": False,
+        "platforms": {
+            platform: {"enabled": False, "daily_limit": 10, "resume_choice": "attachment", "resume_name": ""}
+            for platform in ("liepin", "zhilian", "51job")
+        },
     },
     "throttle": {
         "daily_limit": 30,

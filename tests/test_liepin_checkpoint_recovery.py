@@ -202,3 +202,18 @@ def test_detail_failure_after_complete_page_preserves_that_page(tmp_path):
         assert ("上海", "AI") not in get_collected_combos(conn, "liepin")
     finally:
         conn.close()
+
+
+def test_disabled_next_page_completes_combo_without_opening_an_extra_page(tmp_path):
+    conn = get_db(tmp_path / "test.db")
+    try:
+        browser = FakeBrowser({
+            1: {"status": "ready", "jobs": [JOB], "has_next_page": False},
+            2: {"status": "waiting", "jobs": []},
+        })
+        result, collected = run(conn, browser)
+        assert result.status == "completed"
+        assert len(collected) == 1
+        assert not any("curPage=" in url for url in browser.navigations)
+    finally:
+        conn.close()

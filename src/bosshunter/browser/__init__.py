@@ -3,16 +3,52 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from bosshunter.browser.client import RuntimeClient
+from bosshunter.browser.ego import EgoTaskSpace
 from bosshunter.browser.runtime import ensure_runtime, get_runtime_url, set_browser_config
 
 CDP_PROXY_URL = get_runtime_url()
 CDP_DIRECT_URL = "http://localhost:9222"
 CDP_DEFAULT_URL = "http://127.0.0.1:9222"
 NAV_TIMEOUT_MS = 15000
+_delivery_browser: ContextVar[EgoTaskSpace | None] = ContextVar("delivery_browser", default=None)
+
+
+@contextmanager
+def delivery_browser(config: dict[str, Any], *, check: bool = True):
+    """Scope delivery/monitor operations without changing collection or other threads."""
+    backend = EgoTaskSpace.from_config(config, section="delivery")
+    active = _delivery_browser.get()
+    if backend is None and active is None:
+        yield None
+        return
+    if backend is not None and active is not None and active.space_id == backend.space_id:
+        yield active
+        return
+    from bosshunter.browser.ownership import browser_execution
+    with browser_execution():
+        if backend is not None and check:
+            backend.check()
+        token = _delivery_browser.set(backend)
+        try:
+            yield backend
+        finally:
+            _delivery_browser.reset(token)
+
+
+def delivery_workflow(function):
+    """Decorate workflow entrypoints whose first argument is the config."""
+    @wraps(function)
+    def scoped(config, *args, **kwargs):
+        with delivery_browser(config):
+            return function(config, *args, **kwargs)
+    return scoped
 
 
 def configure(config: dict[str, Any] | None = None) -> None:
@@ -20,11 +56,13 @@ def configure(config: dict[str, Any] | None = None) -> None:
     set_browser_config(config)
 
 
-def _client() -> RuntimeClient:
-    return RuntimeClient()
+def _client() -> RuntimeClient | EgoTaskSpace:
+    return _delivery_browser.get() or RuntimeClient()
 
 
 def _ready() -> bool:
+    if _delivery_browser.get() is not None:
+        return True
     from bosshunter.browser.ownership import browser_execution
     with browser_execution():
         return ensure_runtime()

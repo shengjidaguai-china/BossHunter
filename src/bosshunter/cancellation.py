@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import copy_context
 from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Callable, TypeVar
@@ -54,7 +55,8 @@ def run_cancellable(
         except Exception as exc:  # Preserve the original provider exception.
             results.put((False, exc))
 
-    Thread(target=worker, name="bosshunter-cancellable-call", daemon=True).start()
+    context = copy_context()
+    Thread(target=lambda: context.run(worker), name="bosshunter-cancellable-call", daemon=True).start()
 
     timeout = max(float(poll_seconds), 0.01)
     while True:

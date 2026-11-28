@@ -34,6 +34,7 @@ search:
   sort: newest
 
 collection:
+  ego_task_space_id: null  # 单独采集可填已有 Ego Lite 任务空间 ID，null 使用原有 Runtime
   # Continuous collection is opt-in per Web task; limits and risk checks still apply.
   default_order: [boss]
   auto_score_default: false
@@ -93,6 +94,22 @@ platforms:
 scoring:
   threshold: 70
   max_candidates: 20
+
+# 发送与回复监测共用同一个已有、Agent 控制的任务空间。
+# 不会创建 Ego Lite 实例或任务空间；省略/null 保持原 Browser Runtime。
+delivery:
+  ego_task_space_id: null
+  # 默认允许同公司跨平台再次投递；设为 true 恢复跨平台按公司去重。
+  # 同平台同岗位和结果不确定的占位仍阻止自动重投。
+  cross_platform_dedup: false
+  # 开启时按完整公司名称比较：统一全半角和大小写，去除空白、常见标点及末尾的
+  # 股份有限公司、有限责任公司、有限公司。保留地区与业务名称，不推测品牌别名。
+  # 按平台明确开启，且必须使用已有 Ego Lite 任务空间。日限额各自计算。
+  platforms:
+    # 猎聘仅聊一聊岗位：显式配置 action: chat，重新预览后才发送招呼语及附件。
+    liepin: {enabled: false, daily_limit: 10, resume_choice: attachment, resume_name: ""}
+    zhilian: {enabled: false, daily_limit: 10, resume_choice: attachment, resume_name: ""}
+    "51job": {enabled: false, daily_limit: 10, resume_choice: attachment, resume_name: ""}
 
 throttle:
   daily_limit: 30

@@ -79,7 +79,8 @@ from bosshunter.db import (
 	update_job_status,
 	update_jobs_manual_status,
 )
-from bosshunter.collection.capabilities import platform_supports
+from bosshunter.executor.platform_delivery import daily_quota, first_application_pending, sent_today
+from bosshunter.collection.capabilities import delivery_capabilities, enabled_resume_platforms, platform_supports
 from bosshunter.collection.orchestrator import CollectionOrchestrator, normalize_collection_options
 from bosshunter.collection.platforms.zhilian import load_zhilian_city_snapshot
 from bosshunter.collection.platforms.job51 import load_51job_city_snapshot
@@ -441,6 +442,14 @@ def _record_score_progress(task: WorkbenchTask, state: dict) -> None:
 def _execute_collect(task: WorkbenchTask, config: dict) -> None:
 	_log(task, "开始采集岗位")
 	collect_config = dict(config)
+	if task.mode != "collect":
+		full_platforms = config.get("_collection_options", {}).get("platform_order", [])
+		external = [platform for platform in full_platforms if platform != "boss"]
+		if external and not all(platform_supports(platform, "deliver", config) for platform in external):
+			raise ValueError("外部平台全流程需要在本机启用投递并指定已有 Ego Lite 任务空间")
+		if external or "ego_task_space_id" in (config.get("collection") or {}):
+			space = config["delivery"]["ego_task_space_id"] if external else None
+			collect_config["collection"] = {**(config.get("collection") or {}), "ego_task_space_id": space}
 	collect_config["_workbench_stop_event"] = task.stop_requested
 	collect_config["_workbench_collect_progress"] = lambda state: _record_collect_progress(task, state)
 	collect_config["_workbench_log"] = lambda message: _log(task, message)
@@ -607,6 +616,8 @@ def _queue_monitor_delivery(
 	job_ids: list[str],
 	*,
 	direct_send: bool = False,
+	expected_actions: dict | None = None,
+	expected_platforms: dict | None = None,
 ) -> dict:
 	"""Queue confirmed jobs on a task that is already in its monitor loop."""
 	queue_lock = task.context.get("monitor_queue_lock")
@@ -622,7 +633,12 @@ def _queue_monitor_delivery(
 		}
 		new_ids = [job_id for job_id in job_ids if job_id not in queued_ids]
 		if new_ids:
-			pending.append({"job_ids": new_ids, "direct_send": direct_send})
+			batch = {"job_ids": new_ids, "direct_send": direct_send}
+			if expected_actions:
+				batch["expected_actions"] = expected_actions
+			if expected_platforms:
+				batch["expected_platforms"] = expected_platforms
+			pending.append(batch)
 			_log(task, f"监测期间新增 {len(new_ids)} 个确认投递岗位，已加入发送队列")
 	wakeup_event = task.context.get("monitor_wakeup_event")
 	if isinstance(wakeup_event, Event):
@@ -667,6 +683,8 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 			for batch in _take_monitor_deliveries(task):
 				deliver_config = dict(config)
 				deliver_config["_workbench_job_ids"] = batch.get("job_ids", [])
+				deliver_config["_workbench_expected_actions"] = batch.get("expected_actions", {})
+				deliver_config["_workbench_expected_platforms"] = batch.get("expected_platforms", {})
 				if batch.get("direct_send"):
 					deliver_config["_workbench_skip_greeting"] = True
 				_log(task, f"处理监测期间新增的 {len(deliver_config['_workbench_job_ids'])} 个投递岗位")
@@ -804,6 +822,8 @@ def _queue_active_delivery(
 	job_ids: list[str],
 	*,
 	direct_send: bool,
+	expected_actions: dict | None = None,
+	expected_platforms: dict | None = None,
 ) -> tuple[dict, list[str]]:
 	"""Append jobs to the currently running single delivery worker."""
 	queue_lock = task.context.setdefault("delivery_queue_lock", Lock())
@@ -817,6 +837,8 @@ def _queue_active_delivery(
 			task.context.setdefault("pending_deliveries", []).append({
 				"job_ids": new_ids,
 				"direct_send": direct_send,
+				**({"expected_actions": expected_actions} if expected_actions else {}),
+				**({"expected_platforms": expected_platforms} if expected_platforms else {}),
 			})
 			scheduled_ids.update(new_ids)
 			_log(task, f"新增 {len(new_ids)} 个岗位，已加入当前发送队列")
@@ -863,6 +885,8 @@ def _execute_deliver(task: WorkbenchTask, config: dict) -> None:
 				return
 			current_config = dict(config)
 			current_config["_workbench_job_ids"] = batch.get("job_ids", [])
+			current_config["_workbench_expected_actions"] = batch.get("expected_actions", {})
+			current_config["_workbench_expected_platforms"] = batch.get("expected_platforms", {})
 			if batch.get("direct_send"):
 				current_config["_workbench_skip_greeting"] = True
 			else:
@@ -934,6 +958,7 @@ def _refresh_greeting_settings(config: dict) -> dict:
 	config = dict(config)
 	if config.get("_workbench_live_greeting_settings"):
 		latest = load_config(CONFIG_PATH)
+		config["delivery"] = latest.get("delivery", {})
 		for section, fields in {
 			"profile": ("ai_greeting_enabled", "fixed_greeting", "greeting_preference"),
 			"ai": ("greeting_style_suggestions",),
@@ -1432,13 +1457,12 @@ def api_history_open_chat(history_id):
 			return _json_response({"error": "该平台不支持聊天定位"}, 400)
 
 		from bosshunter.executor.monitor import MonitorRiskDetected, _open_conversation_from_chat_list
+		from bosshunter.browser import delivery_browser
 
 		try:
-			target_id = _open_conversation_from_chat_list(
-				job,
-				load_config(CONFIG_PATH),
-				background=False,
-			)
+			config = load_config(CONFIG_PATH)
+			with delivery_browser(config):
+				target_id = _open_conversation_from_chat_list(job, config, background=False)
 		except MonitorRiskDetected as exc:
 			return _json_response({"error": f"BOSS 页面出现风险提示：{exc.kind}"}, 409)
 		if not target_id:
@@ -1503,31 +1527,41 @@ def api_workbench():
 		config = load_config(CONFIG_PATH)
 		threshold = config.get("scoring", {}).get("threshold", 60)
 		daily_limit = int(config.get("throttle", {}).get("daily_limit", 30) or 30)
-		today_sent_row = db.execute(
-			"SELECT COUNT(*) AS cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
-		).fetchone()
-		today_sent = int(today_sent_row["cnt"] if today_sent_row else 0)
+		today_sent = sent_today(db, "boss")
+		platform_quotas = {}
+		for platform in enabled_resume_platforms(config):
+			limit = daily_quota(config, platform)
+			used = sent_today(db, platform)
+			platform_quotas[platform] = {"daily_limit": limit, "sent": used, "remaining": max(0, limit - used)}
 		status = task_runner.status()
 		return _json_response({
 			"funnel": get_funnel_stats(db),
 			"funnel_today": get_funnel_stats(db, today=True),
+			"delivery_capabilities": delivery_capabilities(config),
+			"monitor_capabilities": {
+				"boss": "supported" if platform_supports("boss", "monitor", config) else "disabled",
+				"zhilian": "employer_interest" if platform_supports("zhilian", "monitor", config) else "disabled",
+				"51job": "empty_view_verified" if platform_supports("51job", "inspect_feedback", config) else "disabled",
+				"liepin": "unverified",
+			},
 			"pending_confirmation": [
 				_serialize_job(job) for job in get_jobs_pending_confirmation(db)
 				if int(job.get("score") or 0) >= threshold
-				and platform_supports(str(job.get("source_platform") or "boss"), "deliver")
+				and platform_supports(str(job.get("source_platform") or "boss"), "deliver", config)
 			],
 			"pending_greetings": [
-				_serialize_job(job) for job in get_jobs_ready_to_send(db, include_pending_review=True)
-				if platform_supports(str(job.get("source_platform") or "boss"), "deliver")
+				_serialize_job(job) for job in get_jobs_ready_to_send(db, include_pending_review=True, resume_platforms=enabled_resume_platforms(config))
+				if platform_supports(str(job.get("source_platform") or "boss"), "deliver", config)
 			],
 			"send_errors": [
-				_serialize_job(job) for job in get_jobs_with_send_errors(db)
-				if platform_supports(str(job.get("source_platform") or "boss"), "deliver")
+				_serialize_job(job) for job in get_jobs_with_send_errors(db, resume_platforms=enabled_resume_platforms(config))
+				if platform_supports(str(job.get("source_platform") or "boss"), "deliver", config)
 			],
 			"needs_resume": [
 				_serialize_job(job) for job in get_jobs_needing_resume(db)
 				if platform_supports(str(job.get("source_platform") or "boss"), "deliver")
 			],
+			"platform_send_quotas": platform_quotas,
 			"send_quota": {
 				"daily_limit": daily_limit,
 				"sent": today_sent,
@@ -1835,7 +1869,7 @@ def api_workbench_task_start():
 				return _json_response({"error": str(exc)}, 400)
 			collection_only = [
 				platform for platform in collection_options["platform_order"]
-				if not platform_supports(platform, "deliver")
+				if not platform_supports(platform, "deliver", base_config)
 			]
 			if collection_only:
 				return _json_response({
@@ -1928,6 +1962,7 @@ def api_workbench_deliver():
 		job_ids = [str(job_id) for job_id in body.get("job_ids", []) if str(job_id)]
 		if not job_ids:
 			return _json_response({"error": "请选择要投递的岗位"}, 400)
+		delivery_config = load_config(CONFIG_PATH)
 		direct_send = bool(body.get("direct_send"))
 		if not direct_send:
 			from bosshunter.ai.greeter import greeting_config_error
@@ -1948,15 +1983,26 @@ def api_workbench_deliver():
 					f"SELECT id, status, greeting, greeting_selection, COALESCE(source_platform, 'boss') AS source_platform FROM jobs WHERE deleted_at IS NULL AND id IN ({placeholders})",
 					job_ids,
 				).fetchall()
+				new_platform_pilot = any(row["source_platform"] != "boss" for row in platform_rows) and first_application_pending(validation_db)
 			finally:
 				validation_db.close()
 			invalid_ids = [job_id for job_id in job_ids if job_id not in active_ids]
 			if invalid_ids:
 				return _json_response({"error": "所选岗位不存在或已进入回收站", "invalid_ids": invalid_ids}, 409)
+			expected_actions = body.get("expected_actions")
+			expected_platforms = body.get("expected_platforms")
+			current_platforms = {str(row["id"]): row["source_platform"] for row in platform_rows}
+			if expected_platforms is not None and expected_platforms != current_platforms:
+				return _json_response({"error": "岗位平台已变更，请重新预览", "code": "confirmed_platform_changed"}, 409)
+			caps = delivery_capabilities(delivery_config)
+			current_actions = {str(row["id"]): caps.get(row["source_platform"], {}).get("action_id") for row in platform_rows}
+			if expected_actions is not None and expected_actions != current_actions:
+				return _json_response({"error": "投递动作已变更，请重新预览", "code": "confirmed_action_changed"}, 409)
+
 			unsupported = [
 				str(row["id"])
 				for row in platform_rows
-				if not platform_supports(str(row["source_platform"] or "boss"), "deliver")
+				if not platform_supports(str(row["source_platform"] or "boss"), "deliver", delivery_config)
 			]
 			if unsupported:
 				return _json_response({
@@ -1964,10 +2010,13 @@ def api_workbench_deliver():
 					"unsupported_platform": "unknown",
 					"invalid_ids": unsupported,
 				}, 403)
+			if new_platform_pilot and (len(job_ids) != 1 or not direct_send or not expected_actions or not expected_platforms):
+				return _json_response({"error": "首次投递须在对话中预览并确认一个岗位", "code": "single_confirmed_pilot_required"}, 409)
+
 			pending_review_ids = [
 				str(row["id"])
 				for row in platform_rows
-				if str(row["greeting_selection"] or "") == "pending"
+				if row["source_platform"] == "boss" and str(row["greeting_selection"] or "") == "pending"
 			]
 			if pending_review_ids:
 				return _json_response({
@@ -1987,6 +2036,7 @@ def api_workbench_deliver():
 				for row in platform_rows
 				if direct_send
 				and str(row["status"] or "") in allowed_statuses
+				and row["source_platform"] == "boss"
 				and not str(row["greeting"] or "").strip()
 			}
 			not_ready_ids = {
@@ -2057,6 +2107,8 @@ def api_workbench_deliver():
 					delivery_task,
 					job_ids,
 					direct_send=direct_send,
+					**({"expected_actions": expected_actions} if expected_actions else {}),
+					**({"expected_platforms": expected_platforms} if expected_platforms else {}),
 				)
 
 			db = _get_web_db()
@@ -2084,10 +2136,16 @@ def api_workbench_deliver():
 						monitoring_task,
 						job_ids,
 						direct_send=direct_send,
+						**({"expected_actions": expected_actions} if expected_actions else {}),
+						**({"expected_platforms": expected_platforms} if expected_platforms else {}),
 					)
 				)
 
 			deliver_options = {"_workbench_job_ids": job_ids}
+			if expected_platforms:
+				deliver_options["_workbench_expected_platforms"] = expected_platforms
+			if expected_actions:
+				deliver_options["_workbench_expected_actions"] = expected_actions
 			if direct_send:
 				# The greeting is already finalized on the review card. Keep direct
 				# send separate from generation so a click cannot replace the text or
@@ -3060,7 +3118,7 @@ def api_agent_task_start():
 			else:
 				collection_only = [
 					platform for platform in options["platform_order"]
-					if not platform_supports(platform, "deliver")
+					if not platform_supports(platform, "deliver", config)
 				]
 				if collection_only:
 					return _json_response({

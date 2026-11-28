@@ -20,7 +20,9 @@ from bosshunter.ai.credentials import (
 	get_ai_service,
 )
 from bosshunter.browser.diagnostics import run_browser_diagnostics
+from bosshunter.browser.ego import EgoTaskSpace, EgoTaskSpaceError
 from bosshunter.collection.orchestrator import normalize_collection_options
+from bosshunter.collection.capabilities import platform_supports
 
 VALID_MODES = {"full", "collect", "rescore", "monitor"}
 
@@ -50,14 +52,14 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		# ``auto_score=false`` genuinely AI-free even when credentials are saved.
 		checks.append(_check("ai_connection", "AI 接口连接", "pass", "纯采集不需要 AI", "关闭“采集后自动评分”时不会调用 AI。"))
 		try:
-			checks.extend(check_browser_connection(deepcopy(config), collection_options))
+			checks.extend(_check_workflow_browser(mode, deepcopy(config), collection_options))
 		except Exception:
 			checks.append(_check("browser_runtime", "浏览器连接", "error", "浏览器连接检测失败", "请重新启动 BossHunter 后再试。", "browser"))
 		return checks
 
 	with ThreadPoolExecutor(max_workers=2) as executor:
 		ai_future = executor.submit(check_ai_connection, deepcopy(config), True)
-		browser_future = executor.submit(check_browser_connection, deepcopy(config), collection_options)
+		browser_future = executor.submit(_check_workflow_browser, mode, deepcopy(config), options if mode == "full" else collection_options)
 		for future, fallback in (
 			(ai_future, _check("ai_connection", "AI 接口连接", "error", "AI 接口检测失败", "请检查 AI 设置后重试。", "config")),
 			(
@@ -308,6 +310,29 @@ def _python_runtime_checks() -> list[dict[str, str]]:
 			"请使用稳定版 Python 3.11、3.12 或 3.13，并重新创建虚拟环境。",
 		)
 	]
+
+
+def _check_workflow_browser(mode: str, config: dict, options: dict | None) -> list[dict[str, str]]:
+	if mode == "full":
+		try:
+			full = normalize_collection_options(config, options)
+		except ValueError:
+			return []  # The full-flow configuration check reports the invalid options.
+		external = [platform for platform in full["platform_order"] if platform != "boss"]
+		if external:
+			if not all(platform_supports(platform, "deliver", config) for platform in external):
+				return [_check("ego_task_space", "Ego Lite 任务空间", "error", "外部平台投递尚未启用", "请在本机设置平台开关和任务空间。", "config")]
+			mode = "deliver"
+	if mode in {"collect", "monitor", "deliver"}:
+		section = "collection" if mode == "collect" else "delivery"
+		try:
+			browser = EgoTaskSpace.from_config(config, section=section)
+			if browser is not None:
+				browser.check()
+				return [_check("ego_task_space", "Ego Lite 任务空间", "pass", "Ego Lite 已连接", f"任务空间 {browser.space_id} 已就绪。")]
+		except (ValueError, EgoTaskSpaceError) as exc:
+			return [_check("ego_task_space", "Ego Lite 任务空间", "error", str(exc), f"请检查 {section}.ego_task_space_id 与任务空间的控制权。", "browser")]
+	return check_browser_connection(config, options)
 
 
 def check_browser_connection(config: dict, collection_options: dict | None = None) -> list[dict[str, str]]:
