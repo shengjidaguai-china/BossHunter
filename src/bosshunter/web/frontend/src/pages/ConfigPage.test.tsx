@@ -7,6 +7,136 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it('loads provider choices from the backend and accepts a provider absent from frontend code', async () => {
+  let saved: Record<string, any> = { ai: { service: 'anthropic', provider: 'anthropic', model: 'old-model' } }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config/schema') body = { ai_services: {
+      future_vendor: { label: '新增模型服务商', provider: 'openai_compatible', base_url: 'https://future.example/v1',
+        key_env: 'FUTURE_API_KEY', auth_mode: 'api_key', token_limit_field: 'max_completion_tokens', default_model: '' },
+    } }
+    if (url === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: 'AI 设置' }))
+  expect(screen.getByRole('option', { name: '新增模型服务商' })).toBeTruthy()
+  fireEvent.change(screen.getByLabelText('AI 服务商'), { target: { value: 'future_vendor' } })
+  expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe('https://future.example/v1')
+  expect((screen.getByLabelText('模型名称') as HTMLInputElement).value).toBe('')
+  expect((screen.getByLabelText('输出 Token 参数') as HTMLSelectElement).value).toBe('max_completion_tokens')
+  fireEvent.change(screen.getByLabelText('模型名称'), { target: { value: 'Vendor/Case-Sensitive' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('配置已保存')
+  expect(saved.ai.service).toBe('future_vendor')
+  expect(saved.ai.model).toBe('Vendor/Case-Sensitive')
+  expect(saved.ai.provider).toBe('openai_compatible')
+})
+
+it('discovers keyless remote models and lets a deployment enable API authentication', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config' ? { ai: { service: 'ollama', provider: 'openai_compatible', auth_mode: 'none',
+      base_url: 'http://192.0.2.22:11434/v1', model: 'team/model' } }
+      : url === '/api/config/schema' ? { ai_services: { ollama: { label: 'Ollama（本地或远程）', provider: 'openai_compatible',
+        base_url: 'http://127.0.0.1:11434/v1', key_env: 'OLLAMA_API_KEY', auth_mode: 'none' } } }
+      : url === '/api/config/models' ? { models: ['team/model', 'team/another'] } : {}
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: 'AI 设置' }))
+  expect(screen.queryByText('API Key', { selector: 'label' })).toBeNull()
+  expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe('http://192.0.2.22:11434/v1')
+  fireEvent.click(screen.getByRole('button', { name: '获取模型列表' }))
+  await screen.findByRole('option', { name: 'team/another' })
+  fireEvent.change(screen.getByLabelText('认证方式'), { target: { value: 'api_key' } })
+  expect(screen.getByText('API Key', { selector: 'label' })).toBeTruthy()
+})
+
+it('saves a custom Anthropic service without forcing it back to OpenAI protocol', async () => {
+  let saved: Record<string, any> = { ai: { service: 'custom', provider: 'openai_compatible', auth_mode: 'none',
+    model: 'vendor/model', base_url: 'https://gateway.example' } }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    let body: unknown = {}
+    if (String(input) === '/api/config') {
+      if (init?.method === 'POST') { saved = JSON.parse(String(init.body)); body = { success: true } }
+      else body = saved
+    }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
+  render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: 'AI 设置' }))
+  fireEvent.change(screen.getByLabelText('接口协议'), { target: { value: 'anthropic' } })
+  expect((screen.getByLabelText('认证方式') as HTMLSelectElement).value).toBe('api_key')
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('配置已保存')
+  expect(saved.ai.provider).toBe('anthropic')
+})
+
+it('requires saving before local AI authorization and supports revocation without exposing API fields', async () => {
+  let saved: Record<string, any> = { ai: { service: 'anthropic', provider: 'anthropic', model: 'api-model' } }
+  let finishAuthorization: () => void = () => {}
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    let body: unknown = {}
+    if (url === '/api/config') {
+      if (init?.method === 'POST') {
+        saved = JSON.parse(String(init.body))
+        body = { success: true }
+      } else body = saved
+    }
+    if (url.startsWith('/api/cities')) body = { cities: [] }
+    if (url === '/api/config/local-ai/authorize') {
+      await new Promise<void>(resolve => { finishAuthorization = resolve })
+      body = { success: true, message: '本机 AI 已验证并授权' }
+    }
+    if (url === '/api/config/local-ai/revoke') body = { success: true, message: '本机 AI 授权已撤销' }
+    return new Response(JSON.stringify(body), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: 'AI 设置' }))
+  fireEvent.change(screen.getByLabelText('AI 服务商'), { target: { value: 'codex_cli' } })
+  expect(screen.queryByText('API Key', { selector: 'label' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '获取模型列表' })).toBeNull()
+  expect((screen.getByRole('button', { name: '验证并授权' }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  await screen.findByText('配置已保存')
+  expect(saved.ai.provider).toBe('local_cli')
+  expect(saved.ai.model).toBe('')
+  fireEvent.click(screen.getByRole('button', { name: '验证并授权' }))
+  await screen.findByRole('button', { name: '处理中…' })
+  expect(screen.getByRole('button', { name: '重置' }).matches(':disabled')).toBe(true)
+  expect(screen.getByRole('button', { name: '保存' }).matches(':disabled')).toBe(true)
+  expect(screen.getByLabelText('模型名称').matches(':disabled')).toBe(true)
+  finishAuthorization()
+  await screen.findByText('本机 AI 已验证并授权')
+  expect(screen.getByRole('button', { name: '重置' }).matches(':disabled')).toBe(false)
+  expect(fetchMock.mock.calls.find(([input]) => String(input).endsWith('/authorize'))?.[1]?.body).toBe('{"confirm":true}')
+  fireEvent.click(screen.getByRole('button', { name: '撤销授权' }))
+  await screen.findByText('本机 AI 授权已撤销')
+  expect((screen.getByRole('button', { name: '撤销授权' }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+it('keeps local AI unauthorized after verification fails', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const body = url === '/api/config' ? { ai: { service: 'claude_cli', provider: 'local_cli', model: '' } }
+      : url.endsWith('/authorize') ? { error: '请先登录 Claude Code' } : {}
+    return new Response(JSON.stringify(body), { status: url.endsWith('/authorize') ? 400 : 200 })
+  }))
+  render(<ConfigPage />)
+  fireEvent.click(await screen.findByRole('button', { name: 'AI 设置' }))
+  fireEvent.click(screen.getByRole('button', { name: '验证并授权' }))
+  await screen.findByText('请先登录 Claude Code')
+  expect((screen.getByRole('button', { name: '撤销授权' }) as HTMLButtonElement).disabled).toBe(true)
+})
+
 it('blocks invalid windows, saves multiple periods and reloads their exact times', async () => {
   let saved: Record<string, any> = { throttle: { send_windows: ['09:00-12:00'] } }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
