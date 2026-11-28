@@ -17,6 +17,7 @@ HOST = "www.shixiseng.com"
 SEARCH_PATH = "/interns"
 JOB_PATH = re.compile(r"/intern/(inn_[A-Za-z0-9]{1,80})")
 SOURCE_HINT = "请在 BossHunter 连接的 Chrome 中登录实习僧，并保持实习僧标签页打开。"
+SAFETY_STOP_HINT = "实习僧访问已达到页面额度或处于安全暂停。"
 RISK_CHECK = r"""
 const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
 const displayed = el => {
@@ -58,7 +59,8 @@ const links = (cards.length ? cards : anchors).filter(a=>/^https:\/\/www\.shixis
 const jobs = [...new Set(links.map(a=>a.href))].slice(0,20);
 const next = anchors.find(a=>a.rel === 'next' || /^(下一页|下页)$/.test(text(a)));
 const empty = Array.from(document.querySelectorAll('p,span,div')).some(e=>visible(e) && /^(暂无相关职位|没有找到相关职位|没有找到符合条件的职位)$/.test(text(e)));
-return {url: location.href, jobs, titles: Object.fromEntries(links.map(a=>[a.href,text(a)])), next:next?.href || '', empty};
+const titles = Object.fromEntries(links.filter(a=>a.classList.contains('title')).map(a=>[a.href,text(a)]));
+return {url: location.href, jobs, titles, next:next?.href || '', empty};
 })()"""
 )
 READ_DETAIL = (
@@ -233,19 +235,35 @@ class BrowserShixisengCollector:
                                 break
                             raise CollectionError("selector_changed", "未找到可识别的岗位链接，已停止。")
                         titles = hits.get("titles") if isinstance(hits.get("titles"), dict) else {}
+                        detail_failure = None
+                        kept_from_list = 0
                         for link in hits["jobs"][:10]:
+                            if stop.is_set():
+                                return stopped
                             if not (identity := job_url(link)) or identity[0] in handled:
                                 continue
-                            detail = details.get(identity[0])
-                            if detail is None:
-                                if stop.wait(2):
-                                    return stopped
-                                detail = self._open_and_read(identity[1], READ_DETAIL, "detail", 60)
-                                if stop.is_set():
-                                    return stopped
-                                details[identity[0]] = detail
-                            if job_url(detail.get("url")) != identity:
-                                raise CollectionError("selector_changed", "详情页与预期岗位不一致。")
+                            if detail_failure is None:
+                                try:
+                                    if identity[0] not in details:
+                                        if stop.wait(2):
+                                            return stopped
+                                        detail = self._open_and_read(identity[1], READ_DETAIL, "detail", 60)
+                                        if job_url(detail.get("url")) != identity:
+                                            raise CollectionError("selector_changed", "详情页与预期岗位不一致。")
+                                        details[identity[0]] = detail
+                                except PlatformSafetyStop as exc:
+                                    detail_failure = CollectionError(exc.reason, SAFETY_STOP_HINT)
+                                except CollectionError as exc:
+                                    detail_failure = exc
+                            if stop.is_set():
+                                return stopped
+                            if detail_failure is not None:
+                                # Only preserve recognized cards already read. Do not open another page.
+                                if link not in titles:
+                                    continue
+                                detail = {"url": identity[1]}
+                            else:
+                                detail = details[identity[0]]
                             candidate = build_candidate(detail, [city], keyword, fallback_title=str(titles.get(link) or "").strip())
                             if not candidate:
                                 continue
@@ -257,7 +275,16 @@ class BrowserShixisengCollector:
                             if not hooks.can_checkpoint():
                                 raise CollectionError("persistence_error", "保存实习僧岗位失败，已停止。")
                             receipt = hooks.last_save_receipt() if hooks.last_save_receipt else {}
-                            saved += int(bool(receipt.get("inserted")))
+                            if receipt.get("inserted"):
+                                saved += 1
+                                if detail_failure is not None:
+                                    kept_from_list += 1
+                        if detail_failure is not None:
+                            if kept_from_list:
+                                raise CollectionError(
+                                    detail_failure.code, f"{detail_failure.message}已保留 {kept_from_list} 条列表岗位。",
+                                ) from detail_failure
+                            raise detail_failure
                         url = next_results_page(hits["url"], hits.get("next"))
                         if not url:
                             break
@@ -270,7 +297,7 @@ class BrowserShixisengCollector:
                 )
             return PlatformCollectionResult(self.platform, "completed", "completed", "实习僧网页采集结束")
         except PlatformSafetyStop as exc:
-            raise CollectionError(exc.reason, "实习僧访问已达到页面额度或处于安全暂停。") from None
+            raise CollectionError(exc.reason, SAFETY_STOP_HINT) from None
 
     def _open_and_read(self, url, script, action, limit):
         self.guard.reserve(action, daily_limit=limit)

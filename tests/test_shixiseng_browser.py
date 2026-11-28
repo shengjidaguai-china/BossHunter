@@ -11,7 +11,7 @@ import test_web_api_routes as web_routes
 
 from bosshunter.ai.prefilter import quick_score
 from bosshunter.ai.scorer import _build_scoring_prompt
-from bosshunter.collection.base import CollectionError, CollectorHooks
+from bosshunter.collection.base import CollectorHooks
 from bosshunter.collection.models import PlatformCollectionRequest
 from bosshunter.collection.orchestrator import CollectionOrchestrator
 from bosshunter.collection.platforms.shixiseng_browser import (
@@ -25,6 +25,7 @@ from bosshunter.collection.platforms.shixiseng_browser import (
     search_url,
 )
 from bosshunter.db import get_active_platform_safety_lock, get_db, insert_job
+from bosshunter.platform_safety import PlatformSafetyStop
 from bosshunter.web import server
 from bosshunter.web.preflight import check_browser_connection
 
@@ -128,19 +129,82 @@ def test_workbench_outcome_matches_the_saved_browser_jobs(tmp_path):
     assert second["collected_job_ids"] == []
 
 
-def test_restriction_stops_before_import_and_preserves_user_tab(tmp_path):
-    db = get_db(tmp_path / "jobs.db")
-    runtime = FixtureRuntime("blocked")
-    hooks = CollectorHooks(
-        InstantEvent(), lambda c: True, lambda c: pytest.fail("unexpected import"), print, lambda **_: None
-    )
-    with pytest.raises(CollectionError, match="访问限制"):
-        BrowserShixisengCollector({}, db, runtime=runtime).collect(
-            PlatformCollectionRequest("shixiseng", ["Python"], ["上海"], {}), hooks
-        )
-    assert runtime.opened == [search_url("上海", "Python"), JOB] and runtime.closed == ["results", "detail"]
-    assert get_active_platform_safety_lock(db)
+@pytest.mark.parametrize(("failure", "reason"), [
+    ("blocked", "restricted_page"),
+    ("login_required", "login_required"),
+    ("timeout", "selector_changed"),
+    ("wrong_job", "selector_changed"),
+    ("quota", "daily_detail_limit"),
+])
+def test_detail_failure_retains_safe_list_cards_and_stops_navigation(tmp_path, failure, reason):
+    second_job = BASE + "/intern/inn_second"
+    existing_job = BASE + "/intern/inn_existing"
+    tracked_job = JOB + "?ref=list"
+    wrong_origin = "https://www.shixiseng.com.example.org/intern/inn_wrong"
+    non_card_link = BASE + "/intern/inn_noncard"
+
+    class DetailFailure(FixtureRuntime):
+        def wait_for_load(self, tab, timeout):
+            return failure != "timeout" or tab != "detail"
+
+        def evaluate(self, tab, script, timeout):
+            if script == READ_RESULTS:
+                return {
+                    "url": SEARCH, "jobs": [tracked_job, JOB, second_job, wrong_origin, non_card_link, existing_job],
+                    "titles": {tracked_job: "列表职位一", JOB: "重复标题", second_job: "列表职位二",
+                               wrong_origin: "外站职位", existing_job: "列表里的已有职位"},
+                    "next": SEARCH + "&page=2",
+                }
+            if script == READ_DETAIL and failure == "wrong_job":
+                return {"url": second_job, "title": "其他详情", "jd": "不能归到列表职位一"}
+            return super().evaluate(tab, script, timeout)
+
+    runtime = DetailFailure(risk=failure)
+    db_path = tmp_path / "jobs.db"
+    with get_db(db_path) as db:
+        insert_job(db, build_candidate({"url": existing_job, "title": "已有职位", "jd": "已有详情"},
+                                       ["上海"], "Python").as_job_record())
     db.close()
+
+    def make_collector(config, conn):
+        collector = BrowserShixisengCollector(config, conn, runtime=runtime)
+        if failure == "quota":
+            reserve = collector.guard.reserve
+
+            def reserve_search_only(action, *, daily_limit):
+                if action == "detail":
+                    raise PlatformSafetyStop("daily_detail_limit")
+                reserve(action, daily_limit=daily_limit)
+
+            collector.guard.reserve = reserve_search_only
+        return collector
+
+    options = {
+        "platform_order": ["shixiseng"],
+        "platforms": {"shixiseng": {"cities": ["上海"], "keywords": ["Python"], "max_pages": 2}},
+    }
+    config = {"_workbench_stop_event": InstantEvent(), "profile": {"allow_internship": True}}
+    with patch("bosshunter.collection.orchestrator.BrowserShixisengCollector", side_effect=make_collector):
+        result = CollectionOrchestrator(config, db_path=db_path).run(options)
+
+    assert result["status"] == "completed_with_errors"
+    assert result["collected_job_ids"] == ["shixiseng:inn_sample", "shixiseng:inn_second"]
+    platform = result["platforms"]["shixiseng"]
+    assert platform["reason_code"] == reason
+    assert "已保留 2 条列表岗位" in platform["message"]
+    assert runtime.opened == [search_url("上海", "Python")] + ([JOB] if failure != "quota" else [])
+    assert runtime.closed == ["results"] + (["detail"] if failure != "quota" else [])
+    db = get_db(db_path)
+    try:
+        rows = {row["id"]: row for row in db.execute("SELECT * FROM jobs")}
+        assert len(rows) == 3 and rows["shixiseng:inn_existing"]["jd"] == "已有详情"
+        for job_id, title, url in [("inn_sample", "列表职位一", JOB), ("inn_second", "列表职位二", second_job)]:
+            row = rows["shixiseng:" + job_id]
+            assert (row["title"], row["url"], row["company"]) == (title, url, "公司未知")
+            assert (row["jd"], row["salary"], row["city"]) == ("", "", "")
+        assert bool(get_active_platform_safety_lock(db)) == (failure == "blocked")
+    finally:
+        db.close()
 
 
 def test_session_blocks_a_visible_challenge_but_ignores_the_transparent_preload():

@@ -279,7 +279,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-card p-4">
                               <p className="mb-2 text-xs font-black text-primary">JD摘要</p>
-                              <p className="line-clamp-6 leading-6 text-muted">{job.jd || '无'}</p>
+                              <p className="line-clamp-6 leading-6 text-muted">{job.jd || (job.source_platform === 'shixiseng' ? '未知' : '无')}</p>
                             </div>
                             <div className="rounded-2xl border border-card-border bg-card p-4">
                               <p className="mb-2 text-xs font-black text-primary">招呼语</p>
