@@ -90,6 +90,7 @@ export function JobFilterBar({
             { value: 'zhilian', label: '智联招聘' },
             { value: '51job', label: '前程无忧' },
             { value: 'liepin', label: '猎聘' },
+            { value: 'shixiseng', label: '实习僧' },
           ]} />
         )}
         {cityOptions.length > 0 && (

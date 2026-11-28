@@ -10,7 +10,7 @@
 |---|---|---|
 | `profile` | `resume_path`, `salary_min/max`, `deal_breakers` | 简历、期望薪资与排除条件 |
 | `search` | `keywords`, `cities`, `max_pages` | 默认搜索策略 |
-| `platforms` | `boss`, `zhilian`, `51job`, `liepin` | 各平台开关与独立搜索条件 |
+| `platforms` | `boss`, `zhilian`, `51job`, `liepin`, `shixiseng` | 各平台开关与独立搜索条件 |
 | `collection` | `daily_search_page_limit`, `risk_pause_*` | 采集额度与风险暂停策略 |
 | `scoring` | `threshold`, `max_candidates` | 评分阈值与候选数量 |
 | `throttle` | `daily_limit`, `interval_min/max`, `send_windows` | 低频发送策略 |
@@ -29,6 +29,14 @@
 - 猎聘：支持只读采集和 AI 处理，不进入自动发送、简历发送或监听。
 
 外部只读平台应通过岗位池打开经域名校验的原平台链接，人工投递后再标记“已发送”。
+
+### 实习僧
+
+在 BossHunter 已连接的 Chrome 中登录[实习僧](https://www.shixiseng.com/)并保留标签页。在「配置 → 个人信息」开启「接受实习/管培岗位」，再启用实习僧平台。搜索使用关键词和城市名，例如 `Python` 和 `上海`，也可以填 `全国`。
+
+每组关键词和城市默认读取一页。每页最多检查十个详情，新页面之间至少等待两秒。共享访问预算包含实习僧每日最多二十个搜索页和六十个详情页。遇到验证码、限流、登录失效或页面不匹配时停止。日薪等非月薪保留页面单位，缺失的字段可在岗位池查看原站核对。
+
+岗位池可按「实习僧」筛选或使用现有评分。点击原始链接可前往实习僧手动投递，投递后回岗位池点「我已发送」。
 
 ## AI 服务
 

@@ -11,7 +11,7 @@ import { SendWindowsInput, sendWindowsError } from '@/components/config/SendWind
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Save, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
-import { PLATFORM_LABELS, PLATFORM_SHORT_LABELS } from '@/lib/platforms'
+import { PLATFORM_IDS, PLATFORM_LABELS, PLATFORM_SHORT_LABELS, isPlatformId, type PlatformId } from '@/lib/platforms'
 
 const AI_SERVICES = {
   anthropic: {
@@ -45,7 +45,6 @@ const AI_SERVICES = {
 } as const
 
 type AiService = keyof typeof AI_SERVICES
-type PlatformId = 'boss' | 'zhilian' | '51job' | 'liepin'
 
 const BOSS_FILTER_OPTIONS = {
   job_type: ['全职', '兼职', '实习'],
@@ -226,7 +225,7 @@ export default function ConfigPage() {
   }
 
   const updatePlatformCities = (platform: PlatformId, cities: string[]) => {
-    const platformCityOptions = platform === 'zhilian' ? zhilianCityOptions : platform === 'liepin' ? liepinCityOptions : job51CityOptions
+    const platformCityOptions = platform === 'zhilian' ? zhilianCityOptions : platform === 'liepin' ? liepinCityOptions : platform === '51job' ? job51CityOptions : []
     const cityCodes = platform !== 'boss'
       ? Object.fromEntries(cities.map(city => {
         const found = platformCityOptions.find(option => option.name.replace(/市$/, '') === city.replace(/市$/, ''))
@@ -241,7 +240,7 @@ export default function ConfigPage() {
   const setPlatformEnabled = (platform: PlatformId, enabled: boolean) => {
     updateConfig(`platforms.${platform}.enabled`, enabled)
     const currentOrder: PlatformId[] = Array.isArray(config?.collection?.default_order)
-      ? config.collection.default_order.filter((item: unknown): item is PlatformId => item === 'boss' || item === 'zhilian' || item === '51job' || item === 'liepin')
+      ? config.collection.default_order.filter((item: unknown): item is PlatformId => isPlatformId(item))
       : ['boss'] as PlatformId[]
     const nextOrder = enabled
       ? [...currentOrder, ...(!currentOrder.includes(platform) ? [platform] : [])]
@@ -250,8 +249,8 @@ export default function ConfigPage() {
   }
 
   const setCollectionOrder = (value: string) => {
-    const enabled = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).filter(platform => config?.platforms?.[platform]?.enabled !== false)
-    const requested = value.split(',').filter((item): item is PlatformId => item === 'boss' || item === 'zhilian' || item === '51job' || item === 'liepin')
+    const enabled = PLATFORM_IDS.filter(platform => config?.platforms?.[platform]?.enabled !== false)
+    const requested = value.split(',').filter((item): item is PlatformId => isPlatformId(item))
     const next = [...requested, ...enabled.filter(platform => !requested.includes(platform))]
     updateConfig('collection.default_order', next.length ? next : ['boss'])
   }
@@ -284,7 +283,7 @@ export default function ConfigPage() {
   const bossTheoreticalPages = bossEstimateKeywords.length * bossEstimateCities.length * bossEstimateMaxPages
   const bossDailySearchLimit = Math.max(Number(config.collection?.daily_search_page_limit) || 60, 1)
   const bossTheoreticalExceedsLimit = bossTheoreticalPages > bossDailySearchLimit
-  const guidePlatform = (['boss', 'zhilian', '51job', 'liepin'] as PlatformId[])
+  const guidePlatform = PLATFORM_IDS
     .find(platform => config.platforms?.[platform]?.enabled ?? platform === 'boss')
 
   return (
@@ -423,12 +422,12 @@ export default function ConfigPage() {
         <SectionCard title="搜索设置" sectionKey="search" expanded={expandedSections} toggle={toggleSection}>
           <div className="space-y-4">
             <p className="rounded-xl border border-card-border bg-surface px-3 py-2 text-xs leading-5 text-muted">
-              智联、前程无忧和猎聘只自动采集、评分和生成招呼语；岗位池会提供原平台链接，你完成投递后可手动标记“已发送”。BossHunter 不会替你在这些平台发送、回复或监听。
+              智联、前程无忧和猎聘只自动采集、评分和生成招呼语；岗位池会提供原平台链接，你完成投递后可手动标记“已发送”。实习僧使用已登录的 Chrome 采集，投递请打开原页手动完成。
             </p>
-            {(['boss', 'zhilian', '51job', 'liepin'] as PlatformId[]).map(platform => {
+            {PLATFORM_IDS.map(platform => {
               const search = platformSearch(platform)
               const label = PLATFORM_LABELS[platform]
-              const platformCityOptions = platform === 'zhilian' ? zhilianCityOptions : platform === 'liepin' ? liepinCityOptions : job51CityOptions
+              const platformCityOptions = platform === 'zhilian' ? zhilianCityOptions : platform === 'liepin' ? liepinCityOptions : platform === '51job' ? job51CityOptions : []
               const enabled = config.platforms?.[platform]?.enabled ?? platform === 'boss'
               const cities = Array.isArray(search.cities) && search.cities.length
                 ? search.cities
@@ -457,7 +456,9 @@ export default function ConfigPage() {
                         onRefresh={handleCityRefresh}
                         refreshing={cityRefreshing}
                         message={cityMessage}
-                      /> : <>
+                      /> : platform === 'shixiseng' ? (
+                        <TagsInput value={cities} onChange={value => updatePlatformCities(platform, value)} placeholder="如：上海、全国" />
+                      ) : <>
                         <Input list={`config-${platform}-city-options`} value={cityInput} onChange={event => updatePlatformCities(platform, event.target.value.split(/[,，]/).map(value => value.trim()).filter(Boolean))} placeholder={platform === '51job' ? '如：上海' : '如：深圳'} />
                         <datalist id={`config-${platform}-city-options`}>{platformCityOptions.map(city => <option key={city.code} value={city.name} />)}</datalist>
                         <p className="mt-1 text-xs text-muted">{PLATFORM_SHORT_LABELS[platform]}只使用已验证的城市编码；当前内置 {platformCityOptions.length} 个城市。</p>
@@ -482,7 +483,7 @@ export default function ConfigPage() {
                       <Field label="排序">
                         <Select value={search.sort || 'default'} onChange={event => updatePlatformSearch(platform, 'sort', event.target.value)}>
                           <option value="default">默认</option>
-                          {platform !== '51job' && <option value="newest">最新</option>}
+                          {platform !== '51job' && platform !== 'shixiseng' && <option value="newest">最新</option>}
                         </Select>
                       </Field>
                     </div>
@@ -542,6 +543,7 @@ export default function ConfigPage() {
                   <option value="zhilian,boss">智联招聘 → BOSS 直聘</option>
                   <option value="51job">前程无忧</option>
                   <option value="liepin">猎聘</option>
+                  <option value="shixiseng">实习僧</option>
                   <option value="boss,zhilian,51job">BOSS → 智联 → 前程无忧</option>
                   <option value="boss,zhilian,51job,liepin">BOSS → 智联 → 前程无忧 → 猎聘</option>
                 </Select>

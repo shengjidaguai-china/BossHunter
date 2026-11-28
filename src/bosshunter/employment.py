@@ -55,6 +55,8 @@ def internship_config_error(config: Mapping[str, Any]) -> str:
 
 
 def internship_rejection(job: Mapping[str, Any], config: Mapping[str, Any]) -> str:
+    if job.get("source_platform") == "shixiseng" and _mapping(config.get("profile")).get("allow_internship") is not True:
+        return "当前设置不接受实习岗位"
     if str(job.get("source_platform") or "boss") != "boss":
         return ""
     conflict = internship_config_error(config)

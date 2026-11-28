@@ -79,6 +79,14 @@ platforms:
       city_codes: {"上海": "020000"}
       max_pages: 1
       sort: default
+  shixiseng:
+    enabled: false
+    # 在已连接的 Chrome 中登录实习僧并保持一个标签页打开。
+    search:
+      keywords: []
+      cities: []  # 如 [上海] 或 [全国]
+      max_pages: 1
+      sort: default
   liepin:
     enabled: false
     # 猎聘目前只开放采集/评分/招呼语生成，真实发送和监听仍锁定。

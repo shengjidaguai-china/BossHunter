@@ -27,7 +27,7 @@ MANUAL_STATUS_PROTECTED = {"sent", "replied", "resume_sent", "needs_resume", "fo
 DELETION_PROTECTED_HISTORY_ACTIONS = {
     "sent", "manual_sent", "replied", "resume_sent", "needs_resume", "follow_up_sent", "reply_pending", "auto_replied",
 }
-EXTERNAL_MANUAL_SEND_PLATFORMS = {"zhilian", "51job", "liepin"}
+EXTERNAL_MANUAL_SEND_PLATFORMS = {"zhilian", "51job", "liepin", "shixiseng"}
 
 
 def _default_outsourcing_rules() -> Rules:
@@ -411,7 +411,7 @@ def mark_external_jobs_sent(conn: sqlite3.Connection, job_ids: Any, *, confirmed
         if row.get("deleted_at") is not None:
             reasons.append("岗位已进入回收站")
         if platform not in EXTERNAL_MANUAL_SEND_PLATFORMS:
-            reasons.append("仅智联招聘、前程无忧和猎聘支持手动标记已发送")
+            reasons.append("仅智联招聘、前程无忧、猎聘和实习僧支持手动标记已发送")
         if reasons:
             blocked.append({"job_id": job_id, "reasons": reasons})
         elif str(row.get("status") or "") in completed_statuses:
@@ -421,7 +421,7 @@ def mark_external_jobs_sent(conn: sqlite3.Connection, job_ids: Any, *, confirmed
     if blocked:
         raise JobManualSentConflictError("存在不允许手动标记的岗位，批量操作已整体拒绝", blocked=blocked)
 
-    platform_labels = {"zhilian": "智联招聘", "51job": "前程无忧", "liepin": "猎聘"}
+    platform_labels = {"zhilian": "智联招聘", "51job": "前程无忧", "liepin": "猎聘", "shixiseng": "实习僧"}
     with conn:
         for row in pending_rows:
             job_id = str(row["id"])

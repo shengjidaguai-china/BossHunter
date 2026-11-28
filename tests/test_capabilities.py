@@ -29,8 +29,11 @@ class PlatformCapabilitiesTests(unittest.TestCase):
     def test_capability_map_keys(self):
         self.assertEqual(
             set(PLATFORM_CAPABILITIES),
-            {"boss", "zhilian", "51job", "liepin"},
+            {"boss", "zhilian", "51job", "liepin", "shixiseng"},
         )
+
+    def test_shixiseng_is_read_only(self):
+        self.assertEqual(PLATFORM_CAPABILITIES["shixiseng"], {"collect", "score"})
 
 
 if __name__ == "__main__":

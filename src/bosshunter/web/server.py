@@ -1261,7 +1261,7 @@ def api_job_search():
 		params.extend(status_filters)
 	source_platforms = _query_values("source_platform")
 	if source_platforms:
-		if any(value not in {"boss", "zhilian", "51job", "liepin"} for value in source_platforms):
+		if any(value not in {"boss", "zhilian", "51job", "liepin", "shixiseng"} for value in source_platforms):
 			return _json_response({"error": "source_platform 参数无效"}, 400)
 		placeholders = ",".join("?" for _ in source_platforms)
 		conditions.append(f"COALESCE(source_platform, 'boss') IN ({placeholders})")
@@ -1864,7 +1864,7 @@ def api_workbench_task_start():
 					"enabled": platform in selected_platforms,
 					"search": value,
 				}
-			for platform in ("boss", "zhilian", "51job", "liepin"):
+			for platform in ("boss", "zhilian", "51job", "liepin", "shixiseng"):
 				if platform not in selected_platforms and isinstance(platform_configs.get(platform), dict):
 					platform_configs[platform]["enabled"] = False
 			base_config["platforms"] = platform_configs
@@ -2160,12 +2160,14 @@ def api_workbench_generate_greetings():
 			try:
 				placeholders = ",".join("?" for _ in job_ids)
 				rows = db.execute(
-					f"SELECT id, status, greeting_reviewed_at FROM jobs WHERE deleted_at IS NULL AND id IN ({placeholders})",
+					f"SELECT id, status, greeting_reviewed_at, source_platform FROM jobs WHERE deleted_at IS NULL AND id IN ({placeholders})",
 					job_ids,
 				).fetchall()
 			finally:
 				db.close()
 			by_id = {str(row["id"]): str(row["status"] or "") for row in rows}
+			if any(row["source_platform"] == "shixiseng" for row in rows):
+				return _json_response({"error": "实习僧岗位请通过原始链接手动投递。"}, 409)
 			invalid_ids = [
 				job_id
 				for job_id in job_ids

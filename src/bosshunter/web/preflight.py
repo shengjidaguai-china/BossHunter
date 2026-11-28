@@ -20,7 +20,9 @@ from bosshunter.ai.credentials import (
 	get_ai_service,
 )
 from bosshunter.browser.diagnostics import run_browser_diagnostics
+from bosshunter.collection.capabilities import platform_supports
 from bosshunter.collection.orchestrator import normalize_collection_options
+from bosshunter.collection.platforms.shixiseng_browser import SOURCE_HINT, platform_tabs
 
 VALID_MODES = {"full", "collect", "rescore", "monitor"}
 
@@ -92,6 +94,12 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 			)
 		else:
 			checks.extend(_collection_city_checks(full_options))
+			if any(not platform_supports(platform, "deliver") for platform in full_options["platform_order"]):
+				checks.append(_check(
+					"full_flow_platform", "全流程平台能力", "error", "所选平台支持单独采集。",
+					"请选择支持投递的全流程平台。", "config",
+				))
+				return checks
 			checks.append(
 				_check(
 					"full_flow_platform",
@@ -393,6 +401,12 @@ def check_browser_connection(config: dict, collection_options: dict | None = Non
 
 	if result.get("chrome"):
 		selected_platforms = set(collection_options.get("platform_order", [])) if collection_options else {"boss"}
+		if "shixiseng" in selected_platforms:
+			tabs = platform_tabs(result.get("targets") or [])
+			checks.append(_check(
+				"shixiseng_tab", "实习僧搜索页", "pass" if tabs else "error",
+				"找到实习僧标签页" if tabs else "请打开一个实习僧标签页", SOURCE_HINT, "browser",
+			))
 		if "boss" in selected_platforms:
 			boss_tab = result.get("boss_tab")
 			if boss_tab:
